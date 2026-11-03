@@ -2,15 +2,24 @@ name: VetBuddy daily MTD export
 
 on:
   schedule:
-    # 01:17 UTC = 06:47 AM IST, every day.
-    # (GitHub can start scheduled runs a few minutes late; avoid :00.)
-    - cron: "17 1 * * *"
-  workflow_dispatch: {}   # adds a "Run workflow" button for manual runs
+    # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
+    - cron: "17 1 * * *"    # 06:47 AM IST  -> export, upload to SharePoint, refresh master sheet
+    - cron: "17 18 * * *"   # 11:47 PM IST  -> move the day's file to the archive folder
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "What to run"
+        type: choice
+        options: [export, archive]
+        default: export
 
 jobs:
-  export:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # "archive" for the 11:47 PM schedule or when chosen manually; otherwise "export"
+      TASK: ${{ (github.event.schedule == '17 18 * * *' || inputs.task == 'archive') && 'archive' || 'export' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +29,7 @@ jobs:
 
       - run: pip install requests xlrd openpyxl
 
-      - name: Export from VetBuddy and upload to SharePoint
+      - name: Run ${{ env.TASK }}
         env:
           VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
           VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
@@ -31,13 +40,20 @@ jobs:
           SP_SITE_URL: ${{ vars.SP_SITE_URL }}
           SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
           SP_FOLDER: ${{ vars.SP_FOLDER || 'VetBuddy Reports' }}
-        run: python vetbuddy_sales_export.py
+          SP_ARCHIVE_FOLDER: ${{ vars.SP_ARCHIVE_FOLDER }}
+          SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+        run: |
+          if [ "$TASK" = "archive" ]; then
+            python vetbuddy_sales_export.py --archive
+          else
+            python vetbuddy_sales_export.py
+          fi
 
       # Backup copy + log on GitHub for 14 days (also on failure, for diagnosis)
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vetbuddy-export-${{ github.run_number }}
+          name: vetbuddy-${{ env.TASK }}-${{ github.run_number }}
           path: |
             ${{ runner.temp }}/reports/*.xlsx
             vetbuddy_export.log
