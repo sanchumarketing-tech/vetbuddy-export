@@ -16,7 +16,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       # "archive" for the 11:47 PM schedule or when chosen manually; otherwise "export"
       TASK: ${{ (github.event.schedule == '17 18 * * *' || inputs.task == 'archive') && 'archive' || 'export' }}
