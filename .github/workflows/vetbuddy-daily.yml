@@ -1,0 +1,46 @@
+name: VetBuddy daily MTD export
+
+on:
+  schedule:
+    # 01:17 UTC = 06:47 AM IST, every day.
+    # (GitHub can start scheduled runs a few minutes late; avoid :00.)
+    - cron: "17 1 * * *"
+  workflow_dispatch: {}   # adds a "Run workflow" button for manual runs
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests xlrd openpyxl
+
+      - name: Export from VetBuddy and upload to SharePoint
+        env:
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_FOLDER: ${{ vars.SP_FOLDER || 'VetBuddy Reports' }}
+        run: python vetbuddy_sales_export.py
+
+      # Backup copy + log on GitHub for 14 days (also on failure, for diagnosis)
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vetbuddy-export-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reports/*.xlsx
+            vetbuddy_export.log
+            login_debug.html
+          if-no-files-found: ignore
+          retention-days: 14
