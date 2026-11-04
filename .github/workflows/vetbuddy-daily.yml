@@ -10,7 +10,7 @@ on:
       task:
         description: "What to run"
         type: choice
-        options: [export, archive, backfill]
+        options: [export, archive, backfill, backfill_pharmacy]
         default: export
 
 jobs:
@@ -43,11 +43,16 @@ jobs:
           SP_ARCHIVE_FOLDER: ${{ vars.SP_ARCHIVE_FOLDER }}
           SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GOFRUGAL_USER: ${{ secrets.GOFRUGAL_USER }}
+          GOFRUGAL_PASS: ${{ secrets.GOFRUGAL_PASS }}
+          GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
         run: |
           if [ "$TASK" = "archive" ]; then
             python vetbuddy_sales_export.py --archive
           elif [ "$TASK" = "backfill" ]; then
             python vetbuddy_sales_export.py --backfill
+          elif [ "$TASK" = "backfill_pharmacy" ]; then
+            python vetbuddy_sales_export.py --backfill-pharmacy
           else
             python vetbuddy_sales_export.py
           fi
