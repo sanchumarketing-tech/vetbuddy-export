@@ -10,7 +10,7 @@ on:
       task:
         description: "What to run"
         type: choice
-        options: [export, archive]
+        options: [export, archive, backfill]
         default: export
 
 jobs:
@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # "archive" for the 11:47 PM schedule or when chosen manually; otherwise "export"
-      TASK: ${{ (github.event.schedule == '17 18 * * *' || inputs.task == 'archive') && 'archive' || 'export' }}
+      # "archive" for the 11:47 PM schedule; manual runs use the chosen task; otherwise "export"
+      TASK: ${{ github.event.schedule == '17 18 * * *' && 'archive' || inputs.task || 'export' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests xlrd openpyxl
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
 
       - name: Run ${{ env.TASK }}
         env:
@@ -42,9 +42,12 @@ jobs:
           SP_FOLDER: ${{ vars.SP_FOLDER || 'VetBuddy Reports' }}
           SP_ARCHIVE_FOLDER: ${{ vars.SP_ARCHIVE_FOLDER }}
           SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           if [ "$TASK" = "archive" ]; then
             python vetbuddy_sales_export.py --archive
+          elif [ "$TASK" = "backfill" ]; then
+            python vetbuddy_sales_export.py --backfill
           else
             python vetbuddy_sales_export.py
           fi
