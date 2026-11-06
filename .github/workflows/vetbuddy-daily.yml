@@ -42,6 +42,8 @@ jobs:
           SP_FOLDER: ${{ vars.SP_FOLDER || 'VetBuddy Reports' }}
           SP_ARCHIVE_FOLDER: ${{ vars.SP_ARCHIVE_FOLDER }}
           SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+          SP_MASTER_SITE_URL: ${{ vars.SP_MASTER_SITE_URL }}
+          SP_MASTER_LIBRARY: ${{ vars.SP_MASTER_LIBRARY }}
           SP_GOFRUGAL_FOLDER: ${{ vars.SP_GOFRUGAL_FOLDER }}
           SP_GOFRUGAL_ARCHIVE_FOLDER: ${{ vars.SP_GOFRUGAL_ARCHIVE_FOLDER }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
