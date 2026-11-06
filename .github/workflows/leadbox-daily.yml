@@ -1,0 +1,78 @@
+name: Corefactor daily Lead Box
+
+# Every morning: export the leads created yesterday (All Leads) from Corefactor Lead Box,
+#   - append them to "Backend Leadbox Report.xlsx" (sanchureports OneDrive -> Sanchu Reports)
+#     and drag the "Date" and "Appt Datevalue" formulas down for the new rows,
+#   - save the day's file in <Sales Reports Sanchu>/Lead Box Archive (next to CRM Upload).
+# A day already in the master (found by the "Date" column) is skipped; the archive copy is
+# still saved. Uses the same COREFACTOR_SESSIONID secret as the call logs workflow.
+
+on:
+  schedule:
+    # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
+    - cron: "33 1 * * *"    # 07:03 AM IST -> leads created yesterday (after the call logs run)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day to add (created date), YYYY-MM-DD (empty = yesterday)"
+        required: false
+        default: ""
+      if_present:
+        description: "If that day is already in the master"
+        type: choice
+        options: [skip, replace]
+        default: skip
+
+concurrency:
+  group: corefactor-leadbox
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests xlrd openpyxl
+
+      - name: Corefactor Lead Box
+        env:
+          COREFACTOR_SESSIONID: ${{ secrets.COREFACTOR_SESSIONID }}
+          COREFACTOR_BASE_URL: ${{ vars.COREFACTOR_BASE_URL || 'https://tw1.teleduce.corefactors.in' }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          # Archive copy: same site and library as CRM Upload
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_LEADBOX_ARCHIVE_FOLDER: ${{ vars.SP_LEADBOX_ARCHIVE_FOLDER || 'Lead Box Archive' }}
+          # Master sheet
+          SP_LEADBOX_SITE_URL: ${{ vars.SP_LEADBOX_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
+          SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
+          SP_LEADBOX_IF_PRESENT: ${{ inputs.if_present || 'skip' }}
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          if [ -n "$INPUT_DATE" ]; then
+            python corefactor_leadbox_export.py --date "$INPUT_DATE"
+          else
+            python corefactor_leadbox_export.py
+          fi
+
+      # Day's file + log on GitHub for 14 days (also on failure, for diagnosis)
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corefactor-leadbox-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reports/*
+            corefactor_export.log
+            corefactor_debug.html
+          if-no-files-found: ignore
+          retention-days: 14
