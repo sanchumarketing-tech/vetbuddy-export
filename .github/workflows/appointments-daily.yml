@@ -5,20 +5,28 @@ name: VetBuddy daily Appointment Status
 #   - the day's file (title rows removed) -> <Sales Reports Sanchu>/Appointment Status Archive
 #   - rows appended under the last row of "Appointment Status.xlsx" (sanchureports OneDrive ->
 #     Sanchu Reports), sheet "Sheet1", with the "Created Date" (T) and "Date" (U) formulas.
-# A day already in the master is skipped. See README.md -> "VetBuddy Appointment Status".
+# Every day at 1 PM: the same report for TODAY, as it stands at 1 PM, appended under the last
+# row of the sheet "Next day" (with the "Appt date" formula in T).
+# A day already in the sheet is skipped. See README.md -> "VetBuddy Appointment Status".
 
 on:
   schedule:
     # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
-    - cron: "53 1 * * *"    # 07:23 AM IST -> yesterday's appointments
+    - cron: "53 1 * * *"    # 07:23 AM IST -> yesterday's appointments -> Sheet1
+    - cron: "31 7 * * *"    # 01:01 PM IST -> today's appointments so far -> Next day
   workflow_dispatch:
     inputs:
+      run:
+        description: "Which run"
+        type: choice
+        options: ["yesterday -> Sheet1", "today (now) -> Next day"]
+        default: "yesterday -> Sheet1"
       date:
-        description: "One day to add, YYYY-MM-DD (empty = yesterday)"
+        description: "Sheet1 only: one day to add, YYYY-MM-DD (empty = yesterday)"
         required: false
         default: ""
       from:
-        description: "Or a range to catch up: first day, YYYY-MM-DD"
+        description: "Sheet1 only: or a range to catch up - first day, YYYY-MM-DD"
         required: false
         default: ""
       to:
@@ -69,6 +77,9 @@ jobs:
           SP_APPT_LIBRARY: ${{ vars.SP_APPT_LIBRARY || 'Documents' }}
           SP_APPT_MASTER_PATH: ${{ vars.SP_APPT_MASTER_PATH || 'Sanchu Reports/Appointment Status.xlsx' }}
           SP_APPT_SHEET: ${{ vars.SP_APPT_SHEET || 'Sheet1' }}
+          SP_APPT_TODAY_SHEET: ${{ vars.SP_APPT_TODAY_SHEET || 'Next day' }}
+          # "today" for the 1 PM schedule or when chosen; otherwise the morning run
+          IN_TODAY: ${{ (github.event.schedule == '31 7 * * *' || startsWith(inputs.run, 'today')) && 'true' || 'false' }}
           SP_APPT_IF_PRESENT: ${{ inputs.if_present || 'skip' }}
           IN_DATE: ${{ inputs.date }}
           IN_FROM: ${{ inputs.from }}
@@ -76,6 +87,12 @@ jobs:
           IN_FILE_ONLY: ${{ inputs.file_only }}
         run: |
           args=""
+          if [ "$IN_TODAY" = "true" ]; then
+            args="--today"
+            if [ "$IN_FILE_ONLY" = "true" ]; then args="$args --file-only"; fi
+            python vetbuddy_appointments_export.py $args
+            exit $?
+          fi
           if [ -n "$IN_DATE" ]; then args="$args --date $IN_DATE"; fi
           if [ -n "$IN_FROM" ]; then args="$args --from $IN_FROM"; fi
           if [ -n "$IN_TO" ]; then args="$args --to $IN_TO"; fi

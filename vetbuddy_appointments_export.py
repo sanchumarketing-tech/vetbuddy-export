@@ -13,16 +13,21 @@ Every morning (GitHub Actions, 7:23 AM IST), for YESTERDAY (IST):
        A-S  the 19 export columns
        T    Created Date  =DATEVALUE(TEXT(Br,"dd-mm-yyyy"))
        U    Date          =DATEVALUE(MID(Cr,5,2)&"-"&LEFT(Cr,3)&"-"&MID(Cr,8,4))  (appointment date)
-     The other sheets (Next day, OLD DUMP, Full Month) are not touched.
+     The other sheets are not touched.
+
+Every day at 1 PM IST (--today), TODAY's appointments as they stand at that moment (the
+same report with today's date, made at 1 PM) are pasted the same way under the last row of the
+sheet "Next day", with column T "Appt date" =DATEVALUE(MID(Cr,5,2)&"-"&LEFT(Cr,3)&"-"&MID(Cr,8,4)).
+Re-running it the same day skips (today is already there) unless --if-present replace.
 
 The master is ~80 MB (over 100,000 rows, plus a 400,000-row OLD DUMP sheet), too big to open
-with openpyxl, so Sheet1 is edited directly in the file (like master_sheet.py for the sales master).
+with openpyxl, so the sheet is edited directly in the file (like master_sheet.py for the sales master).
 
-A day already in the master (most of the day's appointment IDs are already there with that
-Date in column U) is skipped. --if-present replace rewrites it, but only if that day's rows
-are the last rows of Sheet1 (i.e. the most recent day added).
+A day already in the sheet (most of the day's appointment IDs are already there with that
+appointment date) is skipped. --if-present replace rewrites it, but only if that day's rows
+are the last rows of the sheet (i.e. the most recent day added).
 
-Safety: the master's headers A-U are checked first; on any difference nothing is changed.
+Safety: the sheet's headers (A-U / A-T) are checked first; on any difference nothing is changed.
 The master is saved only if nobody changed it meanwhile; if it is open/locked, the run retries
 every minute for 30 minutes.
 
@@ -34,7 +39,8 @@ Environment (GitHub secrets / variables, or a .env file):
   SP_APPT_SITE_URL         default https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in
   SP_APPT_LIBRARY          default "Documents"
   SP_APPT_MASTER_PATH      default "Sanchu Reports/Appointment Status.xlsx"
-  SP_APPT_SHEET            default "Sheet1"
+  SP_APPT_SHEET            default "Sheet1"      (morning run)
+  SP_APPT_TODAY_SHEET      default "Next day"    (1 PM run)
   SP_APPT_IF_PRESENT       skip (default) | replace
   OUTPUT_DIR               local folder for the files (default ./reports)
 
@@ -44,6 +50,7 @@ Usage:
   python vetbuddy_appointments_export.py --from 2026-11-06 --to 2026-11-09   # catch up, oldest first
   python vetbuddy_appointments_export.py --date 2026-11-09 --if-present replace
   python vetbuddy_appointments_export.py --date 2026-11-09 --file-only      # no master update
+  python vetbuddy_appointments_export.py --today                            # 1 PM run -> "Next day"
 """
 
 import argparse
@@ -77,9 +84,6 @@ EXPORT_COLUMNS = ["Appointment ID", "Creation Time", "Appointment Time", "Client
                   "Created By", "Edited By", "Reason For Cancellation", "Cancelled By",
                   "Cancelled On", "Clinic", "Next Appointment", "Future Custom Reminders"]
 NCOLS = len(EXPORT_COLUMNS)                   # 19 = A..S
-COL_T, COL_U = "T", "U"
-MASTER_EXTRA = {COL_T: "Created Date", COL_U: "Date"}
-LAST_COL = COL_U
 MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
@@ -89,6 +93,26 @@ APPT_SITE_URL = (os.environ.get("SP_APPT_SITE_URL", "")
 APPT_LIBRARY = os.environ.get("SP_APPT_LIBRARY", "") or "Documents"
 APPT_MASTER_PATH = os.environ.get("SP_APPT_MASTER_PATH", "") or "Sanchu Reports/Appointment Status.xlsx"
 APPT_SHEET = os.environ.get("SP_APPT_SHEET", "") or "Sheet1"
+APPT_TODAY_SHEET = os.environ.get("SP_APPT_TODAY_SHEET", "") or "Next day"
+
+# Formula columns after S. "created" = date of Creation Time (B), "appt" = appointment date (C).
+F_CREATED = 'DATEVALUE(TEXT(B{r},"dd-mm-yyyy"))'
+F_APPT = 'DATEVALUE(MID(C{r},5,2)&"-"&LEFT(C{r},3)&"-"&MID(C{r},8,4))'
+
+
+class Target:
+    """Which sheet gets the rows, and which formula columns it has after A-S."""
+
+    def __init__(self, sheet, extras, date_col):
+        self.sheet = sheet
+        self.extras = extras          # [(column, header, "created" | "appt")]
+        self.date_col = date_col      # column holding the appointment date (finds a day's rows)
+
+
+# Morning run: yesterday's appointments -> Sheet1 (T Created Date, U Date)
+DAILY = Target(APPT_SHEET, [("T", "Created Date", "created"), ("U", "Date", "appt")], "U")
+# 1 PM run: today's appointments as they stand at 1 PM -> "Next day" (T Appt date)
+TODAY = Target(APPT_TODAY_SHEET, [("T", "Appt date", "appt")], "T")
 
 
 class AlreadyPresent(Exception):
@@ -274,8 +298,8 @@ def _cell(col, r, style, v) -> str:
     return f'<c r="{col}{r}"{sa} t="inlineStr"><is><t{sp}>{t}</t></is></c>'
 
 
-def new_row_xml(r: int, vals: list, styles: dict) -> str:
-    parts = [f'<row r="{r}" spans="1:21">']
+def new_row_xml(r: int, vals: list, styles: dict, target: Target = DAILY) -> str:
+    parts = [f'<row r="{r}" spans="1:{NCOLS + len(target.extras)}">']
     for c in range(NCOLS):
         col = col_letter(c)
         v = vals[c]
@@ -286,17 +310,20 @@ def new_row_xml(r: int, vals: list, styles: dict) -> str:
             v = v[1]
         parts.append(_cell(col, r, style, v))
     b = plain(vals[1])
-    st, su = styles.get(COL_T), styles.get(COL_U)
-    sa_t, sa_u = (f' s="{st}"' if st else ""), (f' s="{su}"' if su else "")
-    f_t = _xml_text(f'DATEVALUE(TEXT(B{r},"dd-mm-yyyy"))')
-    v_t = f"<v>{math.floor(b)}</v>" if isinstance(b, (int, float)) else ""
-    parts.append(f'<c r="T{r}"{sa_t}><f>{f_t}</f>{v_t}</c>')
-    f_u = _xml_text(f'DATEVALUE(MID(C{r},5,2)&"-"&LEFT(C{r},3)&"-"&MID(C{r},8,4))')
     d = appt_date(vals[2])
-    if d:
-        parts.append(f'<c r="U{r}"{sa_u}><f>{f_u}</f><v>{serial_of(d)}</v></c>')
-    else:
-        parts.append(f'<c r="U{r}"{sa_u} t="e"><f>{f_u}</f><v>#VALUE!</v></c>')
+    for col, _header, kind in target.extras:
+        s = styles.get(col)
+        sa = f' s="{s}"' if s else ""
+        if kind == "created":
+            f = _xml_text(F_CREATED.format(r=r))
+            v = f"<v>{math.floor(b)}</v>" if isinstance(b, (int, float)) else ""
+            parts.append(f'<c r="{col}{r}"{sa}><f>{f}</f>{v}</c>')
+        else:
+            f = _xml_text(F_APPT.format(r=r))
+            if d:
+                parts.append(f'<c r="{col}{r}"{sa}><f>{f}</f><v>{serial_of(d)}</v></c>')
+            else:
+                parts.append(f'<c r="{col}{r}"{sa} t="e"><f>{f}</f><v>#VALUE!</v></c>')
     parts.append("</row>")
     return "".join(parts)
 
@@ -339,26 +366,27 @@ def _copy_entry(zin, zout, item, data: bytes = None):
 
 
 def update_master_file(src_path: Path, dst_path: Path, days: list, if_present: str = "skip",
-                       sheet_name: str = APPT_SHEET) -> dict:
+                       target: Target = DAILY) -> dict:
     """days = [(date, rows), ...] oldest first. Appends each day's rows under the last row of
-    the sheet. Returns {"added": {day: n}, "skipped": [days], "replaced": {day: n}, "last_row": n}."""
+    the target sheet. Returns {"added": {day: n}, "skipped": [days], "replaced": {day: n}, "last_row": n}."""
     zin = zipfile.ZipFile(src_path)
-    part, sheet_idx = _sheet_part(zin, sheet_name)
+    part, sheet_idx = _sheet_part(zin, target.sheet)
     ss = shared_strings(zin)
 
     # ---- 1. header check
     head_row = next(b for kind, b in stream_sheet(zin, part) if kind == "row")
-    expected = [h.lower() for h in EXPORT_COLUMNS] + [MASTER_EXTRA[COL_T].lower(), MASTER_EXTRA[COL_U].lower()]
+    expected = [h.lower() for h in EXPORT_COLUMNS] + [h.lower() for _c, h, _k in target.extras]
     got = [str(cell_value(head_row, col_letter(i), ss) or "").strip().lower() for i in range(len(expected))]
     if got != expected:
         diff = [(col_letter(i), e, g) for i, (e, g) in enumerate(zip(expected, got)) if e != g][:5]
-        raise RuntimeError(f"Master headers don't match (column, expected, found): {diff} - master NOT changed")
+        raise RuntimeError(f"'{target.sheet}' headers don't match (column, expected, found): {diff} "
+                           f"- master NOT changed")
 
     # ---- 2. first pass: which days are present, where the last day starts, style template
     want = {d: {str(plain(v[0])) for v in rows if appt_date(v[2]) == d} for d, rows in days}
     found = {d: set() for d, _ in days}
     from collections import deque
-    recent = deque(maxlen=20000)  # (row, U) of the last rows: to find the last day's block
+    recent = deque(maxlen=20000)  # (row, appointment date) of the last rows: to find the last day's block
     last_data_r, template = 1, b""
     serials = {serial_of(d): d for d, _ in days}
     date_style = None
@@ -369,7 +397,7 @@ def update_master_file(src_path: Path, dst_path: Path, days: list, if_present: s
         if r == 1 or _is_blank(row):
             continue
         last_data_r, template = r, row
-        u = _num(row, COL_U)
+        u = _num(row, target.date_col)
         if u is not None:
             u = int(u)
             if u in serials:
@@ -384,7 +412,7 @@ def update_master_file(src_path: Path, dst_path: Path, days: list, if_present: s
 
     styles = {m.group(1).decode(): (m.group(2).decode() if m.group(2) else None)
               for m in _CELL_S_RE.finditer(template)}
-    styles["_date"] = date_style or styles.get(COL_T)
+    styles["_date"] = date_style or styles.get(target.extras[0][0])
 
     result = {"added": {}, "skipped": [], "replaced": {}}
     cut_from = None              # rows >= cut_from are removed (replace of the last day)
@@ -437,7 +465,7 @@ def update_master_file(src_path: Path, dst_path: Path, days: list, if_present: s
         for d, rows in to_add:
             for vals in rows:
                 r += 1
-                new_rows.append(new_row_xml(r, vals, styles))
+                new_rows.append(new_row_xml(r, vals, styles, target))
             result["added"][d] = len(rows)
         from xml.etree import ElementTree as ET
         try:  # the new rows must be valid XML before anything is written back
@@ -507,14 +535,14 @@ def download_master(h: dict, drive: dict, dest: Path) -> dict:
     return item
 
 
-def update_master(days: list, if_present: str, work: Path) -> dict:
+def update_master(days: list, if_present: str, work: Path, target: Target = DAILY) -> dict:
     for attempt in range(1, 31):
         h = graph_headers()
         drive = vb.sp_drive(h, APPT_SITE_URL, APPT_LIBRARY)
         src, dst = work / "appt_master_in.xlsx", work / "appt_master_out.xlsx"
         item = download_master(h, drive, src)
         try:
-            res = update_master_file(src, dst, days, if_present)
+            res = update_master_file(src, dst, days, if_present, target)
             log.info("Saving master (%.0f MB)...", dst.stat().st_size / 1e6)
             vb.sp_put_file(h, drive["id"], dst, APPT_MASTER_PATH.strip("/"), if_match=item.get("eTag", ""))
             return res
@@ -553,18 +581,26 @@ def main(argv=None) -> int:
     p.add_argument("--if-present", choices=["skip", "replace"],
                    default=os.environ.get("SP_APPT_IF_PRESENT", "") or "skip")
     p.add_argument("--file-only", action="store_true", help="only make/archive the file(s)")
+    p.add_argument("--today", action="store_true",
+                   help=f"1 PM run: TODAY's appointments as they stand now -> sheet '{APPT_TODAY_SHEET}'")
     a = p.parse_args(argv)
 
-    yesterday = dt.datetime.now(IST).date() - dt.timedelta(days=1)
+    now = dt.datetime.now(IST)
+    yesterday = now.date() - dt.timedelta(days=1)
+    target = TODAY if a.today else DAILY
     try:
-        if a.date:
+        if a.today:
+            if a.date or a.d_from or a.d_to:
+                raise ValueError("--today takes no dates (it is always today)")
+            first = last = now.date()
+        elif a.date:
             first = last = dt.date.fromisoformat(a.date)
         else:
             first = dt.date.fromisoformat(a.d_from) if a.d_from else yesterday
             last = dt.date.fromisoformat(a.d_to) if a.d_to else yesterday
         if first > last:
             raise ValueError("--from is after --to")
-        if last > yesterday:
+        if not a.today and last > yesterday:
             raise ValueError("only past days can be added (the day must be over)")
         if (last - first).days > 62:
             raise ValueError("at most 2 months per run")
@@ -611,7 +647,9 @@ def main(argv=None) -> int:
         if not rows:
             log.warning("%s: the report has no appointments - nothing to add", d)
         else:
-            out = vb.OUTPUT_DIR / f"VetBuddy_AppointmentStatus_{d}.xlsx"
+            name = (f"VetBuddy_AppointmentStatus_{d}_at_{now:%H%M}.xlsx" if a.today
+                    else f"VetBuddy_AppointmentStatus_{d}.xlsx")
+            out = vb.OUTPUT_DIR / name
             write_day_xlsx(rows, out)
             log.info("Saved %s", out.name)
             if vb.SP_ENABLED:
@@ -629,10 +667,10 @@ def main(argv=None) -> int:
 
     # 3. master
     try:
-        res = update_master(days, a.if_present, vb.OUTPUT_DIR / "_appt_master_work")
+        res = update_master(days, a.if_present, vb.OUTPUT_DIR / "_appt_master_work", target)
     except AlreadyPresent:
-        log.info("The master already has %s, so it was left unchanged (use if_present = replace "
-                 "to rewrite the latest day)", ", ".join(str(x) for x, _ in days))
+        log.info("Sheet '%s' already has %s, so it was left unchanged (use if_present = replace "
+                 "to rewrite the latest day)", target.sheet, ", ".join(str(x) for x, _ in days))
         return status
     except Exception as e:  # noqa: BLE001
         log.error("Master update FAILED: %s", e)
@@ -643,7 +681,8 @@ def main(argv=None) -> int:
         log.info("%s: removed its %d existing rows to replace them", x, n)
     for x, n in res["added"].items():
         log.info("%s: added %d rows", x, n)
-    log.info("Master updated in SharePoint: %s (now %d rows incl. header)", APPT_MASTER_PATH, res["last_row"])
+    log.info("Master updated in SharePoint: %s, sheet '%s' (now %d rows incl. header)",
+             APPT_MASTER_PATH, target.sheet, res["last_row"])
     return status
 
 
