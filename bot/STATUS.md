@@ -73,3 +73,10 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
   plain-English titles. Answer: headline (<=25 words), 3-5 "Label: sentence" points, "What to do" line.
 - Card: readable column titles, bar-chart column on the main table, follow-up questions as buttons (messageBack).
 - bot_plan / bot_answer / bot_context cleared after the change.
+
+## Update 11-11-2026 (16:30) — AI assistant front door (live, 70,249 chars)
+- Every message first goes to an AI assistant (chat models 120b > qwen > 20b, temperature 0.4) that knows the person's name,
+  the time of day, the last 3 hours of conversation (vetbuddy.bot_turns, sql/13) and a live sales snapshot (sheet_kpi + sheet_daily).
+- It chats itself (greetings with a business pulse, thanks, ideas, drafting messages, snapshot answers - numbers checked,
+  unsupported sentences removed) or hands ONE self-contained English question to the analyst pipeline.
+- Persona: calm expert colleague; always English (understands Tanglish). Hard-coded help / thanks / "which LLM" replies removed.

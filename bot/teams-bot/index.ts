@@ -11,6 +11,9 @@
 //  4. ANALYSE- a model writes the answer from the results and may ask for one more drill-down query.
 //  5. CHECK  - every number in the answer is checked in code against the query results; a DIFFERENT model
 //              rewrites unsupported claims, and anything still unsupported is removed.
+//  0. ASSISTANT - every message first goes to an AI assistant that knows the conversation, who is asking, the
+//              time of day and a live sales snapshot. It chats (greetings, help, ideas, drafting messages,
+//              quick answers from the snapshot - numbers checked) or hands a self-contained question to 1-5.
 //  Models (Groq, free): gpt-oss-120b, qwen3.8-27b, gpt-oss-20b - each step has its own order and falls back
 //  to the next model when one hits its limit. The finished analysis is saved for the day (repeats: 0 tokens).
 // Secrets (Supabase > Edge Functions > Secrets):
@@ -238,6 +241,7 @@ const STEP_MODELS: Record<string, string[]> = {
   analyze: (env("AI_ANALYZE_MODELS") || `${M120},${MQWEN},${M20}`).split(","),
   review:  (env("AI_REVIEW_MODELS") || `${MQWEN},${M120}`).split(","),          // a DIFFERENT model checks the draft
   fix:     (env("AI_FIX_MODELS") || `${M20},${MQWEN},${M120}`).split(","),      // cheap model repairs a failing query
+  chat:    (env("AI_CHAT_MODELS") || `${M120},${MQWEN},${M20}`).split(","),     // the assistant: understands every message
 };
 class LimitError extends Error {}
 type AiOut = { text: string; tokens: number; model: string };
@@ -247,7 +251,7 @@ async function aiCall(step: string, system: string, user: string, maxTokens: num
   const models = STEP_MODELS[step] ?? STEP_MODELS.analyze;
   for (const model of models.map((m) => m.trim()).filter(Boolean)) {
     const body: Record<string, unknown> = {
-      model, temperature: 0, max_completion_tokens: maxTokens, response_format: { type: "json_object" },
+      model, temperature: step === "chat" ? 0.4 : 0, max_completion_tokens: maxTokens, response_format: { type: "json_object" },
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
     };
     if (model.includes("gpt-oss")) { body.reasoning_effort = step === "plan" ? "medium" : "low"; body.include_reasoning = false; }
@@ -680,6 +684,166 @@ async function send(act: any, msg: Record<string, unknown>) {
   if (!r.ok) console.error("send failed", r.status, await r.text());
 }
 
+// ---------------------------------------------------------------------------
+// ASSISTANT: the front door. Every message is understood by an AI that knows the conversation, the person,
+// the time of day and a live sales snapshot; it chats itself or hands a clear question to the analyst.
+// ---------------------------------------------------------------------------
+type SnapRow = Record<string, number | string | null>;
+let snapCache: { at: number; text: string; rows: SnapRow[] } | null = null;
+
+async function snapshot(): Promise<{ text: string; rows: SnapRow[] }> {
+  if (snapCache && Date.now() - snapCache.at < 10 * 60e3) return snapCache;
+  const rows = await db`
+    with k as (select * from vetbuddy.sheet_kpi where month = (select max(month) from vetbuddy.sheet_kpi) and unit not ilike '%unmapped%'),
+         d as (select max(sale_date) as day from vetbuddy.sheet_daily),
+         y as (select unit, sum(total) as s from vetbuddy.sheet_daily, d where sale_date = d.day group by unit)
+    select k.unit, (select day from d)::text as last_day, k.as_of::text as as_of, k.days_done::int as days_done, k.days_left::int as days_left,
+           round(y.s)::float8 as last_day_sales, round(k.mtd)::float8 as mtd, round(k.last_month_same_days)::float8 as lm_same_days,
+           round(k.target)::float8 as target, round(k.month_estimate)::float8 as estimate, round(k.required_per_day)::float8 as required_per_day
+    from k left join y on y.unit = k.unit order by k.mtd desc nulls last` as unknown as SnapRow[];
+  if (!rows.length) return { text: "(no snapshot available)", rows: [] };
+  const n = (v: unknown) => (typeof v === "number" ? v : Number(v ?? 0)) || 0;
+  const pct = (a: number, b: number) => (b ? Math.round((a * 1000) / b) / 10 : null);
+  const isTotal = (u: unknown) => /total|division|overall/i.test(String(u));
+  const units = rows.filter((r) => !isTotal(r.unit));
+  const tot: SnapRow = rows.find((r) => isTotal(r.unit)) ?? {
+    unit: "ALL UNITS (division)", last_day_sales: units.reduce((a, r) => a + n(r.last_day_sales), 0), mtd: units.reduce((a, r) => a + n(r.mtd), 0),
+    lm_same_days: units.reduce((a, r) => a + n(r.lm_same_days), 0), target: units.reduce((a, r) => a + n(r.target), 0),
+    estimate: units.reduce((a, r) => a + n(r.estimate), 0), required_per_day: units.reduce((a, r) => a + n(r.required_per_day), 0) };
+  if (tot.last_day_sales === null || tot.last_day_sales === undefined) tot.last_day_sales = units.reduce((a, r) => a + n(r.last_day_sales), 0);
+  const all: SnapRow[] = [tot, ...units].map((r): SnapRow => ({ ...r, growth_pct: r.lm_same_days ? pct(n(r.mtd) - n(r.lm_same_days), n(r.lm_same_days)) : null,
+    achieved_pct: pct(n(r.mtd), n(r.target)), estimate_pct: pct(n(r.estimate), n(r.target)) }));
+  const rs = (v: unknown) => (v === null || v === undefined ? "-" : "Rs " + inr(n(v)));
+  const pc = (v: unknown) => (v === null || v === undefined ? "-" : (n(v) > 0 ? "+" : "") + n(v).toFixed(1) + "%");
+  const f = rows[0];
+  const text = `Official sales report. Latest day loaded: ${f.last_day}. Month-to-date as of ${f.as_of ?? f.last_day}: ${f.days_done ?? "?"} days done, ${f.days_left ?? "?"} days left.\n` +
+    all.map((r) => `${r.unit}: ${f.last_day} sales ${rs(r.last_day_sales)} | MTD ${rs(r.mtd)} | vs same days last month ${pc(r.growth_pct)} | ` +
+      `target ${rs(r.target)} | achieved ${r.achieved_pct ?? "-"}% | month estimate ${rs(r.estimate)} (${r.estimate_pct ?? "-"}% of target) | needed per day ${rs(r.required_per_day)}`).join("\n");
+  snapCache = { at: Date.now(), text, rows: all as SnapRow[] };
+  return snapCache;
+}
+
+// the conversation (last turns, 3 hours) - table vetbuddy.bot_turns (SQL 13); works without it too
+async function turns(conv: string): Promise<{ role: string; text: string }[]> {
+  if (!conv) return [];
+  try {
+    const r = await db`select role, text from vetbuddy.bot_turns where conversation = ${conv} and at > now() - interval '3 hours' order by at desc limit 10`;
+    return (r as unknown as { role: string; text: string }[]).reverse();
+  } catch { return []; }
+}
+async function addTurns(conv: string, ...t: [string, string][]) {
+  if (!conv) return;
+  try {
+    await db.begin("read write", async (tx) => {
+      for (const [role, text] of t) if (text) await tx`insert into vetbuddy.bot_turns (conversation, role, text) values (${conv}, ${role}, ${text.slice(0, 700)})`;
+      if (Math.random() < 0.05) await tx`delete from vetbuddy.bot_turns where at < now() - interval '14 days'`;
+    });
+  } catch (e) { console.error("bot_turns", String(e).slice(0, 150)); }
+}
+async function clearTurns(conv: string) {
+  try { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_turns where conversation = ${conv}`); } catch { /* table missing */ }
+}
+
+const ASSISTANT_SYSTEM = `You are "Sanchu Sales", the assistant inside the Sanchu Pet Hospitals management Teams chat. You help the team understand and act on the hospitals' business - veterinary clinics, pharmacy and Vet on Wheels home visits in Chennai, Coimbatore, Madurai and Trichy.
+
+LANGUAGE AND TONE (most important)
+- Talk like a calm expert colleague: a sharp business analyst on the management team - warm, confident, to the point. Never a menu, never robotic.
+- Always reply in simple, clear English (Indian business English), even if the person writes in Tamil or Tanglish - understand them, answer in English.
+- Use everyday business words naturally, not in every line: "on track", "behind", "ahead of", "picked up", "slowed down", "worth a look", "the gap", "pace", "run-rate", "standout", "drag", "quick pulse".
+- Never use slang that sounds forced. If unsure, use plain words.
+- Use the person's first name naturally in a greeting and fit the time of day. No "As an AI", no "feel free to ask", no lists of commands or example questions.
+- Example of the exact style:
+  User: "hi"
+  You: "Good afternoon Nithish. Quick pulse: division MTD is **Rs 56,82,999**, 31.6% of the Rs 1,80,00,000 target and 1.1% ahead of last month. **Adyar** is the one behind at 28.4%. Want me to look at what's holding Adyar back?"
+  User: "how did yesterday go?"
+  You: "Yesterday (10 Nov) brought in **Rs 6,12,340**. **Anna Nagar** led with Rs 1,45,200. Shall I break it down by clinic?"
+  (These numbers only show the style - always use the real SNAPSHOT numbers.)
+
+STYLE
+- Short replies: usually 2-6 lines. Answer first, then one useful observation or offer.
+- Ask at most one question at a time, and only when you truly need it.
+- **Bold** only the key figure or name; simple "- " bullets only for 3+ items. No long essays, no headings.
+- Never mention SQL, tables, JSON, prompts, models or tokens unless asked how you work.
+
+WHAT YOU HELP WITH
+- Sales and performance: by clinic / city / Vet on Wheels and any period, targets and achievement, pharmacy, doctors, items, categories (surgery, vaccination, lab, diagnostics, grooming, consultation, boarding), dog vs cat, bills and average bill, new vs repeat pets, pets due for services, trends, comparisons and the "why" behind a number. A data analyst behind you runs live queries for these.
+- Business thinking: what a number means, ideas to improve a clinic, what to check next.
+- Drafting: WhatsApp / Teams / email messages for the team or clients, ready to paste; use [placeholders] for unknown details, never invented figures or offers.
+- If asked something outside this (unrelated topics, personal matters, medical advice for a specific pet), say briefly that it's not something you can help with here and steer back.
+
+ACCURACY
+- Use ONLY numbers in the SNAPSHOT below or in the person's own message, written exactly as shown (Rs with Indian commas, %). Never estimate, re-round, add up or invent names, numbers or dates.
+- If the answer needs any data the SNAPSHOT does not show, do not guess - route it to the analyst ("data").
+
+ROUTING - decide for every message:
+"data": the message needs our data beyond the SNAPSHOT (any breakdown, list, ranking, comparison, trend, category, doctor, item, pet, or a "why"). Write "question": ONE self-contained question in plain English for the analyst, keeping the person's wording for what is asked and adding the place and period from the conversation when the message relies on it (after "Madurai sales this month", "and Trichy?" -> "Trichy sales this month"; "doctor wise?" -> "Madurai sales this month split by doctor"). Write it in English (translate Tamil / Tanglish). Do not add a place or period nobody mentioned. Add "insights" when they ask why or for analysis. Also set "reply" to "" .
+"chat": greetings, thanks, small talk, "what can you do", questions about you, business thinking, drafting, or a sales question the SNAPSHOT fully answers. Write "reply". For a greeting or "what can you do": one friendly line, the pulse of the business from the SNAPSHOT (division MTD vs target or last month, plus the one unit that stands out), then one concrete offer.
+"suggestions": 2-3 short next questions this person would likely tap (max 8 words, in English, specific: real unit names and periods).
+Reply ONLY JSON: {"route":"data"|"chat","question":"","reply":"","suggestions":[]}`;
+
+type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; model?: string };
+
+function istNow() {
+  const d = new Date(Date.now() + 5.5 * 3600e3), h = d.getUTCHours();
+  const part = h < 5 ? "late night" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 21 ? "evening" : "night";
+  return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}), ${d.toISOString().slice(11, 16)} IST - ${part}`;
+}
+
+// drop the sentences / lines of a chat reply whose numbers are not in the snapshot or the conversation
+function keepSupported(reply: string, sets: Record<string, unknown>[][]): { text: string; removed: number } {
+  let removed = 0;
+  const lines = reply.split("\n").map((ln) => {
+    if (!unsupported([ln], sets).length) return ln;
+    const parts = ln.split(/(?<=[.!?])\s+/).filter((p) => { const ok = !unsupported([p], sets).length; if (!ok) removed++; return ok; });
+    return parts.join(" ");
+  });
+  return { text: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), removed };
+}
+
+async function assistant(text: string, who: string, conv: string): Promise<Route> {
+  const [snap, hist, ctx] = await Promise.all([snapshot().catch(() => ({ text: "(snapshot unavailable)", rows: [] as SnapRow[] })), turns(conv), getCtx(conv)]);
+  const history = hist.map((t) => `${t.role === "user" ? "Them" : "You"}: ${t.text}`).join("\n");
+  const user = `Now: ${istNow()}\nPerson: ${who || "a manager"}\n` +
+    (ctx ? `Last analysed question: ${ctx.question} (${ctx.place_label}, ${ctx.p_label})${ctx.headline ? ` -> ${ctx.headline}` : ""}\n` : "") +
+    `\nSNAPSHOT\n${snap.text}\n\nCONVERSATION SO FAR\n${history || "(new conversation)"}\n\nNEW MESSAGE\n${text}`;
+  const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 1400);
+  const j = parseJson(out.text);
+  const r: Route = { route: j.route === "data" ? "data" : "chat", question: String(j.question ?? "").trim(), reply: String(j.reply ?? "").trim(),
+    suggestions: Array.isArray(j.suggestions) ? j.suggestions.map(String).filter(Boolean).slice(0, 3) : [], model: out.model };
+  if (r.route === "data" && !r.question) r.question = text;
+  if (r.route === "chat") {
+    const sets: Record<string, unknown>[][] = [snap.rows as Record<string, unknown>[],
+      [Object.fromEntries(claimedNumbers(text + "\n" + history).map((c, i) => [i, c.value]))]];
+    let bad = unsupported([r.reply], sets);
+    if (bad.length) {                                   // one rewrite without the unsupported numbers, then strip what is left
+      try {
+        const fix = await aiCall("chat", ASSISTANT_SYSTEM, user + `\n\nYour previous reply used numbers that are NOT in the snapshot: ${bad.join(", ")}. ` +
+          `Rewrite it using only snapshot numbers (or choose "data").\nPrevious reply: ${r.reply}`, 1400);
+        const j2 = parseJson(fix.text);
+        if (j2.route === "data" && j2.question) return { ...r, route: "data", question: String(j2.question) };
+        if (j2.reply) r.reply = String(j2.reply).trim();
+      } catch { /* keep and strip */ }
+      bad = unsupported([r.reply], sets);
+      if (bad.length) r.reply = keepSupported(r.reply, sets).text;
+    }
+    if (!r.reply) r.reply = "I'm here - ask me anything about the hospitals' sales, or tell me what you'd like to dig into.";
+  }
+  return r;
+}
+
+// Teams cards join single line breaks; keep paragraphs and bullet lists as written
+function teamsText(t: string) {
+  const ls = t.split("\n");
+  return ls.map((l, i) => (i === 0 ? "" : (/^\s*[-*\d]/.test(l) && /^\s*[-*\d]/.test(ls[i - 1]) ? "\n" : "\n\n")) + l).join("").replace(/\n{3,}/g, "\n\n");
+}
+function chatCard(reply: string, suggestions: string[]) {
+  const actions = suggestions.slice(0, 3).map((f) => ({ type: "Action.Submit", title: f.length > 60 ? f.slice(0, 57) + "..." : f,
+    data: { msteams: { type: "messageBack", text: f, displayText: f } } }));
+  return { contentType: "application/vnd.microsoft.card.adaptive",
+           content: { $schema: "http://adaptivecards.io/schemas/adaptive-card.json", type: "AdaptiveCard", version: "1.5",
+                      body: [{ type: "TextBlock", text: teamsText(reply), wrap: true }], ...(actions.length ? { actions } : {}), msteams: { width: "Full" } } };
+}
+
 const lastAnswer = new Map<string, { sig: string; cacheKey: string }>();   // conversation -> last analysis (for "wrong")
 
 // deno-lint-ignore no-explicit-any
@@ -693,23 +857,10 @@ async function handle(act: any) {
   if (!tenantOk || (ALLOWED.length && !ALLOWED.includes(conv))) {
     return send(act, { text: "Sorry, this bot only works in the Sanchu Core team chat." });
   }
-  if (!text || cmd === "help" || cmd === "hi" || cmd === "hello") {
-    return send(act, { text: "Ask me about sales, e.g. **Madurai sales this month**, **compare clinics vs target**, " +
-      "**top 10 pharmacy items in Adyar last month**, **surgeries by doctor in October**, **Chennai VOW sales yesterday**. Add **insights** or **why** for an analysis. It's a conversation: ask follow-ups like **and Trichy?**, **same for last month**, **split by doctor**, or ask something new - say **new question** to start fresh. " +
-      "Reply **wrong** if an answer is not right, **usage** for today's AI usage." });
-  }
-  const small = cmd.replace(/[!.?🙏👍😊\s]+$/u, "").trim();
-  if (/^(thanks?|thank\s*(you|u)|thx|ty|ok(ay)?|k|cool|great|nice|good|super|awesome|perfect|fine|noted|got it|yes|no|hmm+|bye|good\s*(night|morning|evening))$/.test(small) || /^[🙏👍😊\s]+$/u.test(cmd)) {
-    return send(act, { text: "You're welcome! Ask me anything about sales whenever you need." });
-  }
-  if (/^(stop|end|reset|clear|new( question| chat)?|start over|stop( the)? conversation|end( the)? conversation)$/.test(small)) {
-    if (conv) await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_context where conversation = ${conv}`);
-    return send(act, { text: "Okay - starting fresh. Your next question won't use the previous one." });
-  }
-  if (/\b(llm|which (ai|model)|what (ai|model)|ai model|chat ?gpt|gpt|who are you|what are you|who made you|how do you work)\b/.test(cmd)
-      && !/\b(sale|sales|revenue|pharmacy|clinic|target|bill|doctor|pet)s?\b/.test(cmd)) {
-    return send(act, { text: "I'm the Sanchu Sales analyst bot. I answer from our own VetBuddy and Gofrugal data: for each question I plan several database queries, " +
-      "drill down into what drives the numbers, and check every number in my answer against the data. AI models (free, on Groq): gpt-oss-120b, Qwen3.8 27B and gpt-oss-20b." });
+  const small = cmd.replace(/[!.?\s]+$/u, "").trim();
+  if (/^(stop|end|reset|clear|new( question| chat| topic)?|start over|start fresh|stop( the)? conversation|end( the)? conversation)$/.test(small)) {
+    if (conv) { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_context where conversation = ${conv}`); await clearTurns(conv); }
+    return send(act, { text: "Done - fresh start. What would you like to look at?" });
   }
   if (cmd === "usage") {
     const u = await usage();
@@ -723,22 +874,38 @@ async function handle(act: any) {
       await tx`update vetbuddy.bot_plan set good = false where signature = ${last.sig}`;
       await tx`delete from vetbuddy.bot_answer where plan_sig = ${last.sig}`;
     });
-    return send(act, { text: "Thanks - I've forgotten that answer. Ask again (maybe with more detail) and I'll work it out fresh." });
+    return send(act, { text: "Thanks for flagging it - I've dropped that answer. Ask again (a little more detail helps) and I'll work it out fresh." });
   }
 
   await send(act, { type: "typing" });
+  const who = String(act.from?.name ?? "").trim();
+  const said = text || "hi";
+  let route: Route;
   try {
-    const who = act.from?.name ?? "";
-    const a = await answer(text, who, conv);
+    route = await assistant(said, who, conv);
+  } catch (e) {
+    console.error("assistant", e);
+    if (e instanceof LimitError) return send(act, { text: e.message });
+    route = { route: "data", question: said, reply: "", suggestions: [] };          // AI busy -> straight to the analyst
+  }
+  if (route.route === "chat") {
+    await addTurns(conv, ["user", said], ["bot", route.reply]);
+    return send(act, { attachments: [chatCard(route.reply, route.suggestions)] });
+  }
+  try {
+    const a = await answer(route.question, who, conv);
     if (a.sig && a.cacheKey) lastAnswer.set(conv, { sig: a.sig, cacheKey: a.cacheKey });
+    await addTurns(conv, ["user", said], ["bot", [a.title, ...(a.points ?? []).slice(0, 2)].join(" ")]);
     await send(act, { attachments: [card(a)] });
   } catch (e) {
     console.error(e);
     if (e instanceof NotAQuestion) {
-      return send(act, { text: "I didn't catch a question there. Ask me about sales, e.g. **Madurai sales this month** or **top 10 items in Adyar last month**." });
+      const reply = route.reply || "I'm not sure what you'd like me to look at - a clinic, a period, doctors, items, targets? Tell me and I'll dig in.";
+      await addTurns(conv, ["user", said], ["bot", reply]);
+      return send(act, { attachments: [chatCard(reply, route.suggestions)] });
     }
     const msg = e instanceof LimitError ? e.message + " Questions asked before still work (they come from memory)."
-      : "Sorry, I couldn't answer that: " + String((e as Error).message).slice(0, 200);
+      : "Sorry, I hit a problem working that out (" + String((e as Error).message).slice(0, 160) + "). Try asking it a little differently.";
     await send(act, { text: msg });
   }
 }
@@ -763,7 +930,7 @@ Deno.serve(async (req) => {
     // answer in the background; Teams wants a quick 200
     background(handle(act));
   } else if (act.type === "conversationUpdate" && act.membersAdded?.some((m: { id: string }) => m.id === act.recipient?.id)) {
-    background(send(act, { text: "Hi! I'm the Sanchu sales bot. Mention me with a question, e.g. **@Sanchu Sales Madurai sales this month**." }));
+    background(send(act, { text: "Hi everyone! I'm **Sanchu Sales**, your AI assistant for the hospitals' numbers. Mention me and ask in plain words - how a clinic is doing, why sales moved, top doctors or items, targets - or just say hi for today's pulse." }));
   }
   return new Response(null, { status: 200 });
 });
