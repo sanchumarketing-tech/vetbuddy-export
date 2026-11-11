@@ -247,11 +247,16 @@ class LimitError extends Error {}
 type AiOut = { text: string; tokens: number; model: string };
 
 async function aiCall(step: string, system: string, user: string, maxTokens: number): Promise<AiOut> {
-  let lastErr = "", limited = 0;
+  const errs: string[] = [];
+  let limited = 0;
   const models = STEP_MODELS[step] ?? STEP_MODELS.analyze;
-  for (const model of models.map((m) => m.trim()).filter(Boolean)) {
+  const tries: [string, boolean][] = [];
+  for (const m of models.map((x) => x.trim()).filter(Boolean)) tries.push([m, true]);
+  for (const m of models.map((x) => x.trim()).filter(Boolean)) tries.push([m, false]);   // 2nd round: no JSON mode (parsed leniently)
+  for (const [model, jsonMode] of tries) {
     const body: Record<string, unknown> = {
-      model, temperature: step === "chat" ? 0.4 : 0, max_completion_tokens: maxTokens, response_format: { type: "json_object" },
+      model, temperature: step === "chat" ? 0.4 : 0, max_completion_tokens: jsonMode ? maxTokens * 2 : maxTokens * 3,
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
     };
     if (model.includes("gpt-oss")) { body.reasoning_effort = step === "plan" ? "medium" : "low"; body.include_reasoning = false; }
@@ -260,18 +265,27 @@ async function aiCall(step: string, system: string, user: string, maxTokens: num
     try {
       r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body),
         headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" } });
-    } catch (e) { lastErr = String(e); continue; }
-    if (r.status === 429) { limited++; lastErr = `${model} busy`; continue; }   // per-model limits -> next model
-    if (!r.ok) { lastErr = `${model} ${r.status}: ${(await r.text()).slice(0, 150)}`; continue; }
+    } catch (e) { errs.push(String(e).slice(0, 80)); continue; }
+    if (r.status === 429) { limited++; errs.push(`${model.split("/").pop()} busy`); continue; }   // per-model limits -> next model
+    if (!r.ok) {
+      const t = await r.text();
+      const failed = t.match(/"failed_generation"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (failed) {                                    // JSON mode rejected the output - often it is usable JSON anyway
+        try { const g = JSON.parse(`"${failed[1]}"`); if (Object.keys(parseJson(g)).length) return { text: g, tokens: 0, model }; } catch { /* next */ }
+      }
+      errs.push(`${model.split("/").pop()} ${r.status} ${(t.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? t.slice(0, 60)}`);
+      console.error("ai", step, model, r.status, t.slice(0, 300));
+      continue;
+    }
     const j = await r.json();
     const tokens = j.usage?.total_tokens ?? 0;
     await usage(tokens);
     const text = String(j.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    if (!text) { lastErr = `${model} empty answer`; continue; }
+    if (!text || (!jsonMode && !Object.keys(parseJson(text)).length)) { errs.push(`${model.split("/").pop()} no answer`); continue; }
     return { text, tokens, model };
   }
-  if (limited) throw new LimitError("All free AI models are busy right now (per-minute limit) - please ask again in a minute.");
-  throw new Error("AI unavailable: " + lastErr);
+  if (limited && limited >= tries.length / 2) throw new LimitError("All free AI models are busy right now (per-minute limit) - please ask again in a minute.");
+  throw new Error("AI unavailable: " + errs.join("; "));
 }
 // deno-lint-ignore no-explicit-any
 function parseJson(t: string): any {
@@ -751,7 +765,7 @@ LANGUAGE AND TONE (most important)
 - Always reply in simple, clear English (Indian business English), even if the person writes in Tamil or Tanglish - understand them, answer in English.
 - Use everyday business words naturally, not in every line: "on track", "behind", "ahead of", "picked up", "slowed down", "worth a look", "the gap", "pace", "run-rate", "standout", "drag", "quick pulse".
 - Never use slang that sounds forced. If unsure, use plain words.
-- Use the person's first name naturally in a greeting and fit the time of day. No "As an AI", no "feel free to ask", no lists of commands or example questions.
+- Greet ("Good afternoon ...") ONLY when the new message is itself a greeting or the conversation is new. Never greet when answering a question or a tapped suggestion - go straight to the answer. Use the first name given under "Person" (if any) only in a greeting. No "As an AI", no "feel free to ask", no lists of commands or example questions.
 - Example of the exact style:
   User: "hi"
   You: "Good afternoon Nithish. Quick pulse: division MTD is **Rs 56,82,999**, 31.6% of the Rs 1,80,00,000 target and 1.1% ahead of last month. **Adyar** is the one behind at 28.4%. Want me to look at what's holding Adyar back?"
@@ -772,6 +786,7 @@ WHAT YOU HELP WITH
 - If asked something outside this (unrelated topics, personal matters, medical advice for a specific pet), say briefly that it's not something you can help with here and steer back.
 
 ACCURACY
+- Name units exactly as the SNAPSHOT does ("CH VET ON WHEELS" is Chennai Vet on Wheels, not Chennai; "COIMBATORE" is the clinic, "CBE VET ON WHEELS" the home visits).
 - Use ONLY numbers in the SNAPSHOT below or in the person's own message, written exactly as shown (Rs with Indian commas, %). Never estimate, re-round, add up or invent names, numbers or dates.
 - If the answer needs any data the SNAPSHOT does not show, do not guess - route it to the analyst ("data").
 
@@ -782,6 +797,13 @@ ROUTING - decide for every message:
 Reply ONLY JSON: {"route":"data"|"chat","question":"","reply":"","suggestions":[]}`;
 
 type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; model?: string };
+
+// first name of a person; nothing for shared / team accounts ("Data Analyst Sanchu", "Sanchu Reports" ...)
+function firstName(who: string) {
+  const w = who.replace(/\(.*?\)/g, "").trim();
+  if (!w || /\b(sanchu|analyst|team|admin|reports?|account|marketing|sales|hospital|office|desk|support|info|hr|accounts)\b/i.test(w)) return "";
+  return w.split(/\s+/)[0].replace(/[^A-Za-z.'-]/g, "");
+}
 
 function istNow() {
   const d = new Date(Date.now() + 5.5 * 3600e3), h = d.getUTCHours();
@@ -803,7 +825,8 @@ function keepSupported(reply: string, sets: Record<string, unknown>[][]): { text
 async function assistant(text: string, who: string, conv: string): Promise<Route> {
   const [snap, hist, ctx] = await Promise.all([snapshot().catch(() => ({ text: "(snapshot unavailable)", rows: [] as SnapRow[] })), turns(conv), getCtx(conv)]);
   const history = hist.map((t) => `${t.role === "user" ? "Them" : "You"}: ${t.text}`).join("\n");
-  const user = `Now: ${istNow()}\nPerson: ${who || "a manager"}\n` +
+  const name = firstName(who);
+  const user = `Now: ${istNow()}\nPerson: ${name ? `${name} (use this first name only when greeting)` : "a shared team account - do not address anyone by name"}\n` +
     (ctx ? `Last analysed question: ${ctx.question} (${ctx.place_label}, ${ctx.p_label})${ctx.headline ? ` -> ${ctx.headline}` : ""}\n` : "") +
     `\nSNAPSHOT\n${snap.text}\n\nCONVERSATION SO FAR\n${history || "(new conversation)"}\n\nNEW MESSAGE\n${text}`;
   const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 1400);
