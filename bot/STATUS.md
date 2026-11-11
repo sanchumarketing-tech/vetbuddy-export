@@ -80,3 +80,11 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - It chats itself (greetings with a business pulse, thanks, ideas, drafting messages, snapshot answers - numbers checked,
   unsupported sentences removed) or hands ONE self-contained English question to the analyst pipeline.
 - Persona: calm expert colleague; always English (understands Tanglish). Hard-coded help / thanks / "which LLM" replies removed.
+
+## Update 11-11-2026 (16:45) — brief by default, fewer tokens (live, 74,410 chars)
+- Brief answers unless insights / why / split / list / top / compare / trend is asked (assistant sets "detail"):
+  1 query, a short answer prompt WITHOUT the table schema (much fewer tokens), no tables, no AI review (code number check only).
+- Detail answers: 2nd-AI review only when the code check finds unsupported numbers (was: always).
+- Questions from the assistant are self-contained -> the analyst no longer inherits the previous place / period.
+- If the assistant AI fails, non-data messages ("thanks") get a short reply instead of going to the analyst.
+- Card footer shortened (place · period · data date). bot_context / bot_turns / bot_answer cleared.

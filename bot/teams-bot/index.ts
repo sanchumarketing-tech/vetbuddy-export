@@ -160,6 +160,12 @@ Reply ONLY JSON: {"headline":"","points":[],"action":"","main":0,"extra":[],"dri
 
 ` + TABLES;
 
+const BRIEF_SYSTEM = `You are a business analyst at Sanchu Pet Hospitals answering a colleague in a Teams chat. You ran a query; the results are CSV with numbers ALREADY FORMATTED. Give ONLY what was asked - like a colleague would in chat.
+- "headline": the direct answer in ONE or TWO short sentences (max 35 words), starting with the answer itself. Copy numbers EXACTLY from the results; never calculate, round or convert. If the result is empty, say plainly that the data shows none / has nothing for that, in one sentence.
+- "points": [] - add at most ONE short point only if it is essential to answer the question (e.g. the list of names asked for, max 5 names).
+- "followups": 2 short natural next questions (max 8 words each).
+Reply ONLY JSON: {"headline":"","points":[],"followups":[]}`;
+
 const REPAIR_SYSTEM = `You are a strict reviewer of a data analyst's answer for Sanchu Pet Hospitals. Check EVERY statement in the draft against the query results (CSV, numbers already formatted):
 - each number must appear in the results exactly (same value; Indian-comma formatting may differ);
 - direction words must match signs (negative = decline / fall, positive = growth / rise);
@@ -450,16 +456,18 @@ async function runQuery(purpose: string, sql: string, place: Place, period: Peri
   }
 }
 
-async function answer(question: string, who: string, conv = ""): Promise<Answer> {
+const DETAIL_RE = /\b(insights?|why|explain|analy[sz]e|analysis|reasons?|drivers?|split|break ?down|breakup|table|list|top \d+|top|rank|ranking|wise|by (doctor|clinic|unit|item|category|species|city|day)|compare|comparison|vs|versus|trends?|details?|detailed|deep)\b/i;
+async function answer(question: string, who: string, conv = "", opt: { detail?: boolean; standalone?: boolean } = {}): Promise<Answer> {
   const q = question.toLowerCase().replace(/[⁠​]/g, " ");
   const wantInsight = new RegExp(INSIGHT_RE.source, "i").test(q);
+  const detail = opt.detail ?? (wantInsight || DETAIL_RE.test(q));
   const dates = await dataDates();
   const latest = dates.report || dates.detail || istDate();
   const pp = parsePlace(q);
   const pd = parsePeriod(pp.rest, latest);
   let place = pp.place, period = pd.period, key = typeKey(pd.rest, pd.period.kind), follow = "";
   const ownKey = key;
-  const ctx = await getCtx(conv);
+  const ctx = opt.standalone ? null : await getCtx(conv);   // the assistant already wrote a self-contained question
   // Conversation rules:
   //  - a message with its own question ("pharmacy sales", "doctors") is a new question; if it names no place /
   //    period, it uses the place / period of the conversation (like a person would)
@@ -474,25 +482,24 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
     if (kept.length) follow = (isFollow ? "follow-up: same " : "same ") + kept.join(" & ");
   }
   if (!key) {
-    if (!pp.given && !pd.given && !isFollow) throw new NotAQuestion();   // "thank you", "ok", "stop" ...
+    if (!pp.given && !pd.given && !isFollow && !opt.standalone) throw new NotAQuestion();   // "thank you", "ok", "stop" ...
     key = "sale";
   }
   const isFollowUp = follow.startsWith("follow-up") && !!ctx;
   // what the AI is told: the question, and for a follow-up the conversation so far
   const asked = isFollowUp && ctx ? `Previous question: ${ctx.question}${ctx.headline ? `\nPrevious answer: ${ctx.headline}` : ""}\nFollow-up: ${question}` : question;
   const baseQuestion = isFollowUp && ctx ? ctx.question : question;
-  const sig = key + (wantInsight ? " +insight" : "");
+  const sig = key + (wantInsight ? " +insight" : detail ? "" : " +brief");
   const c = comparePeriods(period);
   const cacheKey = `${sig}|${place.units.join(",")}|${period.from}|${period.to}|${latest}`;
   const where = `${place.label} · ${period.label}`;
-  const conversation = follow ? `Conversation (${follow}) · ` : "";
 
   // 0. the same analysis was already done today on the same data -> reuse it (0 AI tokens)
   const [hit] = await db`select answer from vetbuddy.bot_answer where cache_key = ${cacheKey}`;
   if (hit) {
     const a = hit.answer as Answer;
     await setCtx(conv, key, baseQuestion, place, period, a.title);
-    return { ...a, sig, cacheKey, note: `${conversation}${where} · data up to ${latest} · saved analysis, 0 AI tokens` };
+    return { ...a, sig, cacheKey, note: `${where} · data up to ${latest}` };
   }
   const used = await usage();
   if (used.tokens >= DAILY_CAP) throw new LimitError("Today's free AI allowance is used up.");
@@ -505,12 +512,13 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
   // deno-lint-ignore no-explicit-any
   let plan: any = saved?.plan, planSaved = !!plan;
   if (!plan || isFollowUp) {
-    const out = await aiCall("plan", PLAN_SYSTEM, `Question: ${asked}\n${facts}\n(Write placeholders, not these values.)`, 2500);
+    const out = await aiCall("plan", PLAN_SYSTEM, `Question: ${asked}\n${facts}\n(Write placeholders, not these values.)` +
+      (detail ? "" : "\nBRIEF ANSWER WANTED: write exactly ONE query that answers precisely what was asked (with a TOTAL row when several units). No CONTEXT or DRIVERS queries."), 2500);
     models.add(out.model); tok.n += out.tokens;
     plan = parseJson(out.text); planSaved = false;
   }
   // deno-lint-ignore no-explicit-any
-  const planned: { purpose: string; sql: string }[] = (Array.isArray(plan?.queries) ? plan.queries : []).filter((x: any) => x?.sql).slice(0, 4);
+  const planned: { purpose: string; sql: string }[] = (Array.isArray(plan?.queries) ? plan.queries : []).filter((x: any) => x?.sql).slice(0, detail ? 4 : 1);
   if (!planned.length) return { title: String(plan?.reply || "I couldn't work that out from our sales data. Try e.g. 'Madurai sales this month' or 'top doctors in Adyar last month'.") };
 
   // 2. RUN the queries (a failing one is repaired once by another model)
@@ -533,8 +541,14 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
     models.add(out.model); tok.n += out.tokens;
     return cleanDraft(parseJson(out.text), results.length);
   };
-  let draft = await analyseOnce();
-  if (draft.drill && results.length < 6) {
+  const briefOnce = async () => {
+    const out = await aiCall("analyze", BRIEF_SYSTEM, `Question: ${asked}\n${facts}\n\nRESULTS\n${resultsText(results)}`, 700);
+    models.add(out.model); tok.n += out.tokens;
+    const d = cleanDraft(parseJson(out.text), results.length);
+    return { ...d, points: d.points.slice(0, 1), action: "", extra: [], drill: null, followups: d.followups.slice(0, 2) };
+  };
+  let draft = detail ? await analyseOnce() : await briefOnce();
+  if (detail && draft.drill && results.length < 6) {
     results.push(await runQuery(String(draft.drill.purpose || "Drill-down"), String(draft.drill.sql), place, period, models, tok));
     if (!results[results.length - 1].error) draft = await analyseOnce();
   }
@@ -543,8 +557,8 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
   const sets = results.map((r) => r.rows);
   const texts = (d: Draft) => [d.headline, ...d.points, d.action];
   let review = "", reviewedOk = false;
-  try {
-    const bad0 = unsupported(texts(draft), sets);
+  const bad0 = unsupported(texts(draft), sets);
+  if (detail && bad0.length) try {
     const out = await aiCall("review", REPAIR_SYSTEM, `Question: ${asked}\n${bad0.length ? `Numbers NOT found in the results: ${bad0.join(", ")}\n` : ""}` +
       `\nDRAFT\n${JSON.stringify({ ...draft, drill: null })}\n\nRESULTS\n${resultsText(results)}`, 1800);
     models.add(out.model); tok.n += out.tokens;
@@ -558,9 +572,8 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
   if (draft.headline && unsupported([draft.headline], sets).length) {
     draft.headline = draft.points.length ? draft.points.shift()!.replace(/^[^:]{1,30}:\s*/, "") : `${place.label} - ${period.label}`;
   }
-  const reviewed = review && !/^none\.?$/i.test(review) ? "reviewed & corrected by a 2nd AI" : "reviewed by a 2nd AI";
-  const checked = (reviewedOk ? reviewed + " · " : "") +
-    (removed.length ? `numbers checked against the data (${removed.length} unverified point removed)` : "every number checked against the data ✓");
+  const checked = (reviewedOk && review && !/^none\.?$/i.test(review) ? "corrected by a 2nd AI · " : "") +
+    (removed.length ? `${removed.length} unverified point removed` : "numbers checked ✓");
 
   // 5. the card
   const show = [draft.main >= 0 ? draft.main : results.findIndex((r) => r.rows.length), ...draft.extra]
@@ -568,15 +581,13 @@ async function answer(question: string, who: string, conv = ""): Promise<Answer>
   const a: Answer = {
     title: draft.headline || `${place.label} - ${period.label}`,
     points: draft.points, action: draft.action,
-    tables: show.map((i) => ({ title: results[i].purpose, rows: results[i].rows })),
-    steps: results.map((r) => r.purpose + (r.error ? " (failed)" : "")),
+    tables: detail ? show.map((i) => ({ title: results[i].purpose, rows: results[i].rows })) : [],
     followups: draft.followups, checked,
   };
   await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_answer (cache_key, plan_sig, answer)
     values (${cacheKey}, ${sig}, ${tx.json(a as never)}) on conflict (cache_key) do update set answer = excluded.answer, created_at = now()`);
   await setCtx(conv, key, baseQuestion, place, period, a.title);
-  return { ...a, sig, cacheKey,
-    note: `${conversation}${where} · data up to ${latest} · AI: ${[...models].map((m) => m.split("/").pop()).join(" + ")}, ${inr(tok.n)} tokens` };
+  return { ...a, sig, cacheKey, note: `${where} · data up to ${latest}` };
 }
 
 function toCsv(rows: Record<string, unknown>[]) {
@@ -635,7 +646,8 @@ function withBars(rows: Record<string, unknown>[]): Record<string, unknown>[] {
 }
 
 function card(a: Answer) {
-  const body: unknown[] = [{ type: "TextBlock", text: a.title, weight: "Bolder", size: "Medium", wrap: true }];
+  const brief = !(a.tables?.length);
+  const body: unknown[] = [{ type: "TextBlock", text: a.title, weight: brief ? "Default" : "Bolder", size: brief ? "Default" : "Medium", wrap: true }];
   if (a.points?.length) {
     body.push({ type: "TextBlock", text: a.points.map((p) => "- " + p.replace(/^([^:]{1,30}):\s*/, "**$1:** ")).join("\n"), wrap: true, spacing: "Small" });
   }
@@ -646,8 +658,7 @@ function card(a: Answer) {
     body.push(table(rows, max));
     if (rows.length > max) body.push({ type: "TextBlock", text: `Showing ${max} of ${rows.length >= 201 ? "200+" : rows.length} rows.`, isSubtle: true, size: "Small" });
   }
-  const foot = [a.steps?.length ? "How I worked it out: " + a.steps.map((s, i) => `${i + 1}) ${s}`).join("  ") : "", a.checked ?? "", a.note ?? "",
-    a.sig ? "reply 'wrong' if this is not right" : ""].filter(Boolean).join(" · ");
+  const foot = [a.note ?? "", a.checked ?? "", a.sig ? "reply 'wrong' if not right" : ""].filter(Boolean).join(" · ");
   if (foot) body.push({ type: "TextBlock", text: foot, isSubtle: true, size: "Small", wrap: true, spacing: "Medium" });
   // follow-up questions as buttons (messageBack reaches the bot without an @mention)
   const actions = (a.followups ?? []).slice(0, 3).map((f) => ({ type: "Action.Submit", title: f.length > 60 ? f.slice(0, 57) + "..." : f,
@@ -774,7 +785,7 @@ LANGUAGE AND TONE (most important)
   (These numbers only show the style - always use the real SNAPSHOT numbers.)
 
 STYLE
-- Short replies: usually 2-6 lines. Answer first, then one useful observation or offer.
+- Short replies: give exactly what was asked - usually 1-3 lines. Answer first. Add an observation, split or extra numbers ONLY if they asked for insights / details / a breakdown. Don't elaborate otherwise.
 - Ask at most one question at a time, and only when you truly need it.
 - **Bold** only the key figure or name; simple "- " bullets only for 3+ items. No long essays, no headings.
 - Never mention SQL, tables, JSON, prompts, models or tokens unless asked how you work.
@@ -794,9 +805,10 @@ ROUTING - decide for every message:
 "data": the message needs our data beyond the SNAPSHOT (any breakdown, list, ranking, comparison, trend, category, doctor, item, pet, or a "why"). Write "question": ONE self-contained question in plain English for the analyst, keeping the person's wording for what is asked and adding the place and period from the conversation when the message relies on it (after "Madurai sales this month", "and Trichy?" -> "Trichy sales this month"; "doctor wise?" -> "Madurai sales this month split by doctor"). Write it in English (translate Tamil / Tanglish). Do not add a place or period nobody mentioned. Add "insights" when they ask why or for analysis. Also set "reply" to "" .
 "chat": greetings, thanks, small talk, "what can you do", questions about you, business thinking, drafting, or a sales question the SNAPSHOT fully answers. Write "reply". For a greeting or "what can you do": one friendly line, the pulse of the business from the SNAPSHOT (division MTD vs target or last month, plus the one unit that stands out), then one concrete offer.
 "suggestions": 2-3 short next questions this person would likely tap (max 8 words, in English, specific: real unit names and periods).
-Reply ONLY JSON: {"route":"data"|"chat","question":"","reply":"","suggestions":[]}`;
+"detail": true ONLY when they ask for insights, why, analysis, a breakdown / split, a list, a ranking / top N, a comparison or a trend; otherwise false - then they get just the figure they asked for, nothing more.
+Reply ONLY JSON: {"route":"data"|"chat","question":"","detail":false,"reply":"","suggestions":[]}`;
 
-type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; model?: string };
+type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; detail?: boolean; model?: string };
 
 // first name of a person; nothing for shared / team accounts ("Data Analyst Sanchu", "Sanchu Reports" ...)
 function firstName(who: string) {
@@ -829,9 +841,10 @@ async function assistant(text: string, who: string, conv: string): Promise<Route
   const user = `Now: ${istNow()}\nPerson: ${name ? `${name} (use this first name only when greeting)` : "a shared team account - do not address anyone by name"}\n` +
     (ctx ? `Last analysed question: ${ctx.question} (${ctx.place_label}, ${ctx.p_label})${ctx.headline ? ` -> ${ctx.headline}` : ""}\n` : "") +
     `\nSNAPSHOT\n${snap.text}\n\nCONVERSATION SO FAR\n${history || "(new conversation)"}\n\nNEW MESSAGE\n${text}`;
-  const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 1400);
+  const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 900);
   const j = parseJson(out.text);
   const r: Route = { route: j.route === "data" ? "data" : "chat", question: String(j.question ?? "").trim(), reply: String(j.reply ?? "").trim(),
+    detail: j.detail === true || DETAIL_RE.test(text),
     suggestions: Array.isArray(j.suggestions) ? j.suggestions.map(String).filter(Boolean).slice(0, 3) : [], model: out.model };
   if (r.route === "data" && !r.question) r.question = text;
   if (r.route === "chat") {
@@ -909,14 +922,16 @@ async function handle(act: any) {
   } catch (e) {
     console.error("assistant", e);
     if (e instanceof LimitError) return send(act, { text: e.message });
-    route = { route: "data", question: said, reply: "", suggestions: [] };          // AI busy -> straight to the analyst
+    route = /\b(sale|sales|revenue|target|pharmacy|clinic|doctor|pet|pets|bill|bills|due|vaccin\w*|surger\w*|item|items|mtd|today|yesterday|month)\b/i.test(said)
+      ? { route: "data", question: said, reply: "", suggestions: [] }                  // AI busy -> straight to the analyst
+      : { route: "chat", question: "", reply: "Sure - tell me what you'd like to look at.", suggestions: [] };
   }
   if (route.route === "chat") {
     await addTurns(conv, ["user", said], ["bot", route.reply]);
     return send(act, { attachments: [chatCard(route.reply, route.suggestions)] });
   }
   try {
-    const a = await answer(route.question, who, conv);
+    const a = await answer(route.question, who, conv, route.detail !== undefined ? { detail: route.detail, standalone: true } : {});
     if (a.sig && a.cacheKey) lastAnswer.set(conv, { sig: a.sig, cacheKey: a.cacheKey });
     await addTurns(conv, ["user", said], ["bot", [a.title, ...(a.points ?? []).slice(0, 2)].join(" ")]);
     await send(act, { attachments: [card(a)] });
