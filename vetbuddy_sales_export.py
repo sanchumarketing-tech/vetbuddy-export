@@ -19,6 +19,8 @@ Usage:
   python vetbuddy_sales_export.py --archive   night run
   python vetbuddy_sales_export.py --backfill  one time: whole master -> Supabase
   python vetbuddy_sales_export.py --backfill-pharmacy   one time: Gofrugal history -> Supabase
+  RELOAD_MONTH=2026-10 python vetbuddy_sales_export.py --reload-month
+                                             reload one finished month (VetBuddy + Gofrugal) into Supabase
 
 Settings come from environment variables (GitHub secrets/variables) or a .env file
 next to this script. Exit code 0 = success, 1 = something failed (see the log).
@@ -619,6 +621,60 @@ def archive_main() -> int:
     return 0 if ok else 1
 
 
+def reload_month_main() -> int:
+    """Reload one month (RELOAD_MONTH=YYYY-MM) from VetBuddy and Gofrugal into Supabase.
+    For bills added or edited in VetBuddy after that month was last loaded. Database only:
+    the master workbook and the CRM Upload folder are not touched (the master updater only
+    replaces the newest month)."""
+    ym = os.environ.get("RELOAD_MONTH", "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", ym)
+    if not m:
+        log.error("Set RELOAD_MONTH=YYYY-MM (e.g. 2026-10), got %r", ym)
+        return 1
+    if not (USER and PASSWORD and vetbuddy_sql.ENABLED):
+        log.error("Reload needs VETBUDDY_USER / VETBUDDY_PASS and SUPABASE_DB_URL")
+        return 1
+    y, mo = int(m.group(1)), int(m.group(2))
+    d_from = dt.date(y, mo, 1)
+    d_to = (d_from.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
+    yesterday = dt.datetime.now(IST).date() - dt.timedelta(days=1)
+    d_to = min(d_to, yesterday)
+    if d_to < d_from:
+        log.error("%s has no finished days yet", ym)
+        return 1
+    log.info("Reloading %s -> %s into the database", d_from, d_to)
+    result = {}
+
+    def export():
+        with requests.Session() as s:
+            s.headers["User-Agent"] = "Mozilla/5.0 (VetBuddy month reload)"
+            login(s)
+            data = generate_xls(s, d_from, d_to)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out = OUTPUT_DIR / f"VetBuddy_GoodsServices_{d_from}_to_{d_to}.xlsx"
+        tmp = out.with_name(out.name + ".part")
+        rows = xls_to_xlsx(data, tmp)
+        tmp.replace(out)
+        log.info("Saved %s (%d data rows)", out.name, len(rows) - 1)
+        result["rows"] = rows
+
+    if not retry("Export", export, 3, 60):
+        log.error("Export FAILED - database NOT changed")
+        return 1
+    if len(result["rows"]) < 2:
+        log.error("Report has no data rows - database NOT changed")
+        return 1
+    status = 0
+    if not retry("Database load", lambda: vetbuddy_sql.replace_month(result["rows"], (y, mo), d_from, d_to), 3, 60):
+        log.error("Database load FAILED (the old rows of %s are still there)", ym)
+        status = 1
+    if gofrugal.ENABLED:
+        if not retry("Pharmacy load", lambda: pharmacy_load(d_from, d_to), 3, 60):
+            log.error("Pharmacy load FAILED (the old pharmacy rows of %s are still there)", ym)
+            status = 1
+    return status
+
+
 def backfill_main() -> int:
     """One time: load the whole master workbook from SharePoint into Supabase."""
     if not (SP_ENABLED and SP_MASTER_PATH and vetbuddy_sql.ENABLED):
@@ -637,4 +693,6 @@ if __name__ == "__main__":
         sys.exit(archive_main())
     if "--backfill-pharmacy" in sys.argv:
         sys.exit(backfill_pharmacy_main())
+    if "--reload-month" in sys.argv:
+        sys.exit(reload_month_main())
     sys.exit(backfill_main() if "--backfill" in sys.argv else main())
