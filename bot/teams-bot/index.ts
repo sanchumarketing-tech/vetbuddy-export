@@ -77,7 +77,7 @@ function parsePlace(q: string): { place: Place; rest: string; given: boolean } {
 // ---------------------------------------------------------------------------
 // Periods (relative to the latest data date)
 // ---------------------------------------------------------------------------
-type Period = { from: string; to: string; kind: "mtd" | "period"; label: string };
+type Period = { from: string; to: string; kind: "mtd" | "period"; label: string; cmpFrom?: string; cmpTo?: string; cmpLabel?: string };
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const day = (s: string) => new Date(s + "T00:00:00Z");
@@ -145,9 +145,9 @@ If it cannot be answered from this data: {"understanding":"...","queries":[],"re
 
 const ANALYZE_SYSTEM = `You are the senior business analyst of Sanchu Pet Hospitals, replying to a manager in a Teams chat. You ran the queries below; the results are CSV with numbers ALREADY FORMATTED (Indian commas, % values). Write a sharp, correct answer.
 OUTPUT
-- "headline": the direct answer in ONE sentence (max 25 words), starting with the answer itself, warm and conversational like a cheerful colleague (key figure in **bold**, at most one fitting emoji), e.g. "Division sales are Rs 56,82,999 for 1-10 Nov, up 1.1% on the same days last month." No "Here is" / "Based on the data".
+- "headline": the direct answer in ONE sentence (max 25 words), starting with the answer itself, professional and precise (key figure in **bold**, no emojis; always name the exact date / period and the comparison used), e.g. "Division sales are Rs 56,82,999 for 1-10 Nov, up 1.1% on the same days last month." No "Here is" / "Based on the data".
 - "points": 3 to 5 bullets, each "Label: sentence" with a 1-3 word label, e.g. "Biggest driver: Anna Nagar brought Rs 11,08,705 (19.5% of sales).". Cover: what drives the number, the comparison (growth / vs target), the strongest and the weakest contributor, and anything unusual. No repetition of the headline, no generic advice.
-- "action": ONE short practical next step the manager could take, grounded in these results (may be "").
+- "action": ONE short practical next step grounded in these results - ONLY when the manager asked for insights / suggestions, otherwise "".
 - "main": 0-based index of the result that best answers the question (shown first); "extra": up to 2 more result indexes worth showing ([] if none).
 - "drill": ONE more query {"purpose":"...","sql":"..."} only if a big change in the results is still unexplained, else null (same placeholders and rules).
 - "followups": 3 short follow-up questions the manager is likely to ask next (max 10 words each).
@@ -160,17 +160,17 @@ Reply ONLY JSON: {"headline":"","points":[],"action":"","main":0,"extra":[],"dri
 
 ` + TABLES;
 
-const BRIEF_SYSTEM = `You are "Sanchu Sales", a cheerful, sharp colleague at Sanchu Pet Hospitals, answering a teammate in a Teams chat. You ran a query; the results are CSV with numbers ALREADY FORMATTED. Reply the way a friendly colleague texts back - warm, upbeat, clear - giving exactly what was asked.
-HOW TO WRITE "headline" (1-2 short sentences, max 40 words)
-- Start with the answer in plain words, with the key figure in **bold**: money as **Rs 98,596**, units in Title Case (Anna Nagar, CH Vet on Wheels), dates like "Sun, 2 Nov" or "1-10 Nov".
-- Sound human and positive: e.g. "Anna Nagar brought in **Rs 98,596** on Sun, 2 Nov 👍" / "Nice one - Adyar crossed **Rs 7,45,718** this month so far 🎉" / "Quiet day for Madurai VOW - **Rs 5,059** so far this month."
-- End with ONE short, specific, inviting question that offers the natural next step, e.g. "Want me to compare it with the previous Sunday?" / "Shall I show what drove it?"
-- At most one emoji, only where it fits the mood (good result 🎉👍📈, weak result 📉 or none). Never robotic phrases like "sales amount for", "Here is", "Based on the data", "The total is".
-- Never add extra numbers, splits or comparisons they did not ask for.
-- If the result is empty, say so kindly in one sentence and offer one useful alternative.
-ACCURACY: copy numbers EXACTLY from the results (only add "Rs " and Indian commas as shown); never calculate, round or convert.
-"points": [] (only if they asked for a few names: one point listing at most 5).
-"followups": 2 short buttons (max 7 words each), natural and specific, e.g. "Compare with last Sunday", "Anna Nagar this month so far".
+const BRIEF_SYSTEM = `You are "Sanchu Sales", a professional business analyst at Sanchu Pet Hospitals, answering a colleague in a Teams chat. You ran a query that answers the question; the results are CSV with numbers ALREADY FORMATTED. Answer exactly what was asked - clearly, precisely and courteously.
+"headline" (1-2 sentences, max 40 words):
+- State the answer directly with the key figure in **bold**: money as **Rs 98,596**; units in Title Case (Anna Nagar, CH Vet on Wheels); dates as "Mon, 10 Nov" / "1-10 Nov". Always name the unit(s) and the exact date / period the figure is for, as given in "Period" and "Comparison".
+- If a comparison was asked, give both figures and the change, all copied from the results.
+- You may end with ONE short professional offer of the next step (e.g. "Would you like the clinic-wise split?").
+- No emojis, no slang, no "Here is", "Based on the data", "sales amount for".
+- Never add numbers, splits or comparisons that were not asked for.
+- If the result is empty, say so plainly in one sentence.
+ACCURACY: copy numbers EXACTLY from the results; never calculate, round or convert.
+"points": [] (only if a short list of names was asked: one point, at most 5 names).
+"followups": 2 short buttons (max 7 words each), specific next questions.
 Reply ONLY JSON: {"headline":"","points":[],"followups":[]}`;
 
 const REPAIR_SYSTEM = `You are a strict reviewer of a data analyst's answer for Sanchu Pet Hospitals. Check EVERY statement in the draft against the query results (CSV, numbers already formatted):
@@ -259,7 +259,8 @@ const STEP_MODELS: Record<string, string[]> = {
 class LimitError extends Error {}
 type AiOut = { text: string; tokens: number; model: string };
 
-async function aiCall(step: string, system: string, user: string, maxTokens: number): Promise<AiOut> {
+async function aiCall(step: string, system0: string, user: string, maxTokens: number): Promise<AiOut> {
+  const system = step === "fix" || step === "plan" ? system0 : await withRules(system0);   // rules govern what is SAID
   const errs: string[] = [];
   let limited = 0;
   const models = STEP_MODELS[step] ?? STEP_MODELS.analyze;
@@ -343,6 +344,24 @@ function placeless(t: string, needPeriod = false): string {
 class NotAQuestion extends Error {}
 
 // ---------------------------------------------------------------------------
+// HOUSE RULES ("negative prompts"): table vetbuddy.bot_rules (SQL 14), managed from Teams with
+//   "rules" | "add rule: never ..." | "remove rule 3" - added to every AI step, they override everything else
+// ---------------------------------------------------------------------------
+let rulesCache: { at: number; list: { id: number; rule: string }[] } | null = null;
+async function rules(): Promise<{ id: number; rule: string }[]> {
+  if (rulesCache && Date.now() - rulesCache.at < 60e3) return rulesCache.list;
+  try {
+    const r = await db`select id, rule from vetbuddy.bot_rules where active order by id`;
+    rulesCache = { at: Date.now(), list: r as unknown as { id: number; rule: string }[] };
+  } catch { rulesCache = { at: Date.now(), list: [] }; }
+  return rulesCache.list;
+}
+async function withRules(system: string) {
+  const list = await rules();
+  return list.length ? system + "\n\nHOUSE RULES - must ALWAYS be followed; they override everything above:\n" + list.map((r) => "- " + r.rule).join("\n") : system;
+}
+
+// ---------------------------------------------------------------------------
 // placeholders -> real values (units, the period, the previous period, the same days last month)
 // ---------------------------------------------------------------------------
 function shiftMonth(d: string, by: number): string {
@@ -359,6 +378,7 @@ function comparePeriods(pe: Period) {
   const fullMonth = f.getUTCDate() === 1 && new Date(t.getTime() + 864e5).getUTCDate() === 1;
   const lmFrom = shiftMonth(pe.from, -1);
   const lmTo = fullMonth ? ymd(new Date(Date.UTC(f.getUTCFullYear(), f.getUTCMonth(), 0))) : shiftMonth(pe.to, -1);
+  if (pe.cmpFrom && pe.cmpTo) return { prevFrom: pe.cmpFrom, prevTo: pe.cmpTo, lmFrom, lmTo };   // the comparison the person asked for
   return { prevFrom: ymd(prevFrom), prevTo: ymd(prevTo), lmFrom, lmTo };
 }
 const sqlStr = (s: string) => "'" + s.replace(/'/g, "''") + "'";
@@ -464,7 +484,7 @@ async function runQuery(purpose: string, sql: string, place: Place, period: Peri
 }
 
 const DETAIL_RE = /\b(insights?|why|explain|analy[sz]e|analysis|reasons?|drivers?|split|break ?down|breakup|table|list|top \d+|top|rank|ranking|wise|by (doctor|clinic|unit|item|category|species|city|day)|compare|comparison|vs|versus|trends?|details?|detailed|deep)\b/i;
-async function answer(question: string, who: string, conv = "", opt: { detail?: boolean; standalone?: boolean } = {}): Promise<Answer> {
+async function answer(question: string, who: string, conv = "", opt: { detail?: boolean; standalone?: boolean; spec?: Spec | null } = {}): Promise<Answer> {
   const q = question.toLowerCase().replace(/[⁠​]/g, " ");
   const wantInsight = new RegExp(INSIGHT_RE.source, "i").test(q);
   const detail = opt.detail ?? (wantInsight || DETAIL_RE.test(q));
@@ -474,7 +494,7 @@ async function answer(question: string, who: string, conv = "", opt: { detail?: 
   const pd = parsePeriod(pp.rest, latest);
   let place = pp.place, period = pd.period, key = typeKey(pd.rest, pd.period.kind), follow = "";
   const ownKey = key;
-  const ctx = opt.standalone ? null : await getCtx(conv);   // the assistant already wrote a self-contained question
+  const ctx = opt.standalone || opt.spec ? null : await getCtx(conv);   // the assistant already wrote a self-contained question
   // Conversation rules:
   //  - a message with its own question ("pharmacy sales", "doctors") is a new question; if it names no place /
   //    period, it uses the place / period of the conversation (like a person would)
@@ -492,14 +512,21 @@ async function answer(question: string, who: string, conv = "", opt: { detail?: 
     if (!pp.given && !pd.given && !isFollow && !opt.standalone) throw new NotAQuestion();   // "thank you", "ok", "stop" ...
     key = "sale";
   }
+  if (opt.spec) {                                  // the assistant understood units, period and comparison - use them as they are
+    const sp = opt.spec;
+    place = { units: sp.units, label: placeLabel(sp.units) };
+    period = { from: sp.from, to: sp.to, kind: "period", label: rangeLabel(sp.from, sp.to),
+               ...(sp.cmpFrom ? { cmpFrom: sp.cmpFrom, cmpTo: sp.cmpTo, cmpLabel: `${sp.cmpLabel} (${rangeLabel(sp.cmpFrom, sp.cmpTo!)})` } : {}) };
+    if (sp.cmpFrom && !/compare|vs/.test(key)) key = key + " compare";
+  }
   const isFollowUp = follow.startsWith("follow-up") && !!ctx;
   // what the AI is told: the question, and for a follow-up the conversation so far
   const asked = isFollowUp && ctx ? `Previous question: ${ctx.question}${ctx.headline ? `\nPrevious answer: ${ctx.headline}` : ""}\nFollow-up: ${question}` : question;
   const baseQuestion = isFollowUp && ctx ? ctx.question : question;
   const sig = key + (wantInsight ? " +insight" : detail ? "" : " +brief");
   const c = comparePeriods(period);
-  const cacheKey = `${sig}|${place.units.join(",")}|${period.from}|${period.to}|${latest}`;
-  const where = `${place.label} · ${period.label}`;
+  const cacheKey = `${sig}|${place.units.join(",")}|${period.from}|${period.to}|${period.cmpFrom ?? ""}|${latest}`;
+  const where = `${place.label} · ${period.label}${period.cmpLabel ? ` vs ${period.cmpLabel}` : ""}`;
 
   // 0. the same analysis was already done today on the same data -> reuse it (0 AI tokens)
   const [hit] = await db`select answer from vetbuddy.bot_answer where cache_key = ${cacheKey}`;
@@ -513,7 +540,9 @@ async function answer(question: string, who: string, conv = "", opt: { detail?: 
   const models = new Set<string>(), tok = { n: 0 };
   const wd = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
   const facts = `Units asked: ${place.units.join(", ")} (${place.label}). Period: ${period.label}, ${period.from} (${wd(period.from)}) to ${period.to} (${wd(period.to)}). ` +
-    `Previous period: ${c.prevFrom} to ${c.prevTo}. Same days last month: ${c.lmFrom} to ${c.lmTo}. Data available up to ${latest}.`;
+    (period.cmpFrom ? `COMPARISON ASKED: ${period.cmpLabel}, ${c.prevFrom} to ${c.prevTo} - use the {{PREV_FROM}} / {{PREV_TO}} placeholders for it and compare ONLY with this. `
+      : `Previous period: ${c.prevFrom} to ${c.prevTo}. `) +
+    `Same days last month: ${c.lmFrom} to ${c.lmTo}. Data available up to ${latest}. The period is exactly ${period.from} to ${period.to} - never answer for another period.`;
 
   // 1. PLAN: which queries answer this (saved per question type and re-used for any place / period)
   const [saved] = await db`select plan from vetbuddy.bot_plan where good and signature = ${sig}`;
@@ -576,7 +605,7 @@ async function answer(question: string, who: string, conv = "", opt: { detail?: 
   } catch { /* reviewer busy: the number check below still applies */ }
   const removed = draft.points.filter((p) => unsupported([p], sets).length);
   draft.points = draft.points.filter((p) => !removed.includes(p));
-  if (draft.action && unsupported([draft.action], sets).length) draft.action = "";
+  if (draft.action && (unsupported([draft.action], sets).length || !wantInsight)) draft.action = "";
   if (draft.headline && unsupported([draft.headline], sets).length) {
     draft.headline = draft.points.length ? draft.points.shift()!.replace(/^[^:]{1,30}:\s*/, "") : `${place.label} - ${period.label}`;
   }
@@ -618,6 +647,7 @@ function fmt(col: string, v: unknown): string {
     if (/date|year|month_no|^id$/i.test(col)) return s;
     return inr(n, Math.abs(n) < 100 && !Number.isInteger(n) ? 1 : 0);
   }
+  if (ALL_UNITS.includes(s.toUpperCase()) && s === s.toUpperCase()) return titleUnit(s);
   return s.length > 60 ? s.slice(0, 57) + "..." : s;
 }
 
@@ -661,7 +691,7 @@ function card(a: Answer) {
   }
   if (a.action) body.push({ type: "TextBlock", text: "**What to do:** " + a.action, wrap: true, spacing: "Small", color: "Accent" });
   for (const [k, t] of (a.tables ?? []).entries()) {
-    const rows = k === 0 ? withBars(t.rows) : t.rows, max = k ? 15 : 20;
+    const rows = t.rows, max = k ? 15 : 20;
     body.push({ type: "TextBlock", text: t.title, weight: "Bolder", spacing: "Large", wrap: true });
     body.push(table(rows, max));
     if (rows.length > max) body.push({ type: "TextBlock", text: `Showing ${max} of ${rows.length >= 201 ? "200+" : rows.length} rows.`, isSubtle: true, size: "Small" });
@@ -780,20 +810,18 @@ async function clearTurns(conv: string) {
 const ASSISTANT_SYSTEM = `You are "Sanchu Sales", the assistant inside the Sanchu Pet Hospitals management Teams chat. You help the team understand and act on the hospitals' business - veterinary clinics, pharmacy and Vet on Wheels home visits in Chennai, Coimbatore, Madurai and Trichy.
 
 LANGUAGE AND TONE (most important)
-- Talk like a cheerful, sharp colleague on the business team: warm, upbeat, encouraging and to the point - the teammate everyone likes asking. Never a menu, never robotic, never stiff.
-- Make it interactive: react naturally ("Nice!", "Good question", "Sure thing"), then answer, then end with ONE short inviting question offering the natural next step.
-- Emojis: at most one per reply, only where it fits the mood (🎉 👍 📈 📉 🙌). Celebrate good numbers; be kind and constructive about weak ones.
+- Talk like a professional, courteous business analyst on the management team: clear, precise, confident and friendly - never casual, never robotic, never a menu.
+- Be interactive the professional way: answer first, then (only when useful) ONE short offer of the natural next step, e.g. "Would you like the clinic-wise split?".
+- No emojis, no slang, no exclamation marks except in a greeting.
 - Always reply in simple, clear English (Indian business English), even if the person writes in Tamil or Tanglish - understand them, answer in English.
 - Use everyday business words naturally, not in every line: "on track", "behind", "ahead of", "picked up", "slowed down", "worth a look", "the gap", "pace", "run-rate", "standout", "drag", "quick pulse".
 - Never use slang that sounds forced. If unsure, use plain words.
 - Greet ("Good afternoon ...") ONLY when the new message is itself a greeting or the conversation is new. Never greet when answering a question or a tapped suggestion - go straight to the answer. Use the first name given under "Person" (if any) only in a greeting. No "As an AI", no "feel free to ask", no lists of commands or example questions.
 - Example of the exact style:
   User: "hi"
-  You: "Good afternoon Nithish! 👋 Quick pulse: we're at **Rs 56,82,999** for the month so far - 31.6% of target and a little ahead of last month. **Adyar** needs a push at 28.4%. Want me to see what's holding it back?"
+  You: "Good afternoon Nithish. Month to date, the division is at **Rs 56,82,999** - 31.6% of target and 1.1% ahead of the same days last month. Adyar is the furthest behind at 28.4%. Would you like me to look into Adyar?"
   User: "thanks"
-  You: "Anytime! 🙌 Shout if you want anything else checked."
-  User: "can you write a message to the team about adyar"
-  You: "Sure thing - here's one you can paste: ..."
+  You: "You're welcome. Let me know if you need anything else."
   (These numbers only show the style - always use the real SNAPSHOT numbers.)
 
 STYLE
@@ -817,10 +845,47 @@ ROUTING - decide for every message:
 "data": the message needs our data beyond the SNAPSHOT (any breakdown, list, ranking, comparison, trend, category, doctor, item, pet, or a "why"). Write "question": ONE self-contained question in plain English for the analyst, keeping the person's wording for what is asked and adding the place and period from the conversation when the message relies on it (after "Madurai sales this month", "and Trichy?" -> "Trichy sales this month"; "doctor wise?" -> "Madurai sales this month split by doctor"). Write it in English (translate Tamil / Tanglish). Do not add a place or period nobody mentioned. Add "insights" when they ask why or for analysis. Also set "reply" to "" .
 "chat": greetings, thanks, small talk, "what can you do", questions about you, business thinking, drafting, or a sales question the SNAPSHOT fully answers. Write "reply". For a greeting or "what can you do": one friendly line, the pulse of the business from the SNAPSHOT (division MTD vs target or last month, plus the one unit that stands out), then one concrete offer.
 "suggestions": 2-3 short next questions this person would likely tap (max 8 words, in English, specific: real unit names and periods).
+For "data" ALSO fill (this is how the question is understood - be exact):
+  "units": the exact unit names from UNITS that the question is about ([] = all units / the whole division). A city means its clinic(s) + its Vet on Wheels unless they say clinic / VOW only.
+  "from","to": the period asked (YYYY-MM-DD). "yesterday" = the day before today; "today" = today (data may not be loaded yet); "this month"/"MTD" = 1st of this month to the latest data day; "last week" ALONE = the previous Monday-Sunday; a single date = that day. Never go beyond the latest data day.
+  "compare_from","compare_to","compare_label": ONLY when a comparison is asked, the period to compare with: "yesterday vs last week" = yesterday vs the SAME weekday one week earlier (compare_label "same day last week"); "vs last month" = the same dates last month; "vs previous day" = the day before. Else "".
+  Example (today 2026-11-11, Wed): "compare yesterday vs last week" -> from 2026-11-10, to 2026-11-10, compare_from 2026-11-03, compare_to 2026-11-03, compare_label "same day last week".
 "detail": true ONLY when they ask for insights, why, analysis, a breakdown / split, a list, a ranking / top N, a comparison or a trend; otherwise false - then they get just the figure they asked for, nothing more.
-Reply ONLY JSON: {"route":"data"|"chat","question":"","detail":false,"reply":"","suggestions":[]}`;
+Reply ONLY JSON: {"route":"data"|"chat","question":"","units":[],"from":"","to":"","compare_from":"","compare_to":"","compare_label":"","detail":false,"reply":"","suggestions":[]}`;
 
-type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; detail?: boolean; model?: string };
+type Spec = { units: string[]; from: string; to: string; cmpFrom?: string; cmpTo?: string; cmpLabel?: string };
+type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; detail?: boolean; spec?: Spec | null; model?: string };
+
+// the assistant's understanding of the question -> checked values (or null: the question is parsed by rules)
+// deno-lint-ignore no-explicit-any
+function toSpec(j: any, latest: string): Spec | null {
+  const ok = (d: unknown) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d));
+  if (!ok(j.from) || !ok(j.to)) return null;
+  let from = String(j.from), to = String(j.to);
+  if (to > latest) to = latest;
+  if (from > to) from = to;
+  const units = Array.isArray(j.units) ? j.units.map((u: unknown) => String(u).toUpperCase().trim()).filter((u: string) => ALL_UNITS.includes(u)) : [];
+  const sp: Spec = { units: units.length ? units : [...ALL_UNITS], from, to };
+  if (ok(j.compare_from) && ok(j.compare_to) && String(j.compare_from) <= String(j.compare_to) && String(j.compare_to) < from) {
+    sp.cmpFrom = String(j.compare_from); sp.cmpTo = String(j.compare_to); sp.cmpLabel = String(j.compare_label || "comparison period").slice(0, 40);
+  }
+  return sp;
+}
+const titleUnit = (u: string) => u.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\b(Ch|Cbe|Vow)\b/g, (m) => m.toUpperCase()).replace(/\bOn\b/g, "on").replace(/\bNon Clinical\b/g, "Non-Clinical");
+function placeLabel(units: string[]) {
+  if (units.length >= ALL_UNITS.length) return "Division (all units)";
+  for (const c of CITIES) {
+    const all = [...c.clinic, ...c.vow];
+    if (units.length === all.length && all.every((u) => units.includes(u))) return c.name;
+  }
+  return units.length <= 3 ? units.map(titleUnit).join(", ") : `${units.length} units`;
+}
+function rangeLabel(f: string, t: string) {
+  const w = (d: string) => day(d).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
+  if (f === t) return `${w(f)}, ${nice(day(f))}`;
+  const a = day(f), b = day(t);
+  return a.getUTCMonth() === b.getUTCMonth() ? `${a.getUTCDate()}-${nice(b)}` : `${nice(a)} - ${nice(b)}`;
+}
 
 // first name of a person; nothing for shared / team accounts ("Data Analyst Sanchu", "Sanchu Reports" ...)
 function firstName(who: string) {
@@ -850,13 +915,15 @@ async function assistant(text: string, who: string, conv: string): Promise<Route
   const [snap, hist, ctx] = await Promise.all([snapshot().catch(() => ({ text: "(snapshot unavailable)", rows: [] as SnapRow[] })), turns(conv), getCtx(conv)]);
   const history = hist.map((t) => `${t.role === "user" ? "Them" : "You"}: ${t.text}`).join("\n");
   const name = firstName(who);
-  const user = `Now: ${istNow()}\nPerson: ${name ? `${name} (use this first name only when greeting)` : "a shared team account - do not address anyone by name"}\n` +
+  const dd = await dataDates().catch(() => ({ report: "", detail: "" }));
+  const latest = dd.report || dd.detail || istDate();
+  const user = `Now: ${istNow()}\nLatest data day loaded: ${latest}\nUNITS: ${ALL_UNITS.join(" | ")}\nPerson: ${name ? `${name} (use this first name only when greeting)` : "a shared team account - do not address anyone by name"}\n` +
     (ctx ? `Last analysed question: ${ctx.question} (${ctx.place_label}, ${ctx.p_label})${ctx.headline ? ` -> ${ctx.headline}` : ""}\n` : "") +
     `\nSNAPSHOT\n${snap.text}\n\nCONVERSATION SO FAR\n${history || "(new conversation)"}\n\nNEW MESSAGE\n${text}`;
   const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 900);
   const j = parseJson(out.text);
   const r: Route = { route: j.route === "data" ? "data" : "chat", question: String(j.question ?? "").trim(), reply: String(j.reply ?? "").trim(),
-    detail: j.detail === true || DETAIL_RE.test(text),
+    detail: j.detail === true || DETAIL_RE.test(text), spec: j.route === "data" ? toSpec(j, latest) : null,
     suggestions: Array.isArray(j.suggestions) ? j.suggestions.map(String).filter(Boolean).slice(0, 3) : [], model: out.model };
   if (r.route === "data" && !r.question) r.question = text;
   if (r.route === "chat") {
@@ -910,6 +977,27 @@ async function handle(act: any) {
     if (conv) { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_context where conversation = ${conv}`); await clearTurns(conv); }
     return send(act, { text: "Done - fresh start. What would you like to look at?" });
   }
+  if (/^(rules|show rules|list rules|house rules)$/.test(small)) {
+    const list = await rules();
+    return send(act, { text: list.length ? "**House rules** (the bot must always follow these):\n\n" + list.map((r, i) => `${i + 1}. ${r.rule}`).join("\n\n") +
+      "\n\nAdd one with **add rule: never ...**, remove one with **remove rule 2**." : "No house rules yet. Add one with **add rule: never ...**" });
+  }
+  const addRule = text.match(/^\s*(?:add\s+)?rule\s*[:\-]\s*(.{5,300})$/i);
+  if (addRule) {
+    await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_rules (rule, created_by) values (${addRule[1].trim()}, ${String(act.from?.name ?? "")})`);
+    rulesCache = null;
+    await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_answer`);          // saved answers were written under the old rules
+    return send(act, { text: `Rule added: "${addRule[1].trim()}". I'll follow it from now on. Type **rules** to see all.` });
+  }
+  const delRule = small.match(/^(?:remove|delete|drop)\s+rule\s+(\d+)$/);
+  if (delRule) {
+    const list = await rules(), r = list[Number(delRule[1]) - 1];
+    if (!r) return send(act, { text: `There is no rule ${delRule[1]}. Type **rules** to see the list.` });
+    await db.begin("read write", (tx) => tx`update vetbuddy.bot_rules set active = false where id = ${r.id}`);
+    rulesCache = null;
+    await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_answer`);
+    return send(act, { text: `Removed rule ${delRule[1]}: "${r.rule}".` });
+  }
   if (cmd === "usage") {
     const u = await usage();
     const [m] = await db`select count(*)::int as n, coalesce(sum(uses),0)::int as uses from vetbuddy.bot_plan where good`;
@@ -943,7 +1031,7 @@ async function handle(act: any) {
     return send(act, { attachments: [chatCard(route.reply, route.suggestions)] });
   }
   try {
-    const a = await answer(route.question, who, conv, route.detail !== undefined ? { detail: route.detail, standalone: true } : {});
+    const a = await answer(route.question, who, conv, route.detail !== undefined ? { detail: route.detail, standalone: true, spec: route.spec } : {});
     if (a.sig && a.cacheKey) lastAnswer.set(conv, { sig: a.sig, cacheKey: a.cacheKey });
     await addTurns(conv, ["user", said], ["bot", [a.title, ...(a.points ?? []).slice(0, 2)].join(" ")]);
     await send(act, { attachments: [card(a)] });

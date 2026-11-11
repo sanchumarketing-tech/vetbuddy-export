@@ -88,3 +88,12 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - Questions from the assistant are self-contained -> the analyst no longer inherits the previous place / period.
 - If the assistant AI fails, non-data messages ("thanks") get a short reply instead of going to the analyst.
 - Card footer shortened (place · period · data date). bot_context / bot_turns / bot_answer cleared.
+
+## Update 11-11-2026 (17:20) — understands the question, house rules, professional tone (live, 82,827 chars)
+- The assistant now writes a structured understanding of every data question: units, from/to, and the comparison
+  period asked (e.g. "yesterday vs last week" = 10 Nov vs 3 Nov). The analyst uses it as-is (no regex guessing).
+  Plan prompt: "COMPARISON ASKED ... use {{PREV_FROM}}/{{PREV_TO}}; never answer for another period".
+- House rules ("negative prompts"), sql/14_bot_rules.sql: table vetbuddy.bot_rules, 8 starting rules; added to every
+  answer-writing AI step. Teams: "rules", "add rule: never ...", "remove rule 2".
+- Professional tone (no emojis), unit names in Title Case, no block-chart column, "What to do" only for insights.
+- bot_plan / bot_answer / bot_context / bot_turns cleared.
