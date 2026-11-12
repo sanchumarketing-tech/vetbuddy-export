@@ -112,3 +112,7 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - House rules kept (bot_rules). bot_plan / bot_answer / bot_context no longer used.
 - sql/15_bot_log.sql: vetbuddy.bot_log - every question with tools, models, tokens, ms, errors, "wrong" feedback.
   Teams "usage" shows tokens + questions / avg reply time / errors in the last 24 h.
+
+## v3.1 - 12-11-2026 12:05 (live, 62,212 chars)
+- Per-minute AI limits: on a 429 the bot tries every model, then waits the seconds Groq asks for and retries (deadline ~2 min). Daily limits skip the model.
+- Fewer tokens per call: gpt-oss reasoning low, shorter run_sql schema, max 26 rows per tool result, parallel tool calls encouraged, max 5 rounds.

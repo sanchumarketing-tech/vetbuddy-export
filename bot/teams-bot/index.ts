@@ -282,14 +282,10 @@ async function getCustomers(a: Row, latest: string): Promise<Omit<ToolResult, "i
 }
 
 // run_sql: the agent's own read-only query for anything the other tools don't cover
-const SCHEMA = `PostgreSQL, schema vetbuddy (always write vetbuddy.<name>). Money in Rs.
-sheet_daily(sale_date,unit,total,vetbuddy,gofrugal) official daily sales per unit (vetbuddy = clinic, gofrugal = pharmacy).
-sheet_kpi(month,unit,as_of,days_done,days_left,mtd,last_month_same_days,growth_vs_last_month,month_estimate,target,estimate_vs_target,balance_to_target,required_per_day,ads,target_per_day,vetbuddy_mtd,gofrugal_mtd) month KPIs (fractions, 0.12 = 12%; unit 'TOTAL' = division).
-sheet_targets(month,unit,target).
-v_all_sales(sale_date,source 'VetBuddy'|'Pharmacy',bill_no,clinic,item_name,plan_category,plan_subcategory,species,qty,amount,is_vow,sales_unit,doctor) every bill line.
-v_vetbuddy_pbi_bot clinic lines with pet analytics: sale_date,invoice_no,item_name,plan_category,plan_subcategory,amount,sales_unit,doctor,species,breed,pet_key,owner_key (anonymous ids),pet_category ('Puppy','Adult','Aged'),pet_category_split ('New Pets','With in 1 Months'...'More than 18 Months'),first_visit_date,last_visit_date,days_last_visited,client_visit_count,last_vaccination_visit,vaccination_status,no_of_days_still_visit_vaccination,last_bathing_visit,bathing_status,last_haircut_visit,haircut_status,callback_date_bathing,callback_date_haircut,services_due,total_client_revenue,is_night_service.
-Units (unit / sales_unit): ${ALL_UNITS.join(", ")}. Categories: surgery plan_subcategory='Surgery'; vaccination plan_category ILIKE 'Vaccination%'; lab ILIKE 'Laboratory%'; diagnostics ILIKE 'Diagnostics%'; grooming ILIKE 'Spa and Saloon%'; consultation plan_subcategory IN ('Consultation','OPD'); boarding ILIKE 'BOARDING%'; dog species='Canine', cat 'Feline'.
-Rules: one SELECT/WITH, no semicolon; compute every derived number (sums, growth %, shares, averages) in SQL with ROUND; readable aliases; ORDER BY + LIMIT 25.`;
+const SCHEMA = `Schema vetbuddy. sheet_daily(sale_date,unit,total,vetbuddy,gofrugal); sheet_kpi(month,unit,mtd,target,month_estimate,required_per_day,...; unit 'TOTAL');
+v_all_sales(sale_date,source 'VetBuddy'|'Pharmacy',bill_no,item_name,plan_category,plan_subcategory,species,qty,amount,sales_unit,doctor);
+v_vetbuddy_pbi_bot(sale_date,invoice_no,item_name,plan_category,amount,sales_unit,doctor,species,breed,pet_key,owner_key,pet_category,pet_category_split,first_visit_date,last_visit_date,last_vaccination_visit,vaccination_status,bathing_status,haircut_status,services_due,is_night_service).
+Vaccination plan_category ILIKE 'Vaccination%'; surgery plan_subcategory='Surgery'. One SELECT, no semicolon, compute derived numbers in SQL, LIMIT 25.`;
 async function runSqlTool(a: Row): Promise<Omit<ToolResult, "id">> {
   const clean = String(a.sql ?? "").trim().replace(/;+\s*$/, "");
   if (!/^(select|with)\b/i.test(clean) || clean.includes(";")) throw new ToolInputError("Only one SELECT (or WITH) query, without semicolons.");
@@ -357,7 +353,7 @@ function forModel(t: ToolResult) {
   if (t.error) return `${t.id} ERROR: ${t.error}`;
   if (!t.rows.length) return `${t.id} "${t.title}": no rows. ${t.info}`;
   const cols = Object.keys(t.rows[0]);
-  return `${t.id} "${t.title}"\n${t.info}\n${cols.join(",")}\n` + t.rows.slice(0, 40).map((r) => cols.map((c) => fmtCell(c, r[c])).join(",")).join("\n");
+  return `${t.id} "${t.title}"\n${t.info}\n${cols.join(",")}\n` + t.rows.slice(0, 26).map((r) => cols.map((c) => fmtCell(c, r[c])).join(",")).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -408,36 +404,65 @@ function stripUnsupported(text: string, pool: number[]) {
 // deno-lint-ignore no-explicit-any
 type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string; name?: string };
 
-async function chat(messages: Msg[], useTools: boolean, startAt: number, maxTokens = 1600): Promise<{ msg: Msg; tokens: number; model: string; index: number }> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// seconds Groq asks us to wait after a per-minute limit ("Please try again in 7.4s" / retry-after header)
+function waitSecs(r: Response, t: string): number {
+  const h = Number(r.headers.get("retry-after"));
+  const m = t.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+  return m ? Number(m[1] ?? 0) * 60 + Number(m[2]) : isFinite(h) && h > 0 ? h : 60;
+}
+
+async function chat(messages: Msg[], useTools: boolean, startAt: number, maxTokens = 1200, deadline = Date.now() + 90_000):
+  Promise<{ msg: Msg; tokens: number; model: string; index: number }> {
   const errs: string[] = [];
   let limited = 0;
-  for (let i = startAt; i < AGENT_MODELS.length; i++) {
+  const order = AGENT_MODELS.map((_m, k) => (startAt + k) % AGENT_MODELS.length);   // current model first, then the others
+  const waits: { i: number; at: number }[] = [];
+  const attempt = async (i: number): Promise<{ msg: Msg; tokens: number; model: string; index: number } | number | null> => {
     const model = AGENT_MODELS[i];
     const body: Row = { model, messages, temperature: 0.3, max_completion_tokens: maxTokens,
       ...(useTools ? { tools: TOOL_DEFS, tool_choice: "auto" } : {}) };
-    if (model.includes("gpt-oss")) { body.reasoning_effort = "medium"; body.include_reasoning = false; }
+    if (model.includes("gpt-oss")) { body.reasoning_effort = "low"; body.include_reasoning = false; }
     else if (model.includes("qwen")) { body.reasoning_format = "hidden"; }
     let r: Response;
     try {
       r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(45_000),
         headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" } });
-    } catch (e) { errs.push(`${model.split("/").pop()} ${String(e).slice(0, 60)}`); continue; }
-    if (r.status === 429) { limited++; errs.push(`${model.split("/").pop()} busy`); continue; }
+    } catch (e) { errs.push(`${model.split("/").pop()} ${String(e).slice(0, 60)}`); return null; }
+    if (r.status === 429) {
+      const t = await r.text();
+      limited++; errs.push(`${model.split("/").pop()} limit`);
+      console.error("ai 429", model, t.slice(0, 200));
+      return /per day|TPD|RPD/i.test(t) ? null : waitSecs(r, t);          // daily limit: skip; per-minute: wait time
+    }
     if (!r.ok) {
       const t = await r.text();
       console.error("ai", model, r.status, t.slice(0, 300));
       errs.push(`${model.split("/").pop()} ${r.status} ${(t.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? ""}`);
-      continue;
+      return null;
     }
     const j = await r.json();
     const tokens = j.usage?.total_tokens ?? 0;
     await usage(tokens);
     const m = j.choices?.[0]?.message ?? {};
     const content = typeof m.content === "string" ? m.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim() : "";
-    if (!content && !m.tool_calls?.length) { errs.push(`${model.split("/").pop()} empty`); continue; }
+    if (!content && !m.tool_calls?.length) { errs.push(`${model.split("/").pop()} empty`); return null; }
     return { msg: { role: "assistant", content: content || null, ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}) }, tokens, model, index: i };
+  };
+  for (const i of order) {
+    const out = await attempt(i);
+    if (out && typeof out === "object") return out;
+    if (typeof out === "number") waits.push({ i, at: Date.now() + out * 1000 });
   }
-  if (limited && limited === AGENT_MODELS.length - startAt) throw new LimitError("All AI models are busy right now (per-minute limit). Please try again in a minute - the daily report buttons still work.");
+  // every model was at its per-minute limit: wait for the first one to free up (if there is time), then retry
+  for (const w of waits.sort((a, b) => a.at - b.at)) {
+    const ms = w.at - Date.now() + 500;
+    if (Date.now() + ms > deadline - 15_000) break;
+    if (ms > 0) await sleep(ms);
+    const out = await attempt(w.i);
+    if (out && typeof out === "object") return out;
+  }
+  if (limited) throw new LimitError("The AI is getting a lot of questions right now. Please ask again in a minute - the daily report buttons below still work.");
   throw new Error("AI unavailable: " + errs.join("; "));
 }
 
@@ -451,7 +476,7 @@ WHO YOU ARE
 WORKING WITH DATA
 - Every business number you state must come from a tool result in this conversation. Never guess, estimate or calculate a number yourself - the tools compute totals, comparisons, growth %, shares and averages. If you need a number the tools did not give, call a tool.
 - Choose tools like an analyst: get_sales (official sales for a day or period, comparisons, unit split), get_month_status (MTD vs target, estimate, required per day), get_breakdown (category / doctor / item / species / unit / day / clinic-vs-pharmacy mix and drivers), get_customers (pets, new pets, bills, average bill), run_sql (anything else).
-- Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers.
+- Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers. When you already know which views you need, request them together in one step (several tool calls at once) - it is faster.
 - Dates: use the CONTEXT dates. "yesterday" = the day before today. "today" = today (usually not loaded yet). "this month" / "MTD" = 1st of this month to the latest data day. "last week" alone = the previous Monday-Sunday. "<day> vs last week" = the same weekday one week earlier. "<period> vs last month" = the same dates last month. If asked about a day after the latest data day, say that data isn't in yet and offer the latest day.
 - Places: a city means its clinic(s) plus its Vet on Wheels unless they say clinic or Vet on Wheels only. No place = the whole division.
 
@@ -481,8 +506,8 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   let tokens = 0, idx = 0, final = "";
   const t0 = Date.now();
   for (let round = 0; round < 6; round++) {
-    const late = round === 5 || Date.now() - t0 > 80_000;
-    const out = await chat(messages, !late, idx);
+    const late = round === 4 || Date.now() - t0 > 75_000;
+    const out = await chat(messages, !late, idx, 1200, t0 + 110_000);
     idx = out.index; tokens += out.tokens; models.add(out.model);
     const calls = out.msg.tool_calls ?? [];
     if (!calls.length || late) { final = out.msg.content ?? ""; break; }
@@ -504,7 +529,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       messages.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: forModel(res) });
     }
   }
-  if (!final) { const out = await chat(messages, false, idx); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
+  if (!final) { const out = await chat(messages, false, idx, 1200, t0 + 120_000); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
 
   // accuracy check
   const pool = numberPool(results.map((r) => r.rows), [question, ...hist.map((h) => h.text), latest, istDate()]);
@@ -515,7 +540,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
     try {
       const fix = await chat([...messages, { role: "assistant", content: final }, { role: "user", content:
         `(Internal check, not from the user) These numbers in your reply are not in the tool results: ${bad.join(", ")}. ` +
-        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx);
+        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx, 1200, t0 + 125_000);
       tokens += fix.tokens; models.add(fix.model);
       if (fix.msg.content) final = fix.msg.content;
     } catch { /* strip below */ }
