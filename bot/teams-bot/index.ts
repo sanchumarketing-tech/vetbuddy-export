@@ -569,11 +569,15 @@ async function chat(messages: Msg[], useTools: boolean, startAt: number, maxToke
       ...(useTools ? { tools: TOOL_DEFS, tool_choice: "auto" } : {}) };
     if (model.includes("gpt-oss")) { body.reasoning_effort = "low"; body.include_reasoning = false; }
     else if (model.includes("qwen")) { body.reasoning_format = "hidden"; }
+    const left = deadline - Date.now() - 3000;
+    if (left < 6000) { errs.push(`${model.split("/").pop()} no time left`); return null; }
     let r: Response;
+    const ta = Date.now();
     try {
-      r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(45_000),
+      r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(Math.min(40_000, left)),
         headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" } });
-    } catch (e) { errs.push(`${model.split("/").pop()} ${String(e).slice(0, 60)}`); return null; }
+    } catch (e) { console.error("ai", model, "failed after", Date.now() - ta, "ms", String(e).slice(0, 80)); errs.push(`${model.split("/").pop()} ${String(e).slice(0, 60)}`); return null; }
+    console.log("ai", model, r.status, Date.now() - ta, "ms");
     if (r.status === 429) {
       const t = await r.text();
       limited++; errs.push(`${model.split("/").pop()} limit`);
@@ -659,8 +663,8 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   let tokens = 0, idx = 0, final = "";
   const t0 = Date.now();
   for (let round = 0; round < 6; round++) {
-    const late = round === 4 || Date.now() - t0 > 75_000;
-    const out = await chat(messages, !late, idx, 1200, t0 + 110_000);
+    const late = round === 4 || Date.now() - t0 > 60_000;
+    const out = await chat(messages, !late, idx, 1200, t0 + (late ? 85_000 : 75_000));
     idx = out.index; tokens += out.tokens; models.add(out.model);
     const calls = out.msg.tool_calls ?? [];
     if (!calls.length || late) { final = out.msg.content ?? ""; break; }
@@ -672,7 +676,8 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       try { args = JSON.parse(c.function?.arguments || "{}"); } catch { /* empty */ }
       const id = `R${results.length + 1}`;
       let res: ToolResult;
-      try { res = { id, ...(await runTool(String(c.function?.name), args, latest)) }; }
+      const tt = Date.now();
+      try { res = { id, ...(await runTool(String(c.function?.name), args, latest)) }; console.log("tool", c.function?.name, Date.now() - tt, "ms"); }
       catch (e) {
         const msg = e instanceof ToolInputError ? e.message : String((e as Error).message).slice(0, 220);
         console.error("tool", c.function?.name, msg);
@@ -682,7 +687,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       messages.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: forModel(res) });
     }
   }
-  if (!final) { const out = await chat(messages, false, idx, 1200, t0 + 120_000); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
+  if (!final) { const out = await chat(messages, false, idx, 1200, t0 + 90_000); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
 
   // accuracy check
   const pool = numberPool(results.map((r) => r.rows), [question, ...hist.map((h) => h.text), latest, istDate()]);
@@ -694,7 +699,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
     try {
       const fix = await chat([...messages, { role: "assistant", content: final }, { role: "user", content:
         `(Internal check, not from the user) These numbers in your reply are not in the tool results: ${bad.join(", ")}. ` +
-        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx, 1200, t0 + 125_000);
+        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx, 1200, t0 + 98_000);
       tokens += fix.tokens; models.add(fix.model);
       if (fix.msg.content) final = fix.msg.content;
     } catch { /* strip below */ }
@@ -969,7 +974,8 @@ async function handle(act: any) {
   // everything else: the AI analyst
   const said = text || "hi";
   try {
-    const a = await agent(said, who, conv);
+    const a = await Promise.race([agent(said, who, conv),
+      sleep(110_000).then(() => { throw new LimitError("That one took me too long to work out - please ask again (a narrower question, e.g. one unit or one period, is quicker), or use the daily report buttons below."); })]);
     const latest = await latestDay();
     await addTurns(conv, ["user", said], ["bot", a.text]);
     await logTurn({ conv, who, q: said, reply: a.text, tools: a.tools, models: a.models, tokens: a.tokens, ms: Date.now() - t0, ok: true });

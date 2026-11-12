@@ -126,3 +126,6 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - New tool get_service_counts (v_vetbuddy_pbi_bot): counts of services filtered by plan_category / plan_subcategory / goods_or_service / item; count (qty), pets, bills, value; by unit/doctor/day/item/species/category/subcategory; compare.
 - TAXONOMY (plan category -> sub categories, last 60 days, cached 6 h) in the agent context; counting rule in the prompt; get_breakdown accepts exact plan_category / plan_subcategory.
 - House rule 9 added: service counts must use plan sub category / category / goods-or-service, never pets.
+
+## v3.4 - 12-11-2026 15:30 (live, 78,829 chars)
+- A question at 15:08 got no reply: the worker hit the 150 s platform limit inside the AI loop. Now: AI calls bounded by the remaining time, agent deadlines 75/85/90/98 s, and a 110 s watchdog that always sends a reply. Timing logs per AI call and per tool.
