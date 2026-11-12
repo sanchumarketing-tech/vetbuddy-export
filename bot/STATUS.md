@@ -121,3 +121,8 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - Camp Master: SharePoint "Sanchu Reports/Camp Master.xlsx" -> vetbuddy.camp_master (camp_master_sync.py, workflow camp-master-sync.yml, 07:11 IST daily + on demand; sql/16).
 - Bot: tool get_camp_performance (camp days vs same weekday a week before: camp-item sales, qty, bills, share of the day; item-wise view); camps of -60..+30 days listed in the agent context.
 - Number check also accepts simple arithmetic between two tool numbers (difference, sum, ratio %, change %); removed figures are logged.
+
+## v3.3 - 12-11-2026 15:20 (live, 78,149 chars)
+- New tool get_service_counts (v_vetbuddy_pbi_bot): counts of services filtered by plan_category / plan_subcategory / goods_or_service / item; count (qty), pets, bills, value; by unit/doctor/day/item/species/category/subcategory; compare.
+- TAXONOMY (plan category -> sub categories, last 60 days, cached 6 h) in the agent context; counting rule in the prompt; get_breakdown accepts exact plan_category / plan_subcategory.
+- House rule 9 added: service counts must use plan sub category / category / goods-or-service, never pets.

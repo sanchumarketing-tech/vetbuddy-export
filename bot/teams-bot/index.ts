@@ -231,6 +231,9 @@ async function getBreakdown(a: Row, latest: string): Promise<Omit<ToolResult, "i
   const conds = [`sales_unit = any(string_to_array($1, '|'))`];
   if (src === "clinic") conds.push(`source = 'VetBuddy'`); else if (src === "pharmacy") conds.push(`source = 'Pharmacy'`);
   if (filt) conds.push(`(plan_category ilike $4 or plan_subcategory ilike $4 or item_name ilike $4 or coalesce(species,'') ilike $4)`);
+  const bcat = listArg(a.plan_category), bsub = listArg(a.plan_subcategory);
+  if (bcat) conds.push(`exists (select 1 from unnest(string_to_array($7, '|')) c where lower(plan_category) like c || '%')`);
+  if (bsub) conds.push(`lower(trim(plan_subcategory)) = any(string_to_array($8, '|'))`);
   const col = DIMS[by];
   const agg = (d1: string, d2: string) => `select coalesce(nullif(trim(${col}::text),''),'(not recorded)') k, sum(amount)::float8 s, sum(qty)::float8 q,
     count(distinct bill_no)::int b from vetbuddy.v_all_sales where sale_date between ${d1}::date and ${d2}::date and ${conds.join(" and ")} group by 1`;
@@ -238,7 +241,7 @@ async function getBreakdown(a: Row, latest: string): Promise<Omit<ToolResult, "i
     select cur.k, cur.s, cur.q, cur.b, cmp.s cs from cur left join cmp using (k)`;
   const rows0 = await db.begin("read only", async (tx) => {
     await tx.unsafe("set local statement_timeout = '20s'");
-    return await tx.unsafe(sql, [uList(us), from, to, filt ? `%${filt}%` : "", cf, ct]);
+    return await tx.unsafe(sql, [uList(us), from, to, filt ? `%${filt}%` : "", cf, ct, bcat, bsub]);
   }) as unknown as Row[];
   const T = rows0.reduce((s, r) => s + Number(r.s), 0), CT = rows0.reduce((s, r) => s + (r.cs === null ? 0 : Number(r.cs)), 0);
   const isDay = by === "day";
@@ -279,6 +282,60 @@ async function getCustomers(a: Row, latest: string): Promise<Omit<ToolResult, "i
   }).sort((x, y) => Number(y.pets) - Number(x.pets));
   return { title: `Pets and bills - ${placeLabel(us)}, ${rangeLabel(from, to)}`, rows,
     info: `Clinic (VetBuddy) visits only. new_pets = pets whose first visit ever is in this period. Period ${from}..${to}${cf ? `, compared with ${cf}..${ct}` : ""}.` };
+}
+
+// get_service_counts: how many services were done (consultations, vaccinations, surgeries, baths ...) - clinic bill lines
+// filtered by plan category / plan sub category / goods-or-service / item, counted as quantity, pets, bills and value
+const SDIMS: Record<string, string> = { none: "'TOTAL'", unit: "sales_unit", doctor: "doctor", day: "sale_date", item: "item_name", species: "species",
+  category: "regexp_replace(plan_category, '\\s*\\d+%\\s*$', '')", subcategory: "plan_subcategory" };
+const listArg = (v: unknown) => (Array.isArray(v) ? v : String(v ?? "").split(",")).map((x) => String(x).trim().toLowerCase()).filter(Boolean).join("|");
+async function getServiceCounts(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  const by = String(a.by ?? "none").toLowerCase();
+  if (!SDIMS[by]) throw new ToolInputError(`by must be one of: ${Object.keys(SDIMS).join(", ")}`);
+  const us = units(a.units), from = dateArg(a.from, "from", latest)!, to = dateArg(a.to, "to", latest)!;
+  const cf = dateArg(a.compare_from, "compare_from", latest, true), ct = dateArg(a.compare_to, "compare_to", latest, true);
+  const cat = listArg(a.plan_category), sub = listArg(a.plan_subcategory), gos = listArg(a.goods_or_service), item = String(a.item ?? "").trim();
+  if (!cat && !sub && !gos && !item) throw new ToolInputError("Give plan_category and/or plan_subcategory (or item) - see the TAXONOMY.");
+  const top = Math.min(Math.max(Number(a.top_n ?? 15) || 15, 3), 30);
+  const conds = `sales_unit = any(string_to_array($1, '|'))
+    and ($4 = '' or exists (select 1 from unnest(string_to_array($4, '|')) c where lower(plan_category) like c || '%'))
+    and ($5 = '' or lower(trim(plan_subcategory)) = any(string_to_array($5, '|')))
+    and ($6 = '' or lower(goods_or_service) = any(string_to_array($6, '|')))
+    and ($7 = '' or item_name ilike '%' || $7 || '%')`;
+  const agg = (dim: string, d1: string, d2: string) => `select ${dim}::text k, sum(qty)::float8 q, count(distinct pet_key)::int p,
+    count(distinct invoice_no)::int b, sum(amount)::float8 s from vetbuddy.v_vetbuddy_pbi_bot where sale_date between ${d1}::date and ${d2}::date and ${conds} group by 1`;
+  const run = (dim: string) => db.begin("read only", async (tx) => {
+    await tx.unsafe("set local statement_timeout = '25s'");
+    return await tx.unsafe(`with cur as (${agg(dim, "$2", "$3")}), cmp as (${agg(dim, "$8", "$9")})
+      select cur.k, cur.q, cur.p, cur.b, cur.s, cmp.q cq, cmp.p cp from cur left join cmp using (k)`, [uList(us), from, to, cat, sub, gos, item, cf, ct]);
+  }) as unknown as Promise<Row[]>;
+  const [grp, tot] = await Promise.all([by === "none" ? Promise.resolve([] as Row[]) : run(SDIMS[by]), run("'TOTAL'")]);
+  const T = tot[0];
+  const key = (r: Row) => r.k instanceof Date ? ymd(r.k) : String(r.k);
+  const sorted = [...grp].sort((x, y) => by === "day" ? key(x).localeCompare(key(y)) : Number(y.q) - Number(x.q));
+  const mk = (k: string, r: Row | undefined): Row => ({ [by === "none" ? "total" : by]: k, count: r0(Number(r?.q ?? 0)), pets: Number(r?.p ?? 0),
+    bills: Number(r?.b ?? 0), sales: r0(Number(r?.s ?? 0)), ...(T && Number(T.q) && by !== "none" ? { share_pct: r1((Number(r?.q ?? 0) * 100) / Number(T.q)) } : {}),
+    ...(cf ? { compare_count: r0(Number(r?.cq ?? 0)), growth_pct: growth(Number(r?.q ?? 0), r?.cq === null || r?.cq === undefined ? null : Number(r.cq)) } : {}) });
+  const rows = [...sorted.slice(0, by === "day" ? 62 : top).map((r) => mk(by === "day" ? rangeLabel(key(r).slice(0, 10), key(r).slice(0, 10)) : by === "unit" ? titleUnit(key(r)) : key(r), r)),
+    mk("TOTAL", T)];
+  const what = [cat && `plan category ${cat.replace(/\|/g, " / ")}`, sub && `sub category ${sub.replace(/\|/g, " / ")}`, gos && gos, item && `item "${item}"`].filter(Boolean).join(", ");
+  return { title: `Count of ${sub || cat || item} - ${placeLabel(us)}, ${rangeLabel(from, to)}${cf ? ` vs ${rangeLabel(cf, ct!)}` : ""}${by !== "none" ? `, by ${by}` : ""}`, rows,
+    info: `Clinic (VetBuddy) bill lines with ${what}. count = number of services done (quantity); pets = distinct pets; bills = distinct invoices. ` +
+      `Period ${from}..${to}${cf ? `, compared with ${cf}..${ct}` : ""}.` + (T ? "" : " Nothing matched - check the category names in the TAXONOMY.") };
+}
+
+// TAXONOMY: plan categories and their sub categories (from the last 60 days) - shown to the AI
+let taxCache: { at: number; text: string } | null = null;
+async function taxonomy(): Promise<string> {
+  if (taxCache && Date.now() - taxCache.at < 6 * 3600e3) return taxCache.text;
+  try {
+    const r = await db`select cat, string_agg(sub, ', ' order by n desc) subs from (
+        select regexp_replace(plan_category, '\s*\d+%\s*$', '') cat, plan_subcategory sub, count(*) n from vetbuddy.v_vetbuddy_pbi_bot
+        where sale_date >= current_date - 60 and plan_category is not null and plan_subcategory is not null group by 1, 2) x
+      group by cat order by sum(n) desc` as unknown as Row[];
+    taxCache = { at: Date.now(), text: r.map((x) => `${x.cat}: ${x.subs}`).join(" | ") };
+  } catch { taxCache = { at: Date.now(), text: "(not available)" }; }
+  return taxCache.text;
 }
 
 // get_camp_performance: camps from the Camp Master (SharePoint -> vetbuddy.camp_master) and how their items sold
@@ -375,6 +432,8 @@ const TOOL_DEFS = [
       units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
       compare_from: { type: "string" }, compare_to: { type: "string" },
       filter: { type: "string", description: "optional text filter on category / subcategory / item / species, e.g. 'Vaccination', 'Surgery', 'Canine'" },
+      plan_category: { type: "string", description: "optional exact plan categories from the TAXONOMY, comma separated" },
+      plan_subcategory: { type: "string", description: "optional exact sub categories from the TAXONOMY, comma separated" },
       source: { type: "string", enum: ["all", "clinic", "pharmacy"] },
       top_n: { type: "integer", description: "rows to return (3-25), default 10" } }, required: ["by", "from", "to"] } } },
   { type: "function", function: { name: "get_customers", description:
@@ -382,6 +441,17 @@ const TOOL_DEFS = [
     parameters: { type: "object", properties: {
       units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
       compare_from: { type: "string" }, compare_to: { type: "string" }, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_service_counts", description:
+    "How many services were done - consultations, vaccinations, surgeries, baths, haircuts, lab tests, scans, boarding, certificates... - filtered by plan_category and/or plan_subcategory (names from the TAXONOMY), goods_or_service, or an item text. Returns count (quantity), pets, bills and value, optionally by unit / doctor / day / item / species / category / subcategory and compared with another period. Use this for every 'how many / count of <service>' question.",
+    parameters: { type: "object", properties: {
+      plan_category: { type: "string", description: "one or more plan categories from the TAXONOMY, comma separated (e.g. 'Vaccination', 'Spa and Saloon')" },
+      plan_subcategory: { type: "string", description: "one or more sub categories from the TAXONOMY, comma separated (e.g. 'Consultation', 'Surgery', 'Bathing, Haircut')" },
+      goods_or_service: { type: "string", description: "optional: Service or Goods" },
+      item: { type: "string", description: "optional text in the item name, e.g. 'DHPPI'" },
+      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
+      compare_from: { type: "string" }, compare_to: { type: "string" },
+      by: { type: "string", enum: Object.keys(SDIMS), description: "none (default) = one total; or split" },
+      top_n: { type: "integer" } }, required: ["from", "to"] } } },
   { type: "function", function: { name: "get_camp_performance", description:
     "Camps / offers from the Camp Master (e.g. the Wednesday Camp): camp dates, items, camp prices, and how much the camp items sold on each camp day vs the same weekday a week before, with the camp's share of the day's total sales. view 'items' = item-wise for one camp day. Use whenever a camp day is involved or sales on a day look unusual.",
     parameters: { type: "object", properties: {
@@ -399,6 +469,7 @@ async function runTool(name: string, args: Row, latest: string): Promise<Omit<To
     case "get_month_status": return await getMonthStatus(args);
     case "get_breakdown": return await getBreakdown(args, latest);
     case "get_customers": return await getCustomers(args, latest);
+    case "get_service_counts": return await getServiceCounts(args, latest);
     case "get_camp_performance": return await getCamp(args, latest);
     case "run_sql": return await runSqlTool(args);
     default: throw new ToolInputError(`Unknown tool ${name}`);
@@ -552,6 +623,8 @@ WORKING WITH DATA
 - Choose tools like an analyst: get_sales (official sales for a day or period, comparisons, unit split), get_month_status (MTD vs target, estimate, required per day), get_breakdown (category / doctor / item / species / unit / day / clinic-vs-pharmacy mix and drivers), get_customers (pets, new pets, bills, average bill), run_sql (anything else).
 - Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers. When you already know which views you need, request them together in one step (several tool calls at once) - it is faster.
 - Dates: use the CONTEXT dates. "yesterday" = the day before today. "today" = today (usually not loaded yet). "this month" / "MTD" = 1st of this month to the latest data day. "last week" alone = the previous Monday-Sunday. "<day> vs last week" = the same weekday one week earlier. "<period> vs last month" = the same dates last month. If asked about a day after the latest data day, say that data isn't in yet and offer the latest day.
+- Counting services ("how many consultations / vaccinations / surgeries / baths", "count of ..."): use get_service_counts with the matching plan_subcategory or plan_category from the TAXONOMY (e.g. consultations = plan_subcategory "Consultation"; vaccinations = plan_category "Vaccination"; grooming = plan_category "Spa and Saloon"). Never use pets or bills of all visits as a stand-in for a service count. If the term could mean several sub categories (e.g. Consultation vs OPD), answer for the obvious one and mention the other in one short line.
+- Goods vs services: clinic (VetBuddy) lines are services; goods are pharmacy sales (get_breakdown source "pharmacy").
 - Camps: the CONTEXT lists camps and their days. When asked why a day was high or low, first check whether it was a camp day; if so quantify the camp's contribution (get_camp_performance) next to the overall movement.
 - Places: a city means its clinic(s) plus its Vet on Wheels unless they say clinic or Vet on Wheels only. No place = the whole division.
 
@@ -568,7 +641,7 @@ type AgentOut = { text: string; tables: { title: string; rows: Row[] }[]; follow
 async function agent(question: string, who: string, conv: string): Promise<AgentOut> {
   const used = await usage();
   if (used.tokens >= DAILY_CAP) throw new LimitError("Today's AI allowance is used up. The daily report buttons below still work.");
-  const [latest, hist, rl] = await Promise.all([latestDay(), turns(conv), rules()]);
+  const [latest, hist, rl, tax] = await Promise.all([latestDay(), turns(conv), rules(), taxonomy()]);
   const campRows = await db`select camp_name, string_agg(distinct camp_type, ' + ') types, array_agg(distinct d order by d)::text[] dates
     from vetbuddy.camp_master, unnest(camp_dates) d where d between ${addDays(latest, -60)}::date and ${addDays(latest, 30)}::date group by 1`
     .catch(() => []) as unknown as Row[];
@@ -578,7 +651,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   const system = AGENT_SYSTEM +
     `\n\nCONTEXT\nNow: ${istNow()}. Today: ${istDate()}. Latest data day loaded: ${latest} (${wday(latest)}).\n` +
     `Talking to: ${name ? `${name} (use the first name only in a greeting)` : "a shared team account - don't address anyone by name"}.\n` +
-    `Units: ${ALL_UNITS.join(", ")}.\nCAMPS / OFFERS (Camp Master): ${campText}. A camp day usually lifts the camp items; when a day with a camp is asked about (or looks unusual), check get_camp_performance.` +
+    `Units: ${ALL_UNITS.join(", ")}.\nTAXONOMY (plan category: its sub categories, most used first): ${tax}.\nCAMPS / OFFERS (Camp Master): ${campText}. A camp day usually lifts the camp items; when a day with a camp is asked about (or looks unusual), check get_camp_performance.` +
     (rl.length ? `\n\nHOUSE RULES - always follow these; they override everything above:\n${rl.map((r) => "- " + r.rule).join("\n")}` : "");
   const messages: Msg[] = [{ role: "system", content: system },
     ...hist.map((t) => ({ role: t.role === "user" ? "user" : "assistant", content: t.text })), { role: "user", content: question }];
