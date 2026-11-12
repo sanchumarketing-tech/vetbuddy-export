@@ -30,7 +30,7 @@ const AI_KEY = env("AI_API_KEY", env("GROQ_API_KEY"));
 const DAILY_CAP = Number(env("DAILY_TOKEN_CAP", "600000"));
 const ALLOWED = env("ALLOWED_CONVERSATIONS").split(",").map((s) => s.trim()).filter(Boolean);
 const AGENT_MODELS = (env("AI_AGENT_MODELS") ||
-  "openai/gpt-oss-120b,llama-3.3-70b-versatile,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",").map((s) => s.trim()).filter(Boolean);
+  "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",").map((s) => s.trim()).filter(Boolean);
 const db = postgres(env("BOT_DB_URL"), { prepare: false, max: 3, idle_timeout: 20 });
 
 type Row = Record<string, unknown>;
@@ -237,7 +237,8 @@ async function getBreakdown(a: Row, latest: string): Promise<Omit<ToolResult, "i
   const col = DIMS[by];
   const agg = (d1: string, d2: string) => `select coalesce(nullif(trim(${col}::text),''),'(not recorded)') k, sum(amount)::float8 s, sum(qty)::float8 q,
     count(distinct bill_no)::int b from vetbuddy.v_all_sales where sale_date between ${d1}::date and ${d2}::date and ${conds.join(" and ")} group by 1`;
-  const sql = `with cur as (${agg("$2", "$3")}), cmp as (${agg("$5", "$6")})
+  const sql = `with p as (select $1::text a, $2::date b, $3::date c, $4::text d, $5::date e, $6::date f, $7::text g, $8::text h),
+    cur as (${agg("$2", "$3")}), cmp as (${agg("$5", "$6")})
     select cur.k, cur.s, cur.q, cur.b, cmp.s cs from cur left join cmp using (k)`;
   const rows0 = await db.begin("read only", async (tx) => {
     await tx.unsafe("set local statement_timeout = '20s'");
@@ -306,7 +307,8 @@ async function getServiceCounts(a: Row, latest: string): Promise<Omit<ToolResult
     count(distinct invoice_no)::int b, sum(amount)::float8 s from vetbuddy.v_vetbuddy_pbi_bot where sale_date between ${d1}::date and ${d2}::date and ${conds} group by 1`;
   const run = (dim: string) => db.begin("read only", async (tx) => {
     await tx.unsafe("set local statement_timeout = '25s'");
-    return await tx.unsafe(`with cur as (${agg(dim, "$2", "$3")}), cmp as (${agg(dim, "$8", "$9")})
+    return await tx.unsafe(`with p as (select $1::text a, $2::date b, $3::date c, $4::text d, $5::text e, $6::text f, $7::text g, $8::date h, $9::date i),
+      cur as (${agg(dim, "$2", "$3")}), cmp as (${agg(dim, "$8", "$9")})
       select cur.k, cur.q, cur.p, cur.b, cur.s, cmp.q cq, cmp.p cp from cur left join cmp using (k)`, [uList(us), from, to, cat, sub, gos, item, cf, ct]);
   }) as unknown as Promise<Row[]>;
   const [grp, tot] = await Promise.all([by === "none" ? Promise.resolve([] as Row[]) : run(SDIMS[by]), run("'TOTAL'")]);
@@ -411,56 +413,27 @@ async function runSqlTool(a: Row): Promise<Omit<ToolResult, "id">> {
   return { title: String(a.purpose || "Query result").slice(0, 80), rows: norm, info: `${rows.length} row(s)${rows.length === 60 ? " (first 60)" : ""}.` };
 }
 
+const U_ARG = { type: "array", items: { type: "string" }, description: "units or cities (Chennai, Coimbatore, Madurai, Trichy; add clinics / Vet on Wheels) or all" };
+const D = { type: "string", description: "YYYY-MM-DD" };
 const TOOL_DEFS = [
-  { type: "function", function: { name: "get_sales", description:
-    "Official sales (the numbers management sees) for any day or period, optionally compared with another period, optionally split by unit. Use for: sales on a day, yesterday, a week, a month, totals, X vs Y comparisons, which unit did best or worst.",
-    parameters: { type: "object", properties: {
-      units: { type: "array", items: { type: "string" }, description: "Unit names, or city names (Chennai, Coimbatore, Madurai, Trichy - add 'clinics' or 'Vet on Wheels' to narrow), or ['all']. Default all." },
-      from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD (inclusive)" },
-      compare_from: { type: "string", description: "YYYY-MM-DD, only if a comparison is wanted" }, compare_to: { type: "string" },
-      by_unit: { type: "boolean", description: "true = one row per unit (splits, rankings, best / worst)" } }, required: ["from", "to"] } } },
-  { type: "function", function: { name: "get_month_status", description:
-    "Month-to-date sales vs the monthly target: achieved %, projected month-end estimate, sales needed per remaining day, growth vs the same days last month. Use for target, pace and 'are we on track' questions.",
-    parameters: { type: "object", properties: {
-      units: { type: "array", items: { type: "string" }, description: "as in get_sales; default all" },
-      month: { type: "string", description: "YYYY-MM; default the current month" },
-      by_unit: { type: "boolean", description: "true = one row per unit" } } } } },
-  { type: "function", function: { name: "get_breakdown", description:
-    "What makes up or drives sales: split by category, subcategory, doctor, item, species, unit, day (trend), weekday or source (clinic vs pharmacy), with share % and an optional comparison period. Use for top-N lists, mix, 'what drove it', trends.",
-    parameters: { type: "object", properties: {
-      by: { type: "string", enum: Object.keys(DIMS) },
-      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
-      compare_from: { type: "string" }, compare_to: { type: "string" },
-      filter: { type: "string", description: "optional text filter on category / subcategory / item / species, e.g. 'Vaccination', 'Surgery', 'Canine'" },
-      plan_category: { type: "string", description: "optional exact plan categories from the TAXONOMY, comma separated" },
-      plan_subcategory: { type: "string", description: "optional exact sub categories from the TAXONOMY, comma separated" },
-      source: { type: "string", enum: ["all", "clinic", "pharmacy"] },
-      top_n: { type: "integer", description: "rows to return (3-25), default 10" } }, required: ["by", "from", "to"] } } },
-  { type: "function", function: { name: "get_customers", description:
-    "Clinic customer metrics: pets seen, new vs repeat pets, owners, bills and average bill value, optionally compared and split by unit.",
-    parameters: { type: "object", properties: {
-      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
-      compare_from: { type: "string" }, compare_to: { type: "string" }, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
-  { type: "function", function: { name: "get_service_counts", description:
-    "How many services were done - consultations, vaccinations, surgeries, baths, haircuts, lab tests, scans, boarding, certificates... - filtered by plan_category and/or plan_subcategory (names from the TAXONOMY), goods_or_service, or an item text. Returns count (quantity), pets, bills and value, optionally by unit / doctor / day / item / species / category / subcategory and compared with another period. Use this for every 'how many / count of <service>' question.",
-    parameters: { type: "object", properties: {
-      plan_category: { type: "string", description: "one or more plan categories from the TAXONOMY, comma separated (e.g. 'Vaccination', 'Spa and Saloon')" },
-      plan_subcategory: { type: "string", description: "one or more sub categories from the TAXONOMY, comma separated (e.g. 'Consultation', 'Surgery', 'Bathing, Haircut')" },
-      goods_or_service: { type: "string", description: "optional: Service or Goods" },
-      item: { type: "string", description: "optional text in the item name, e.g. 'DHPPI'" },
-      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
-      compare_from: { type: "string" }, compare_to: { type: "string" },
-      by: { type: "string", enum: Object.keys(SDIMS), description: "none (default) = one total; or split" },
-      top_n: { type: "integer" } }, required: ["from", "to"] } } },
-  { type: "function", function: { name: "get_camp_performance", description:
-    "Camps / offers from the Camp Master (e.g. the Wednesday Camp): camp dates, items, camp prices, and how much the camp items sold on each camp day vs the same weekday a week before, with the camp's share of the day's total sales. view 'items' = item-wise for one camp day. Use whenever a camp day is involved or sales on a day look unusual.",
-    parameters: { type: "object", properties: {
-      camp: { type: "string", description: "camp name or part of it; empty = the camp on that date / the latest camp" },
-      date: { type: "string", description: "YYYY-MM-DD camp day (optional)" },
-      view: { type: "string", enum: ["days", "items"], description: "days (default) = every camp day so far; items = item-wise for one camp day" } } } } },
-  { type: "function", function: { name: "run_sql", description:
-    "Run your own read-only SQL when the other tools cannot answer (e.g. services due, vaccination status, a specific item or doctor detail, breeds, night services). " + SCHEMA,
-    parameters: { type: "object", properties: { purpose: { type: "string", description: "short title of what this shows" }, sql: { type: "string" } }, required: ["purpose", "sql"] } } },
+  { type: "function", function: { name: "get_sales", description: "Official sales for a day/period; optional comparison period and split by unit.",
+    parameters: { type: "object", properties: { units: U_ARG, from: D, to: D, compare_from: D, compare_to: D, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_month_status", description: "Month to date vs target: achieved %, month-end estimate, needed per day, growth vs same days last month.",
+    parameters: { type: "object", properties: { units: U_ARG, month: { type: "string", description: "YYYY-MM" }, by_unit: { type: "boolean" } } } } },
+  { type: "function", function: { name: "get_breakdown", description: "Sales value split by category, subcategory, doctor, item, species, unit, day, weekday or source (clinic vs pharmacy), with share and optional comparison.",
+    parameters: { type: "object", properties: { by: { type: "string", enum: Object.keys(DIMS) }, units: U_ARG, from: D, to: D, compare_from: D, compare_to: D,
+      plan_category: { type: "string" }, plan_subcategory: { type: "string" }, filter: { type: "string", description: "text in category/item/species" },
+      source: { type: "string", enum: ["all", "clinic", "pharmacy"] }, top_n: { type: "integer" } }, required: ["by", "from", "to"] } } },
+  { type: "function", function: { name: "get_service_counts", description: "COUNT of services done (consultations, vaccinations, surgeries, baths, lab tests...) by plan_category / plan_subcategory from the TAXONOMY or item text: count, pets, bills, value; optional split and comparison.",
+    parameters: { type: "object", properties: { plan_category: { type: "string" }, plan_subcategory: { type: "string" }, goods_or_service: { type: "string" },
+      item: { type: "string" }, units: U_ARG, from: D, to: D, compare_from: D, compare_to: D, by: { type: "string", enum: Object.keys(SDIMS) }, top_n: { type: "integer" } },
+      required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_customers", description: "Clinic pets seen, new vs repeat pets, owners, bills, average bill.",
+    parameters: { type: "object", properties: { units: U_ARG, from: D, to: D, compare_from: D, compare_to: D, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_camp_performance", description: "Camps from the Camp Master: dates, items, prices, and camp-item sales/qty/bills on camp days vs the same weekday a week before (view items = item-wise).",
+    parameters: { type: "object", properties: { camp: { type: "string" }, date: D, view: { type: "string", enum: ["days", "items"] } } } } },
+  { type: "function", function: { name: "run_sql", description: "Read-only SQL for anything else. " + SCHEMA,
+    parameters: { type: "object", properties: { purpose: { type: "string" }, sql: { type: "string" } }, required: ["purpose", "sql"] } } },
 ];
 
 async function runTool(name: string, args: Row, latest: string): Promise<Omit<ToolResult, "id">> {
@@ -549,6 +522,7 @@ function stripUnsupported(text: string, pool: number[]) {
 // deno-lint-ignore no-explicit-any
 type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string; name?: string };
 
+const deadModels = new Set<string>();      // models Groq says do not exist (retired) - skipped from then on
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // seconds Groq asks us to wait after a per-minute limit ("Please try again in 7.4s" / retry-after header)
 function waitSecs(r: Response, t: string): number {
@@ -561,11 +535,11 @@ async function chat(messages: Msg[], useTools: boolean, startAt: number, maxToke
   Promise<{ msg: Msg; tokens: number; model: string; index: number }> {
   const errs: string[] = [];
   let limited = 0;
-  const order = AGENT_MODELS.map((_m, k) => (startAt + k) % AGENT_MODELS.length);   // current model first, then the others
+  const order = AGENT_MODELS.map((_m, k) => (startAt + k) % AGENT_MODELS.length).filter((i) => !deadModels.has(AGENT_MODELS[i]));   // current model first, then the others
   const waits: { i: number; at: number }[] = [];
   const attempt = async (i: number): Promise<{ msg: Msg; tokens: number; model: string; index: number } | number | null> => {
     const model = AGENT_MODELS[i];
-    const body: Row = { model, messages, temperature: 0.3, max_completion_tokens: maxTokens,
+    const body: Row = { model, messages, temperature: 0.3, max_completion_tokens: Math.min(maxTokens, 900),
       ...(useTools ? { tools: TOOL_DEFS, tool_choice: "auto" } : {}) };
     if (model.includes("gpt-oss")) { body.reasoning_effort = "low"; body.include_reasoning = false; }
     else if (model.includes("qwen")) { body.reasoning_format = "hidden"; }
@@ -587,6 +561,7 @@ async function chat(messages: Msg[], useTools: boolean, startAt: number, maxToke
     if (!r.ok) {
       const t = await r.text();
       console.error("ai", model, r.status, t.slice(0, 300));
+      if (r.status === 404 || /model_not_found|decommissioned/.test(t)) deadModels.add(model);
       errs.push(`${model.split("/").pop()} ${r.status} ${(t.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? ""}`);
       return null;
     }
@@ -615,30 +590,14 @@ async function chat(messages: Msg[], useTools: boolean, startAt: number, maxToke
   throw new Error("AI unavailable: " + errs.join("; "));
 }
 
-const AGENT_SYSTEM = `You are "Sanchu Sales", the AI business analyst in the Sanchu Pet Hospitals management team's Teams chat. Sanchu runs veterinary clinics (Adyar, Neelangarai, Anna Nagar, Velachery and Valasaravakkam in Chennai; Coimbatore; Madurai; Trichy), a pharmacy, and Vet on Wheels home-visit units (Chennai, Coimbatore, Madurai, Trichy).
-
-WHO YOU ARE
-- You talk like a capable, warm and professional colleague: natural, confident, concise. You are an AI assistant - if asked, say so plainly; never claim to be a person.
-- Hold a real conversation. Use the conversation so far to understand "it", "that clinic", "same for last month", "why?", "and Madurai?". If a request is genuinely ambiguous, ask one short question instead of guessing.
-- Greetings, thanks, small talk, "what can you do", drafting a message: reply directly without tools (for a greeting you may fetch one headline figure).
-
-WORKING WITH DATA
-- Every business number you state must come from a tool result in this conversation. Never guess, estimate or calculate a number yourself - the tools compute totals, comparisons, growth %, shares and averages. If you need a number the tools did not give, call a tool.
-- Choose tools like an analyst: get_sales (official sales for a day or period, comparisons, unit split), get_month_status (MTD vs target, estimate, required per day), get_breakdown (category / doctor / item / species / unit / day / clinic-vs-pharmacy mix and drivers), get_customers (pets, new pets, bills, average bill), run_sql (anything else).
-- Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers. When you already know which views you need, request them together in one step (several tool calls at once) - it is faster.
-- Dates: use the CONTEXT dates. "yesterday" = the day before today. "today" = today (usually not loaded yet). "this month" / "MTD" = 1st of this month to the latest data day. "last week" alone = the previous Monday-Sunday. "<day> vs last week" = the same weekday one week earlier. "<period> vs last month" = the same dates last month. If asked about a day after the latest data day, say that data isn't in yet and offer the latest day.
-- Counting services ("how many consultations / vaccinations / surgeries / baths", "count of ..."): use get_service_counts with the matching plan_subcategory or plan_category from the TAXONOMY (e.g. consultations = plan_subcategory "Consultation"; vaccinations = plan_category "Vaccination"; grooming = plan_category "Spa and Saloon"). Never use pets or bills of all visits as a stand-in for a service count. If the term could mean several sub categories (e.g. Consultation vs OPD), answer for the obvious one and mention the other in one short line.
-- Goods vs services: clinic (VetBuddy) lines are services; goods are pharmacy sales (get_breakdown source "pharmacy").
-- Camps: the CONTEXT lists camps and their days. When asked why a day was high or low, first check whether it was a camp day; if so quantify the camp's contribution (get_camp_performance) next to the overall movement.
-- Places: a city means its clinic(s) plus its Vet on Wheels unless they say clinic or Vet on Wheels only. No place = the whole division.
-
-HOW YOU REPLY
-- The first sentence is the answer, with the key figure in **bold**, naming the unit and the exact date or period, e.g. "Anna Nagar did **Rs 98,596** on Sun, 2 Nov, 12.4% more than the previous Sunday."
-- Simple question: 1-3 sentences, no bullets. Insights / why / analysis: one answer line, then 3-5 short "- " bullets with the drivers (each with its number), then one practical suggestion.
-- Money as Rs with Indian commas exactly as the tools show; percentages as shown; unit names in Title Case; dates like "Tue, 10 Nov" or "1-10 Nov". No emojis, no slang, no headings. Never mention tools, SQL, queries, models or tokens.
-- Do not add comparisons, splits or extra numbers that were not asked for.
-- To attach a table, add on its own line at the end: TABLE: R<n> | <title>  - only when they asked for a split, list, ranking, breakdown or comparison across units (max 2 tables).
-- Always finish with one line: FOLLOWUPS: <question> | <question>  - two short, specific next questions they are likely to ask (max 7 words each).`;
+const AGENT_SYSTEM = `You are "Sanchu Sales", the AI business analyst in the Sanchu Pet Hospitals management Teams chat (clinics in Chennai - Adyar, Neelangarai, Anna Nagar, Velachery, Valasaravakkam - Coimbatore, Madurai, Trichy; pharmacy; Vet on Wheels home visits).
+STYLE: a warm, professional colleague - natural and concise. You are an AI (say so if asked). Use the conversation to resolve "it", "same for last month", "and Madurai?". Ask one short question only if truly ambiguous. Small talk / drafting: reply without tools.
+DATA: every business number must come from a tool result - never estimate or calculate yourself. Simple question = one tool call; "why"/insights = get the movement, then break down the biggest drivers (request several tools at once when you can).
+- Service counts (consultations, vaccinations, surgeries, baths...): get_service_counts with plan_subcategory / plan_category from the TAXONOMY (consultation = sub category "Consultation"). Never use pets as a stand-in.
+- Dates: yesterday = day before today; this month = 1st to latest data day; "<day> vs last week" = same weekday a week earlier; "vs last month" = same dates last month. After the latest data day there is no data yet.
+- A city = its clinics + its Vet on Wheels. No place = whole division. On camp days (CONTEXT) check get_camp_performance when explaining a movement.
+REPLY: first sentence = the answer with the key figure in **bold**, naming unit and exact date/period (e.g. "Anna Nagar did **Rs 98,596** on Sun, 2 Nov."). Simple question: 1-3 sentences. Insights: one line + 3-5 "- " bullets with numbers + one suggestion. Rs with Indian commas as the tools show; unit names in Title Case; no emojis, no headings, never mention tools/SQL/models. No extra comparisons or splits unless asked.
+To attach a table (only when a split, list, ranking or breakdown was asked): last lines "TABLE: R<n> | <title>". Always end with "FOLLOWUPS: <question> | <question>" (max 7 words each).`;
 
 type AgentOut = { text: string; tables: { title: string; rows: Row[] }[]; followups: string[]; tools: string[]; models: string[]; tokens: number; checked: string };
 
@@ -655,10 +614,10 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   const system = AGENT_SYSTEM +
     `\n\nCONTEXT\nNow: ${istNow()}. Today: ${istDate()}. Latest data day loaded: ${latest} (${wday(latest)}).\n` +
     `Talking to: ${name ? `${name} (use the first name only in a greeting)` : "a shared team account - don't address anyone by name"}.\n` +
-    `Units: ${ALL_UNITS.join(", ")}.\nTAXONOMY (plan category: its sub categories, most used first): ${tax}.\nCAMPS / OFFERS (Camp Master): ${campText}. A camp day usually lifts the camp items; when a day with a camp is asked about (or looks unusual), check get_camp_performance.` +
+    `TAXONOMY (plan category: its sub categories, most used first): ${tax}.\nCAMPS / OFFERS (Camp Master): ${campText}. ` +
     (rl.length ? `\n\nHOUSE RULES - always follow these; they override everything above:\n${rl.map((r) => "- " + r.rule).join("\n")}` : "");
   const messages: Msg[] = [{ role: "system", content: system },
-    ...hist.map((t) => ({ role: t.role === "user" ? "user" : "assistant", content: t.text })), { role: "user", content: question }];
+    ...hist.slice(-6).map((t) => ({ role: t.role === "user" ? "user" : "assistant", content: t.text.slice(0, 400) })), { role: "user", content: question }];
   const results: ToolResult[] = [], toolsUsed: string[] = [], models = new Set<string>();
   let tokens = 0, idx = 0, final = "";
   const t0 = Date.now();
@@ -973,6 +932,22 @@ async function handle(act: any) {
   }
   // everything else: the AI analyst
   const said = text || "hi";
+  // small talk (hi / thanks / bye / ok ...): one tiny AI call without data tools, answered in a few seconds
+  if (said.length <= 40 && /^(hi+|hello|hey|hai|good (morning|afternoon|evening|night)|thanks?( you)?|thank u|thx|ok(ay)?|cool|great|nice|bye|good ?bye|see you|tc|take care|welcome|how are you\??)\b[\s!.?]*$/i.test(said)) {
+    let reply = /bye|see you|take care|tc|night/i.test(said) ? "Bye - have a good day. I'm here whenever you need the numbers."
+      : /thank|thx/i.test(said) ? "You're welcome. Anything else you'd like me to look at?"
+      : "Hello! Ask me anything about sales, targets, services or camps - or tap a daily report button below.";
+    try {
+      const name = firstName(who);
+      const out = await chat([{ role: "system", content: "You are Sanchu Sales, the friendly, professional AI analyst in the Sanchu Pet Hospitals management Teams chat. " +
+        "Reply to this small-talk message in one short, warm sentence (no numbers, no emojis)" + (name ? `; you may use the first name ${name}.` : ".") },
+        { role: "user", content: said }], false, AGENT_MODELS.length - 1, 120, Date.now() + 12_000);
+      if (out.msg.content && !/\d{3}/.test(out.msg.content)) reply = out.msg.content.trim();
+    } catch { /* keep the fallback */ }
+    await addTurns(conv, ["user", said], ["bot", reply]);
+    await logTurn({ conv, who, q: said, reply, tools: ["smalltalk"], ms: Date.now() - t0, ok: true });
+    return send(act, { attachments: [card({ text: reply, tables: [], followups: [] })] });
+  }
   try {
     const a = await Promise.race([agent(said, who, conv),
       sleep(110_000).then(() => { throw new LimitError("That one took me too long to work out - please ask again (a narrower question, e.g. one unit or one period, is quicker), or use the daily report buttons below."); })]);

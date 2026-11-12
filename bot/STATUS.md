@@ -129,3 +129,8 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 
 ## v3.4 - 12-11-2026 15:30 (live, 78,829 chars)
 - A question at 15:08 got no reply: the worker hit the 150 s platform limit inside the AI loop. Now: AI calls bounded by the remaining time, agent deadlines 75/85/90/98 s, and a 110 s watchdog that always sends a reply. Timing logs per AI call and per tool.
+
+## v3.5 - 12-11-2026 15:40 (live, 75,454 chars)
+- Logs showed: llama-3.3-70b-versatile retired (404), Groq free limits 7-8k tokens/min per model while each call sent 4-5k tokens, and get_breakdown failing ("could not determine data type of parameter $4") when no text filter was given.
+- Fixed: model chain gpt-oss-120b -> qwen3.8-27b -> gpt-oss-20b (retired models skipped automatically); prompt + tool definitions cut by about half; history 6 turns x 400 chars; max 900 output tokens; all SQL parameters typed.
+- Small talk (hi / thanks / bye / ok ...) answered by one tiny AI call (12 s) without data tools, with a fallback reply.
