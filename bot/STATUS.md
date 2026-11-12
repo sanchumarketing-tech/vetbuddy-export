@@ -97,3 +97,18 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
   answer-writing AI step. Teams: "rules", "add rule: never ...", "remove rule 2".
 - Professional tone (no emojis), unit names in Title Case, no block-chart column, "What to do" only for insights.
 - bot_plan / bot_answer / bot_context / bot_turns cleared.
+
+## v3 - 12-11-2026 — AI agent with data tools (live, 61,652 chars)
+- Rebuilt as a tool-calling AI agent (Groq function calling). Models: gpt-oss-120b -> llama-3.3-70b-versatile ->
+  qwen3.8-27b -> gpt-oss-20b (env AI_AGENT_MODELS); a busy model hands the same conversation to the next.
+- Data tools (tested SQL, all derived numbers computed in code): get_sales (sheet_daily, compare, unit split),
+  get_month_status (sheet_kpi), get_breakdown (v_all_sales by category/subcategory/doctor/item/species/unit/day/
+  weekday/source, filter, compare, top N + Others + TOTAL), get_customers (v_vetbuddy_pbi_bot pets/new pets/bills/
+  avg bill), run_sql (read-only, 20 s, 60 rows) for anything else.
+- Agent loop up to 6 rounds / 80 s, max 4 tool calls per round; number check against tool results -> one rewrite ->
+  strip. Tables only when the agent adds "TABLE: R<n>"; 2 follow-up buttons from "FOLLOWUPS:".
+- Daily report buttons under every answer, answered from code (no AI): Yesterday's sales, Month to date vs target,
+  Units behind target, Last 7 days trend (10-min cache).
+- House rules kept (bot_rules). bot_plan / bot_answer / bot_context no longer used.
+- sql/15_bot_log.sql: vetbuddy.bot_log - every question with tools, models, tokens, ms, errors, "wrong" feedback.
+  Teams "usage" shows tokens + questions / avg reply time / errors in the last 24 h.

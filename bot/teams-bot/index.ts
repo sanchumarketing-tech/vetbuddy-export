@@ -1,24 +1,25 @@
 // =====================================================================
-// Sanchu sales ANALYST bot for Microsoft Teams  (Supabase Edge Function "teams-bot")
+// Sanchu Sales - AI analyst chatbot for Microsoft Teams  (Supabase Edge Function "teams-bot")   v3
 //
-// How a question is answered:
-//  1. The bot reads the PLACE (city / clinic / VOW) and the PERIOD (MTD, yesterday, last month, ...) itself,
-//     and keeps the conversation (follow-ups like "and Trichy?", "same for last month", "split by doctor").
-//  2. PLAN   - an AI model plans 2-4 SQL queries like an analyst: the answer, a comparison (previous period /
-//              last month / target) and the drill-down that explains it. Plans use placeholders and are
-//              saved per question type, so the same kind of question later costs no planning tokens.
-//  3. RUN    - the queries run read-only on Supabase; a failing query is repaired by a second model.
-//  4. ANALYSE- a model writes the answer from the results and may ask for one more drill-down query.
-//  5. CHECK  - every number in the answer is checked in code against the query results; a DIFFERENT model
-//              rewrites unsupported claims, and anything still unsupported is removed.
-//  0. ASSISTANT - every message first goes to an AI assistant that knows the conversation, who is asking, the
-//              time of day and a live sales snapshot. It chats (greetings, help, ideas, drafting messages,
-//              quick answers from the snapshot - numbers checked) or hands a self-contained question to 1-5.
-//  Models (Groq, free): gpt-oss-120b, qwen3.8-27b, gpt-oss-20b - each step has its own order and falls back
-//  to the next model when one hits its limit. The finished analysis is saved for the day (repeats: 0 tokens).
+// How it works
+//  - Every message goes to an AI AGENT that holds the conversation (last 3 hours) and works like an analyst:
+//    it decides which DATA TOOLS to call, reads the results, calls more tools to drill down when it needs to
+//    ("why", "what drove it"), and then writes the reply in plain, professional English.
+//  - DATA TOOLS run tested, parameterised SQL on Supabase and compute every total, comparison, growth %,
+//    share and average in code, so the AI never has to calculate: get_sales, get_month_status,
+//    get_breakdown, get_customers. For anything else the agent can write its own read-only query (run_sql).
+//  - ACCURACY: every number in a reply is checked against the tool results; an unsupported number is sent
+//    back to the AI once to fix, and anything still unsupported is removed.
+//  - HOUSE RULES (vetbuddy.bot_rules) are added to the agent's instructions; managed from Teams with
+//    "rules" / "add rule: never ..." / "remove rule 2".
+//  - DAILY REPORT buttons under every answer (Yesterday's sales, Month to date vs target, Units behind
+//    target, Last 7 days trend) are answered instantly from code - no AI, no tokens, always the same format.
+//  - Models (Groq): AI_AGENT_MODELS, default gpt-oss-120b -> llama-3.3-70b -> qwen3.8-27b -> gpt-oss-20b;
+//    when one model hits its limit the next one continues the same conversation.
+//  - Every question is logged in vetbuddy.bot_log (tools, models, tokens, time, errors, "wrong" feedback).
 // Secrets (Supabase > Edge Functions > Secrets):
 //   AI_API_KEY (Groq), BOT_DB_URL (vb_teams login), BOT_APP_ID, BOT_APP_SECRET, BOT_TENANT_ID,
-//   ALLOWED_CONVERSATIONS, optional DAILY_TOKEN_CAP, AI_PLAN_MODELS / AI_ANALYZE_MODELS / AI_REVIEW_MODELS / AI_FIX_MODELS
+//   ALLOWED_CONVERSATIONS, optional DAILY_TOKEN_CAP, AI_AGENT_MODELS
 // =====================================================================
 import postgres from "npm:postgres@3.4.5";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5.9.6";
@@ -26,215 +27,78 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5.9.6";
 const env = (k: string, d = "") => Deno.env.get(k) ?? d;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const AI_KEY = env("AI_API_KEY", env("GROQ_API_KEY"));
-const DAILY_CAP = Number(env("DAILY_TOKEN_CAP", "550000"));   // all models together (each has ~200k/day free)
+const DAILY_CAP = Number(env("DAILY_TOKEN_CAP", "600000"));
 const ALLOWED = env("ALLOWED_CONVERSATIONS").split(",").map((s) => s.trim()).filter(Boolean);
-const db = postgres(env("BOT_DB_URL"), { prepare: false, max: 2, idle_timeout: 20 });
+const AGENT_MODELS = (env("AI_AGENT_MODELS") ||
+  "openai/gpt-oss-120b,llama-3.3-70b-versatile,qwen/qwen3.8-27b,openai/gpt-oss-20b").split(",").map((s) => s.trim()).filter(Boolean);
+const db = postgres(env("BOT_DB_URL"), { prepare: false, max: 3, idle_timeout: 20 });
+
+type Row = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
-// Units, cities, places
+// units, dates, formatting
 // ---------------------------------------------------------------------------
 const ALL_UNITS = ["ADYAR", "NEELANGARAI", "ANNA NAGAR", "VELACHERY", "VALASARAVAKKAM", "COIMBATORE", "MADURAI", "TRICHY",
   "CH VET ON WHEELS", "CH VET ON WHEELS - NON CLINICAL", "CBE VET ON WHEELS", "CBE VET ON WHEELS - NON CLINICAL",
   "MADURAI VET ON WHEELS", "TRICHY VET ON WHEELS"];
-const CITIES: { re: RegExp; name: string; clinic: string[]; vow: string[] }[] = [
-  { re: /\b(chennai|ch)\b/g, name: "Chennai", clinic: ["ADYAR", "NEELANGARAI", "ANNA NAGAR", "VELACHERY", "VALASARAVAKKAM"], vow: ["CH VET ON WHEELS", "CH VET ON WHEELS - NON CLINICAL"] },
-  { re: /\b(coimbatore|cbe|kovai)\b/g, name: "Coimbatore", clinic: ["COIMBATORE"], vow: ["CBE VET ON WHEELS", "CBE VET ON WHEELS - NON CLINICAL"] },
-  { re: /\bmadurai\b/g, name: "Madurai", clinic: ["MADURAI"], vow: ["MADURAI VET ON WHEELS"] },
-  { re: /\b(trichy|tiruchi\w*)\b/g, name: "Trichy", clinic: ["TRICHY"], vow: ["TRICHY VET ON WHEELS"] },
+const CITIES: { name: string; clinic: string[]; vow: string[] }[] = [
+  { name: "Chennai", clinic: ["ADYAR", "NEELANGARAI", "ANNA NAGAR", "VELACHERY", "VALASARAVAKKAM"], vow: ["CH VET ON WHEELS", "CH VET ON WHEELS - NON CLINICAL"] },
+  { name: "Coimbatore", clinic: ["COIMBATORE"], vow: ["CBE VET ON WHEELS", "CBE VET ON WHEELS - NON CLINICAL"] },
+  { name: "Madurai", clinic: ["MADURAI"], vow: ["MADURAI VET ON WHEELS"] },
+  { name: "Trichy", clinic: ["TRICHY"], vow: ["TRICHY VET ON WHEELS"] },
 ];
-const CLINICS: [RegExp, string][] = [
-  [/\badyar\b/g, "ADYAR"], [/\bneelangarai\b/g, "NEELANGARAI"], [/\banna\s*nagar\b/g, "ANNA NAGAR"],
-  [/\bvelachery\b/g, "VELACHERY"], [/\bvalasaravakkam\b/g, "VALASARAVAKKAM"],
-];
-const VOW_RE = /\b(vet\s*on\s*wheels?|home\s*visits?|mobile\s*vet|vow)\b/g;
-
-type Place = { units: string[]; label: string };
-function parsePlace(q: string): { place: Place; rest: string; given: boolean } {
-  let s = q;
-  const vow = new RegExp(VOW_RE.source).test(s), nonClin = /\bnon[\s-]*clinical\b/.test(s);
-  const clinOnly = !vow && /\bclinics?\b/.test(s), clinicalVow = vow && /(^|[^-\w])clinical\b/.test(s.replace(/non[\s-]*clinical/g, ""));
-  const units: string[] = [], labels: string[] = [];
-  for (const c of CITIES) {
-    if (!new RegExp(c.re.source).test(s)) continue;
-    s = s.replace(c.re, " ");
-    let u = vow ? c.vow : clinOnly ? c.clinic : [...c.clinic, ...c.vow];
-    if (vow && nonClin) u = u.filter((x) => /NON CLINICAL/.test(x));
-    else if (vow && clinicalVow) u = u.filter((x) => !/NON CLINICAL/.test(x));
-    units.push(...u); labels.push(c.name + (vow ? " Vet on Wheels" : clinOnly ? " clinics" : ""));
-  }
-  for (const [re, u] of CLINICS) if (new RegExp(re.source).test(s)) { s = s.replace(re, " "); units.push(u); labels.push(u.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())); }
-  if (!units.length && vow) {
-    ALL_UNITS.filter((x) => /VET ON WHEELS/.test(x) && (!nonClin || /NON CLINICAL/.test(x))).forEach((x) => units.push(x));
-    labels.push("All Vet on Wheels");
-  }
-  const allAsked = /\b(division|overall|all\s*units|all\s*(clinics|branches)|whole|company|irrespective|combined|altogether|total)\b/.test(s);
-  s = s.replace(VOW_RE, " ").replace(/\bnon[\s-]*clinical\b|\bclinical\b|\bclinics?\b|\bunits?\b|\bbranch(es)?\b|\bdivision\b|\boverall\b/g, " ");
-  const uniq = [...new Set(units)].sort((a, b) => ALL_UNITS.indexOf(a) - ALL_UNITS.indexOf(b));
-  return { place: uniq.length ? { units: uniq, label: labels.join(", ") } : { units: ALL_UNITS, label: "Division (all units)" },
-           rest: s.replace(/\b(all\s*units|all\s*(clinics|branches)|whole|company|irrespective|combined|altogether)\b/g, " "), given: uniq.length > 0 || allAsked };
-}
-
-// ---------------------------------------------------------------------------
-// Periods (relative to the latest data date)
-// ---------------------------------------------------------------------------
-type Period = { from: string; to: string; kind: "mtd" | "period"; label: string; cmpFrom?: string; cmpTo?: string; cmpLabel?: string };
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const day = (s: string) => new Date(s + "T00:00:00Z");
-const addD = (d: Date, n: number) => new Date(d.getTime() + n * 864e5);
-const monthStart = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-const monthEnd = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
-const nice = (d: Date) => `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()][0].toUpperCase()}${MONTHS[d.getUTCMonth()].slice(1)}`;
-
-function parsePeriod(q: string, latest: string): { period: Period; rest: string; given: boolean } {
-  const L = day(latest);
-  let s = q, p: Period | null = null;
-  const take = (re: RegExp) => { const m = s.match(re); if (m) s = s.replace(re, " "); return m; };
-  let m: RegExpMatchArray | null;
-  if (take(/\byesterday\b/)) p = { from: latest, to: latest, kind: "period", label: `yesterday (${nice(L)})` };
-  else if (take(/\btoday\b/)) p = { from: latest, to: latest, kind: "period", label: `latest day (${nice(L)})` };
-  else if ((m = take(/\b(?:last|past)\s*(\d{1,3})\s*days?\b/))) { const f = addD(L, 1 - +m[1]); p = { from: ymd(f), to: latest, kind: "period", label: `last ${m[1]} days (${nice(f)} - ${nice(L)})` }; }
-  else if (take(/\b(this|current)\s*week\b|\bwtd\b/)) { const f = addD(L, -((L.getUTCDay() + 6) % 7)); p = { from: ymd(f), to: latest, kind: "period", label: `this week (${nice(f)} - ${nice(L)})` }; }
-  else if (take(/\b(last|previous|prev)\s*week\b/)) { const t = addD(L, -((L.getUTCDay() + 6) % 7) - 1), f = addD(t, -6); p = { from: ymd(f), to: ymd(t), kind: "period", label: `last week (${nice(f)} - ${nice(t)})` }; }
-  else if (take(/\b(last|previous|prev)\s*month\b/)) { const f = monthStart(addD(monthStart(L), -1)); p = { from: ymd(f), to: ymd(monthEnd(f)), kind: "period", label: `${MONTHS[f.getUTCMonth()].toUpperCase()} ${f.getUTCFullYear()} (full month)` }; }
-  else if ((m = take(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b/))) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; const d = new Date(Date.UTC(y, +m[2] - 1, +m[1])); p = { from: ymd(d), to: ymd(d), kind: "period", label: nice(d) + " " + y }; }
-  else if ((m = take(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b(?!\s*\d)/))) {
-    const dd = +(m[1] ?? m[4]), mi = MONTHS.indexOf(m[2] ?? m[3]);
-    let d = new Date(Date.UTC(L.getUTCFullYear(), mi, dd)); if (d > L) d = new Date(Date.UTC(L.getUTCFullYear() - 1, mi, dd));
-    p = { from: ymd(d), to: ymd(d), kind: "period", label: nice(d) + " " + d.getUTCFullYear() };
-  } else if ((m = take(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*'?(\d{2,4})?\b/))) {
-    const mi = MONTHS.indexOf(m[1]); let y = m[2] ? (+m[2] < 100 ? 2000 + +m[2] : +m[2]) : L.getUTCFullYear();
-    if (!m[2] && new Date(Date.UTC(y, mi, 1)) > L) y--;
-    const f = new Date(Date.UTC(y, mi, 1)), e = monthEnd(f);
-    p = e >= L && f <= L ? { from: ymd(f), to: latest, kind: "mtd", label: `${MONTHS[mi].toUpperCase()} ${y} MTD (1 - ${L.getUTCDate()})` }
-                         : { from: ymd(f), to: ymd(e), kind: "period", label: `${MONTHS[mi].toUpperCase()} ${y} (full month)` };
-  }
-  const mtdWords = take(/\b(month\s*to\s*date|mtd|this\s*month|current\s*month|so\s*far|till\s*date|to\s*date)\b/g);
-  const given = !!p || !!mtdWords;
-  if (!p) { const f = monthStart(L); p = { from: ymd(f), to: latest, kind: "mtd", label: `${MONTHS[f.getUTCMonth()].toUpperCase()} ${f.getUTCFullYear()} MTD (1 - ${L.getUTCDate()})` }; }
-  return { period: p, rest: s, given };
-}
-
-// ---------------------------------------------------------------------------
-// The analyst: what it knows about the data (kept identical on every call -> provider prompt cache)
-// ---------------------------------------------------------------------------
-const TABLES = `DATA (PostgreSQL, schema vetbuddy - always write vetbuddy.<name>). Sanchu Pet Hospitals, India. Money in Rs.
-sheet_daily(sale_date,unit,total,vetbuddy,gofrugal) -- OFFICIAL daily sales report per unit (= the numbers management sees). vetbuddy = clinic services+goods, gofrugal = pharmacy, total = both.
-sheet_kpi(month date,unit,as_of,days_done,days_left,mtd,last_month_same_days,growth_vs_last_month,month_estimate,target,estimate_vs_target,balance_to_target,required_per_day,ads,target_per_day,vetbuddy_mtd,gofrugal_mtd) -- month KPIs per unit for the latest month and the one before (fractions: 0.12 = 12%).
-sheet_targets(month date,unit,target) -- monthly sales target per unit.
-v_all_sales(sale_date,source,bill_no,clinic,item_name,plan_category,plan_subcategory,species,qty,amount,is_vow,sales_unit,doctor) -- every bill line of clinic (source 'VetBuddy') and pharmacy (source 'Pharmacy'); sales = SUM(amount); bills = COUNT(DISTINCT bill_no).
-v_sales_bot(sale_date,invoice_no,item_name,goods_or_service,plan_category,plan_subcategory,qty,gross_sales,discount_name,discount_amount,net_sales,amount,is_vow,sales_unit,doctor,species,breed,performed_clinic) -- clinic (VetBuddy) lines; amount = net sales after returns.
-v_pharmacy_bot(sale_date,kind,outlet,bill_no,item_name,manufacturer,qty,amount,doctor,is_vow,sales_unit) -- pharmacy lines; kind 'sale'/'return'.
-v_vetbuddy_pbi_bot -- clinic lines + customer/pet analytics: pet_key, owner_key (anonymous; pets = COUNT(DISTINCT pet_key)); pet_category ('Puppy','Adult','Aged','Error Date'); pet_category_split ('New Pets','With in 1 Months','With in 6 Months','With in 12 Months','With in 18 Months','More than 18 Months' = gap since previous visit); previous_visit_date; is_night_service (1/0); came_back_for_consultation ('Yes'/'No'); per pet (same on every line): first_visit_date, client_visit_count, total_client_revenue, last_<x>_visit, <x>_visit_count, no_of_days_still_visit_<x>, <x>_status for x in bathing/haircut/vaccination/consultation/boarding; callback_date_bathing, callback_date_haircut, services_due; plus sale_date, sales_unit, amount, plan_category, plan_subcategory, item_name, doctor, species, breed.
-UNITS (column unit / sales_unit): clinics ADYAR, NEELANGARAI, ANNA NAGAR, VELACHERY, VALASARAVAKKAM (Chennai), COIMBATORE, MADURAI, TRICHY; Vet on Wheels (home visits) units 'CH VET ON WHEELS', 'CH VET ON WHEELS - NON CLINICAL', 'CBE VET ON WHEELS', 'CBE VET ON WHEELS - NON CLINICAL', 'MADURAI VET ON WHEELS', 'TRICHY VET ON WHEELS'.
-CATEGORIES: surgery plan_subcategory='Surgery'; vaccination plan_category ILIKE 'Vaccination%'; lab ILIKE 'Laboratory%'; scan/x-ray ILIKE 'Diagnostics%'; grooming/saloon ILIKE 'Spa and Saloon%'; consultation plan_subcategory IN ('Consultation','OPD'); boarding ILIKE 'BOARDING%'; dog species='Canine', cat 'Feline'. Exclude sales_unit LIKE '%UNMAPPED%'.
-PLACEHOLDERS (the bot fills them; NEVER write unit names or dates yourself): {{UNITS}} = text[] of the units asked (WHERE unit = ANY({{UNITS}})); {{FROM}} {{TO}} = the period asked (inclusive dates); {{PREV_FROM}} {{PREV_TO}} = the previous period of the same length; {{LM_FROM}} {{LM_TO}} = the same days last month; {{MONTH}} = first day of the period's month.
-SQL RULES: one SELECT or WITH per query, no semicolon, read-only. Money ROUND(x,0); percentages ROUND(x*100.0,1) in columns ending _pct (growth_pct, share_pct, achieved_pct). Readable snake_case aliases (unit, sales, prev_sales, growth_pct, share_pct, target, achieved_pct, bills, avg_bill ...), at most 7 columns. WIDE format: one row per unit / category / doctor with the current value, the comparison value and the change side by side - never a long table with a "period" column. At most 15 rows (ORDER BY the main measure DESC + LIMIT 15); add a final 'TOTAL' row when summing units. Use NULLIF to avoid division by zero. With UNION ALL wrap it: SELECT * FROM (... UNION ALL ...) t ORDER BY .... Targets, month_estimate and achieved % are MONTHLY - use them only for a month / month-to-date period. Compute EVERY derived number in SQL (differences, growth %, shares, averages, per-day, ranks) - the final answer may only quote numbers that appear in query results.`;
-
-const PLAN_SYSTEM = `You are the senior business analyst of Sanchu Pet Hospitals (veterinary clinics, pharmacy and Vet on Wheels home visits in Chennai, Coimbatore, Madurai and Trichy). A manager asks a question in a Teams chat. Plan how to answer it with data, the way a good analyst would.
-Write 2 to 4 queries that together answer it completely:
- 1. ANSWER - exactly what was asked (the number, ranking or list), by unit when several units are asked, with a TOTAL row.
- 2. CONTEXT - is it good or bad? The same measure for {{LM_FROM}}..{{LM_TO}} (same days last month) or {{PREV_FROM}}..{{PREV_TO}}, with growth_pct computed in SQL; for month / MTD questions also the target (sheet_targets / sheet_kpi) with achieved_pct.
- 3. DRIVERS - what explains it: the breakdown that matters for this question (category mix, doctors, items, species, bills and average bill value, new vs repeat pets, day-wise trend ...). Compare current vs last month in the same row so changes are visible.
-Use one query when the question is a simple lookup, but never skip CONTEXT for a sales question. Official sales totals come from sheet_daily / sheet_kpi / sheet_targets; breakdowns ("why") come from the line views.
-"purpose" = a short plain-English title shown above the table, e.g. "Sales by unit vs same days last month", "Category mix vs last month", "Top 10 doctors by sales".
-Reply ONLY JSON: {"understanding":"what is asked, one line","queries":[{"purpose":"...","sql":"..."}]}
-If it cannot be answered from this data: {"understanding":"...","queries":[],"reply":"short reason and what can be asked instead"}
-
-` + TABLES;
-
-const ANALYZE_SYSTEM = `You are the senior business analyst of Sanchu Pet Hospitals, replying to a manager in a Teams chat. You ran the queries below; the results are CSV with numbers ALREADY FORMATTED (Indian commas, % values). Write a sharp, correct answer.
-OUTPUT
-- "headline": the direct answer in ONE sentence (max 25 words), starting with the answer itself, professional and precise (key figure in **bold**, no emojis; always name the exact date / period and the comparison used), e.g. "Division sales are Rs 56,82,999 for 1-10 Nov, up 1.1% on the same days last month." No "Here is" / "Based on the data".
-- "points": 3 to 5 bullets, each "Label: sentence" with a 1-3 word label, e.g. "Biggest driver: Anna Nagar brought Rs 11,08,705 (19.5% of sales).". Cover: what drives the number, the comparison (growth / vs target), the strongest and the weakest contributor, and anything unusual. No repetition of the headline, no generic advice.
-- "action": ONE short practical next step grounded in these results - ONLY when the manager asked for insights / suggestions, otherwise "".
-- "main": 0-based index of the result that best answers the question (shown first); "extra": up to 2 more result indexes worth showing ([] if none).
-- "drill": ONE more query {"purpose":"...","sql":"..."} only if a big change in the results is still unexplained, else null (same placeholders and rules).
-- "followups": 3 short follow-up questions the manager is likely to ask next (max 10 words each).
-ACCURACY RULES (most important)
-- Copy numbers EXACTLY as written in the results (e.g. 56,82,999 / 19.5%). Do not convert to lakh/crore, do not round further, never calculate a new number (no differences, sums, shares or % of your own). If you need a number that is not in the results, ask for it with "drill" or leave it out.
-- Words must match the signs: a negative growth_pct is a fall/decline, positive is growth. "Only", "all", "highest", "lowest", "most" must be true for EVERY row of the result - check before writing.
-- Say which comparison you mean ("vs same days last month", "vs previous 10 days", "vs target"). Never say YoY unless the data is a year apart.
-- Units in Title Case (Anna Nagar, CH Vet on Wheels). Money as "Rs 11,08,705".
-Reply ONLY JSON: {"headline":"","points":[],"action":"","main":0,"extra":[],"drill":null,"followups":[]}
-
-` + TABLES;
-
-const BRIEF_SYSTEM = `You are "Sanchu Sales", a professional business analyst at Sanchu Pet Hospitals, answering a colleague in a Teams chat. You ran a query that answers the question; the results are CSV with numbers ALREADY FORMATTED. Answer exactly what was asked - clearly, precisely and courteously.
-"headline" (1-2 sentences, max 40 words):
-- State the answer directly with the key figure in **bold**: money as **Rs 98,596**; units in Title Case (Anna Nagar, CH Vet on Wheels); dates as "Mon, 10 Nov" / "1-10 Nov". Always name the unit(s) and the exact date / period the figure is for, as given in "Period" and "Comparison".
-- If a comparison was asked, give both figures and the change, all copied from the results.
-- You may end with ONE short professional offer of the next step (e.g. "Would you like the clinic-wise split?").
-- No emojis, no slang, no "Here is", "Based on the data", "sales amount for".
-- Never add numbers, splits or comparisons that were not asked for.
-- If the result is empty, say so plainly in one sentence.
-ACCURACY: copy numbers EXACTLY from the results; never calculate, round or convert.
-"points": [] (only if a short list of names was asked: one point, at most 5 names).
-"followups": 2 short buttons (max 7 words each), specific next questions.
-Reply ONLY JSON: {"headline":"","points":[],"followups":[]}`;
-
-const REPAIR_SYSTEM = `You are a strict reviewer of a data analyst's answer for Sanchu Pet Hospitals. Check EVERY statement in the draft against the query results (CSV, numbers already formatted):
-- each number must appear in the results exactly (same value; Indian-comma formatting may differ);
-- direction words must match signs (negative = decline / fall, positive = growth / rise);
-- "only", "all", "highest", "lowest", "most", "biggest" must be true for every row;
-- shares, sums and differences must not be invented.
-Fix a wrong statement using the results, or remove it. Do not add new claims. Keep the same JSON keys; keep "main", "extra", "followups" unchanged; set "drill" to null. If everything is correct, return the draft unchanged.
-Reply ONLY JSON: {"headline":"","points":[],"action":"","main":0,"extra":[],"drill":null,"followups":[],"changes":"what you fixed, or 'none'"}`;
-
-const FIX_SYSTEM = `You fix PostgreSQL queries for Sanchu Pet Hospitals' data. Keep the purpose and the placeholders. Reply ONLY JSON: {"sql":"..."}
-
-` + TABLES;
-
-// ---------------------------------------------------------------------------
-// question TYPE key: what is left after removing place and period (finds repeats without AI)
-// ---------------------------------------------------------------------------
-const INSIGHT_RE = /\b(insights?|why|explain|analy[sz]e|analysis|reasons?|suggest|recommend|trends?|summari[sz]e|summary|observations?)\b/gi;
-const PHRASES: [RegExp, string][] = [
-  [/\b(revenue|turnover|business|collection|income|sale|sales|amount)\b/g, " sales "],
-  [/\b(target|aop|budget|achievement|achieved)\b/g, " target "],
-  [/\b(bills?|invoices?)\b/g, " bills "],
-  [/\b(dogs?|canines?)\b/g, " dog "], [/\b(cats?|felines?)\b/g, " cat "],
-  [/\b(operations?|surgeries)\b/g, " surgery "],
-  [/\b(vaccines?|vaccinations?)\b/g, " vaccination "],
-  [/\b(doctors?|vets?|drs?)\b/g, " doctor "],
-  [/\b(medicines?|drugs?|pharmacy|gofrugal)\b/g, " pharmacy "],
-  [/\b(how\s*many|count|number\s*of|no\s*of)\b/g, " count "],
-  [/\b(split\s*ups?|breakdown|break\s*up|detailed|details?|wise)\b/g, " "],
-];
-const STOP = new Set(("a an the of for in on at to and or by with from is are was were be been what whats which who " +
-  "how much me us our we show give tell get find list please pls can could would you i my do does did " +
-  "about all total value rs inr rupees data report numbers number vs versus compared compare " +
-  "it its that this these those there here so far till until up as per same also then now again just only " +
-  "ok okay hi hello thanks thank yes no some any more business interesting using detail details give tell " +
-  "please kindly about").split(" "));
-
-function typeKey(rest: string, kind: string): string {
-  let s = " " + rest.replace(/\bbusiness\s+(insights?|analysis|summary|observations?)\b/g, " ").replace(INSIGHT_RE, " ") + " ";
-  for (const [re, to] of PHRASES) s = s.replace(re, to);
-  const words = s.replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean)
-    .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
-    .filter((w) => !STOP.has(w));
-  const k = [...new Set(words)].sort().join(" ");
-  return k + (kind ? "" : "");   // "" = no words of its own (a follow-up); one template serves every place and period
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+const addDays = (s: string, n: number) => ymd(new Date(day(s).getTime() + n * 864e5));
 const istDate = (d = new Date()) => new Date(d.getTime() + 5.5 * 3600e3).toISOString().slice(0, 10);
-
+const wday = (s: string) => day(s).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
+const dm = (s: string) => `${day(s).getUTCDate()} ${MON[day(s).getUTCMonth()]}`;
+function rangeLabel(f: string, t: string) {
+  if (f === t) return `${wday(f)}, ${dm(f)}`;
+  const a = day(f), b = day(t);
+  return a.getUTCMonth() === b.getUTCMonth() && a.getUTCFullYear() === b.getUTCFullYear() ? `${a.getUTCDate()}-${dm(t)}` : `${dm(f)} - ${dm(t)}`;
+}
+function istNow() {
+  const d = new Date(Date.now() + 5.5 * 3600e3), h = d.getUTCHours();
+  const part = h < 5 ? "late night" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 21 ? "evening" : "night";
+  return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}), ${d.toISOString().slice(11, 16)} IST, ${part}`;
+}
 function inr(n: number, dec = 0): string {
   const neg = n < 0, s = Math.abs(n).toFixed(dec), [i, f] = s.split(".");
   const last3 = i.slice(-3), rest = i.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ",");
   return (neg ? "-" : "") + (rest ? rest + "," + last3 : last3) + (f ? "." + f : "");
 }
-
-async function dataDates() {
-  const [r] = await db`select (select max(sale_date) from vetbuddy.sheet_daily)::text as report,
-                              (select date_to from vetbuddy.v_data_freshness)::text as detail`;
-  return { report: r?.report ?? "", detail: r?.detail ?? "" };
+const rs = (n: unknown) => (n === null || n === undefined || !isFinite(Number(n)) ? "-" : "Rs " + inr(Number(n)));
+const pc = (n: unknown, sign = true) => (n === null || n === undefined || !isFinite(Number(n)) ? "-" : (sign && Number(n) > 0 ? "+" : "") + Number(n).toFixed(1) + "%");
+const r0 = (n: number | null | undefined) => (n === null || n === undefined || !isFinite(n) ? null : Math.round(n));
+const r1 = (n: number | null | undefined) => (n === null || n === undefined || !isFinite(n) ? null : Math.round(n * 10) / 10);
+const growth = (a: number | null, b: number | null) => (a === null || !b ? null : r1(((a - b) * 100) / b));
+const titleUnit = (u: string) => u.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\b(Ch|Cbe|Vow)\b/g, (m) => m.toUpperCase())
+  .replace(/\bOn\b/g, "on").replace(/\bNon Clinical\b/g, "Non-Clinical");
+function placeLabel(units: string[]) {
+  if (units.length >= ALL_UNITS.length) return "Division (all units)";
+  for (const c of CITIES) {
+    const all = [...c.clinic, ...c.vow];
+    if (units.length === all.length && all.every((u) => units.includes(u))) return c.name;
+  }
+  return units.length <= 3 ? units.map(titleUnit).join(", ") : `${units.length} units`;
+}
+function firstName(who: string) {           // nothing for shared / team accounts ("Data Analyst Sanchu" ...)
+  const w = who.replace(/\(.*?\)/g, "").trim();
+  if (!w || /\b(sanchu|analyst|team|admin|reports?|account|marketing|sales|hospital|office|desk|support|info|hr|accounts)\b/i.test(w)) return "";
+  return w.split(/\s+/)[0].replace(/[^A-Za-z.'-]/g, "");
 }
 
+let datesCache: { at: number; latest: string } | null = null;
+async function latestDay(): Promise<string> {
+  if (datesCache && Date.now() - datesCache.at < 5 * 60e3) return datesCache.latest;
+  const [r] = await db`select max(sale_date)::text as d from vetbuddy.sheet_daily`;
+  datesCache = { at: Date.now(), latest: r?.d ?? addDays(istDate(), -1) };
+  return datesCache.latest;
+}
+
+class LimitError extends Error {}
 async function usage(add = 0) {
   const d = istDate();
   if (add > 0) {
@@ -246,106 +110,7 @@ async function usage(add = 0) {
 }
 
 // ---------------------------------------------------------------------------
-// AI: several Groq models, each step has its own order; on a limit / error the next model takes over
-// ---------------------------------------------------------------------------
-const M120 = "openai/gpt-oss-120b", M20 = "openai/gpt-oss-20b", MQWEN = "qwen/qwen3.8-27b";
-const STEP_MODELS: Record<string, string[]> = {
-  plan:    (env("AI_PLAN_MODELS") || `${M120},${MQWEN},${M20}`).split(","),     // most accurate model plans the queries
-  analyze: (env("AI_ANALYZE_MODELS") || `${M120},${MQWEN},${M20}`).split(","),
-  review:  (env("AI_REVIEW_MODELS") || `${MQWEN},${M120}`).split(","),          // a DIFFERENT model checks the draft
-  fix:     (env("AI_FIX_MODELS") || `${M20},${MQWEN},${M120}`).split(","),      // cheap model repairs a failing query
-  chat:    (env("AI_CHAT_MODELS") || `${M120},${MQWEN},${M20}`).split(","),     // the assistant: understands every message
-};
-class LimitError extends Error {}
-type AiOut = { text: string; tokens: number; model: string };
-
-async function aiCall(step: string, system0: string, user: string, maxTokens: number): Promise<AiOut> {
-  const system = step === "fix" || step === "plan" ? system0 : await withRules(system0);   // rules govern what is SAID
-  const errs: string[] = [];
-  let limited = 0;
-  const models = STEP_MODELS[step] ?? STEP_MODELS.analyze;
-  const tries: [string, boolean][] = [];
-  for (const m of models.map((x) => x.trim()).filter(Boolean)) tries.push([m, true]);
-  for (const m of models.map((x) => x.trim()).filter(Boolean)) tries.push([m, false]);   // 2nd round: no JSON mode (parsed leniently)
-  for (const [model, jsonMode] of tries) {
-    const body: Record<string, unknown> = {
-      model, temperature: step === "chat" ? 0.4 : 0, max_completion_tokens: jsonMode ? maxTokens * 2 : maxTokens * 3,
-      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
-    };
-    if (model.includes("gpt-oss")) { body.reasoning_effort = step === "plan" ? "medium" : "low"; body.include_reasoning = false; }
-    else if (model.includes("qwen")) { body.reasoning_effort = "low"; body.reasoning_format = "hidden"; }
-    let r: Response;
-    try {
-      r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body),
-        headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" } });
-    } catch (e) { errs.push(String(e).slice(0, 80)); continue; }
-    if (r.status === 429) { limited++; errs.push(`${model.split("/").pop()} busy`); continue; }   // per-model limits -> next model
-    if (!r.ok) {
-      const t = await r.text();
-      const failed = t.match(/"failed_generation"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-      if (failed) {                                    // JSON mode rejected the output - often it is usable JSON anyway
-        try { const g = JSON.parse(`"${failed[1]}"`); if (Object.keys(parseJson(g)).length) return { text: g, tokens: 0, model }; } catch { /* next */ }
-      }
-      errs.push(`${model.split("/").pop()} ${r.status} ${(t.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? t.slice(0, 60)}`);
-      console.error("ai", step, model, r.status, t.slice(0, 300));
-      continue;
-    }
-    const j = await r.json();
-    const tokens = j.usage?.total_tokens ?? 0;
-    await usage(tokens);
-    const text = String(j.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    if (!text || (!jsonMode && !Object.keys(parseJson(text)).length)) { errs.push(`${model.split("/").pop()} no answer`); continue; }
-    return { text, tokens, model };
-  }
-  if (limited && limited >= tries.length / 2) throw new LimitError("All free AI models are busy right now (per-minute limit) - please ask again in a minute.");
-  throw new Error("AI unavailable: " + errs.join("; "));
-}
-// deno-lint-ignore no-explicit-any
-function parseJson(t: string): any {
-  try { return JSON.parse(t); } catch { /* fall through */ }
-  const m = t.match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch { /* ignore */ } }
-  return {};
-}
-
-// ---------------------------------------------------------------------------
-// follow-ups: each chat remembers its last question (place, period, question type) for 2 hours
-// ---------------------------------------------------------------------------
-type Ctx = { key: string; question: string; units: string[]; place_label: string; p_from: string; p_to: string; p_kind: string; p_label: string; headline: string | null };
-async function getCtx(conv: string): Promise<Ctx | null> {
-  if (!conv) return null;
-  const [c] = await db`select key, question, units, place_label, p_from::text as p_from, p_to::text as p_to, p_kind, p_label, headline
-                       from vetbuddy.bot_context where conversation = ${conv} and updated_at > now() - interval '30 minutes'`;
-  return (c as unknown as Ctx) ?? null;
-}
-async function setCtx(conv: string, key: string, question: string, pl: Place, pe: Period, headline = "") {
-  if (!conv) return;
-  await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_context (conversation, key, question, units, place_label, p_from, p_to, p_kind, p_label, headline, updated_at)
-    values (${conv}, ${key}, ${question}, ${pl.units}, ${pl.label}, ${pe.from}, ${pe.to}, ${pe.kind}, ${pe.label}, ${headline.slice(0, 400)}, now())
-    on conflict (conversation) do update set key = excluded.key, question = excluded.question, units = excluded.units,
-      place_label = excluded.place_label, p_from = excluded.p_from, p_to = excluded.p_to, p_kind = excluded.p_kind,
-      p_label = excluded.p_label, headline = excluded.headline, updated_at = now()`);
-}
-
-// a message continues the previous question only when it reads like a follow-up
-const FOLLOW_RE = /^\s*(and|also|what about|how about|same|now|then|only|just|but|instead|split|break|compare|vs|versus|by|for|in|show|what if)\b|\b(same|that|those|them|it|this one)\b/;
-// place names typed into a saved title/answer by the AI -> {PLACE}, so a template never shows another place
-const PLACE_WORDS = /\b(chennai|coimbatore|cbe|kovai|madurai|trichy|adyar|neelangarai|anna\s*nagar|velachery|valasaravakkam)(\s+(vet\s*on\s*wheels|vow))?\b|\b(vet\s*on\s*wheels|vow)\b/gi;
-function placeless(t: string, needPeriod = false): string {
-  if (!t) return t;
-  let s = t.replace(PLACE_WORDS, "{PLACE}").replace(/\{PLACE\}(\s*(,|&|and)?\s*\{PLACE\})+/g, "{PLACE}");
-  if (needPeriod) {
-    if (!s.includes("{PLACE}")) s += " - {PLACE}";
-    if (!s.includes("{PERIOD}")) s += " · {PERIOD}";
-  }
-  return s;
-}
-class NotAQuestion extends Error {}
-
-// ---------------------------------------------------------------------------
-// HOUSE RULES ("negative prompts"): table vetbuddy.bot_rules (SQL 14), managed from Teams with
-//   "rules" | "add rule: never ..." | "remove rule 3" - added to every AI step, they override everything else
+// house rules ("negative prompts") - vetbuddy.bot_rules
 // ---------------------------------------------------------------------------
 let rulesCache: { at: number; list: { id: number; rule: string }[] } | null = null;
 async function rules(): Promise<{ id: number; rule: string }[]> {
@@ -356,354 +121,566 @@ async function rules(): Promise<{ id: number; rule: string }[]> {
   } catch { rulesCache = { at: Date.now(), list: [] }; }
   return rulesCache.list;
 }
-async function withRules(system: string) {
-  const list = await rules();
-  return list.length ? system + "\n\nHOUSE RULES - must ALWAYS be followed; they override everything above:\n" + list.map((r) => "- " + r.rule).join("\n") : system;
-}
 
 // ---------------------------------------------------------------------------
-// placeholders -> real values (units, the period, the previous period, the same days last month)
+// DATA TOOLS - tested SQL; all derived numbers computed here, never by the AI
 // ---------------------------------------------------------------------------
-function shiftMonth(d: string, by: number): string {
-  const x = new Date(d + "T00:00:00Z");
-  const t = new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth() + by, 1));
-  const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
-  t.setUTCDate(Math.min(x.getUTCDate(), last));
-  return ymd(t);
-}
-function comparePeriods(pe: Period) {
-  const f = new Date(pe.from + "T00:00:00Z"), t = new Date(pe.to + "T00:00:00Z");
-  const days = Math.round((t.getTime() - f.getTime()) / 864e5) + 1;
-  const prevTo = new Date(f.getTime() - 864e5), prevFrom = new Date(f.getTime() - days * 864e5);
-  const fullMonth = f.getUTCDate() === 1 && new Date(t.getTime() + 864e5).getUTCDate() === 1;
-  const lmFrom = shiftMonth(pe.from, -1);
-  const lmTo = fullMonth ? ymd(new Date(Date.UTC(f.getUTCFullYear(), f.getUTCMonth(), 0))) : shiftMonth(pe.to, -1);
-  if (pe.cmpFrom && pe.cmpTo) return { prevFrom: pe.cmpFrom, prevTo: pe.cmpTo, lmFrom, lmTo };   // the comparison the person asked for
-  return { prevFrom: ymd(prevFrom), prevTo: ymd(prevTo), lmFrom, lmTo };
-}
-const sqlStr = (s: string) => "'" + s.replace(/'/g, "''") + "'";
-function render(tpl: string, pl: Place, pe: Period) {
-  const c = comparePeriods(pe);
-  return tpl
-    .replace(/\{\{\s*UNITS\s*\}\}/g, `ARRAY[${pl.units.map(sqlStr).join(",")}]::text[]`)
-    .replace(/\{\{\s*PREV_FROM\s*\}\}/g, `DATE '${c.prevFrom}'`).replace(/\{\{\s*PREV_TO\s*\}\}/g, `DATE '${c.prevTo}'`)
-    .replace(/\{\{\s*LM_FROM\s*\}\}/g, `DATE '${c.lmFrom}'`).replace(/\{\{\s*LM_TO\s*\}\}/g, `DATE '${c.lmTo}'`)
-    .replace(/\{\{\s*FROM\s*\}\}/g, `DATE '${pe.from}'`).replace(/\{\{\s*TO\s*\}\}/g, `DATE '${pe.to}'`)
-    .replace(/\{\{\s*MONTH\s*\}\}/g, `DATE '${pe.from.slice(0, 7)}-01'`);
-}
+type ToolResult = { id: string; title: string; rows: Row[]; info: string; error?: string };
+class ToolInputError extends Error {}
 
-// run SQL: one SELECT, read-only transaction, 15 s, max 201 rows
-async function runSql(q: string) {
-  const clean = q.trim().replace(/;+\s*$/, "");
-  if (!/^(select|with)\b/i.test(clean) || clean.includes(";")) throw new Error("only one SELECT is allowed");
-  return await db.begin("read only", async (tx) => {
-    await tx.unsafe("set local statement_timeout = '15s'");
-    return await tx.unsafe(`select * from (${clean}) as _q limit 201`);
-  }) as Record<string, unknown>[];
-}
-
-// ---------------------------------------------------------------------------
-// accuracy check: every number in the answer must be traceable to a query result
-// ---------------------------------------------------------------------------
-function resultNumbers(sets: Record<string, unknown>[][]): number[] {
-  const out: number[] = [];
-  for (const rows of sets) for (const r of rows.slice(0, 60)) for (const v of Object.values(r)) {
-    const n = typeof v === "number" ? v : (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : NaN);
-    if (!isFinite(n)) continue;
-    out.push(n, n / 1e5, n / 1e7, n * 100, Math.abs(n), Math.abs(n) / 1e5, Math.abs(n) * 100);
+function units(arg: unknown): string[] {
+  const list = (Array.isArray(arg) ? arg : arg ? [arg] : []).map((x) => String(x).trim()).filter(Boolean);
+  const out: string[] = [], unknown: string[] = [];
+  for (const raw of list) {
+    const u = raw.toUpperCase().replace(/\s+/g, " ");
+    if (/^(ALL|DIVISION|TOTAL|OVERALL|ALL UNITS)$/.test(u)) return [...ALL_UNITS];
+    if (ALL_UNITS.includes(u)) { out.push(u); continue; }
+    const city = CITIES.find((c) => u.startsWith(c.name.toUpperCase()) || (c.name === "Chennai" && /^CH\b/.test(u)) || (c.name === "Coimbatore" && /^(CBE|KOVAI)\b/.test(u)));
+    if (city) {
+      out.push(...(/VET ON WHEELS|VOW/.test(u) ? city.vow : /CLINIC/.test(u) ? city.clinic : [...city.clinic, ...city.vow]));
+      continue;
+    }
+    if (/^(VET ON WHEELS|VOW|ALL VET ON WHEELS)$/.test(u)) { out.push(...ALL_UNITS.filter((x) => x.includes("VET ON WHEELS"))); continue; }
+    if (/^(CLINICS|ALL CLINICS)$/.test(u)) { out.push(...ALL_UNITS.filter((x) => !x.includes("VET ON WHEELS"))); continue; }
+    unknown.push(raw);
   }
-  return out;
+  if (unknown.length) throw new ToolInputError(`Unknown unit(s): ${unknown.join(", ")}. Use names from: ${ALL_UNITS.join(", ")}, or a city (Chennai, Coimbatore, Madurai, Trichy), or "all".`);
+  return out.length ? [...new Set(out)] : [...ALL_UNITS];
 }
-function claimedNumbers(text: string): { raw: string; value: number; dec: number }[] {
+function dateArg(v: unknown, name: string, latest: string, optional = false): string | null {
+  if ((v === undefined || v === null || v === "") && optional) return null;
+  const s = String(v ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || isNaN(Date.parse(s))) throw new ToolInputError(`${name} must be a date YYYY-MM-DD`);
+  return s > latest ? latest : s;
+}
+const uList = (u: string[]) => u.join("|");
+
+// get_sales: official daily sales report (sheet_daily) for a period, optional comparison period and unit split
+async function getSales(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  const us = units(a.units), from = dateArg(a.from, "from", latest)!, to = dateArg(a.to, "to", latest)!;
+  const cf = dateArg(a.compare_from, "compare_from", latest, true), ct = dateArg(a.compare_to, "compare_to", latest, true);
+  const q = (f: string, t: string) => db`select unit, sum(total)::float8 t, sum(vetbuddy)::float8 c, sum(gofrugal)::float8 p, count(distinct sale_date)::int d
+    from vetbuddy.sheet_daily where sale_date between ${f}::date and ${t}::date and unit = any(string_to_array(${uList(us)}, '|')) group by unit`;
+  const [cur, cmp] = await Promise.all([q(from, to), cf && ct ? q(cf, ct) : Promise.resolve([])]);
+  const cm = new Map((cmp as unknown as Row[]).map((r) => [String(r.unit), Number(r.t)]));
+  let T = 0, C = 0, P = 0, CT = 0, D = 0;
+  const per = (cur as unknown as Row[]).map((r) => {
+    const t = Number(r.t), c = cm.get(String(r.unit)) ?? null;
+    T += t; C += Number(r.c); P += Number(r.p); CT += c ?? 0; D = Math.max(D, Number(r.d));
+    return { unit: titleUnit(String(r.unit)), sales: r0(t), clinic: r0(Number(r.c)), pharmacy: r0(Number(r.p)),
+             ...(cf ? { compare_sales: r0(c), change: c === null ? null : r0(t - c), growth_pct: growth(t, c) } : {}) } as Row;
+  }).sort((x, y) => Number(y.sales ?? 0) - Number(x.sales ?? 0));
+  for (const p of per) p.share_pct = T ? r1((Number(p.sales ?? 0) * 100) / T) : null;
+  const days = Math.round((day(to).getTime() - day(from).getTime()) / 864e5) + 1;
+  const total: Row = { unit: "TOTAL", sales: r0(T), clinic: r0(C), pharmacy: r0(P),
+    ...(cf ? { compare_sales: r0(CT), change: r0(T - CT), growth_pct: growth(T, CT) } : {}), share_pct: T ? 100 : null };
+  const rows = a.by_unit ? [...per, total] : [total];
+  if (days > 1) for (const r of rows) r.avg_per_day = D ? r0(Number(r.sales) / D) : null;
+  return { title: `Sales - ${placeLabel(us)}, ${rangeLabel(from, to)}${cf ? ` vs ${rangeLabel(cf, ct!)}` : ""}`, rows,
+    info: `Official daily sales report. Units: ${placeLabel(us)}. Period ${from}..${to} (${rangeLabel(from, to)}), days with data: ${D} of ${days}` +
+      (cf ? `; compared with ${cf}..${ct} (${rangeLabel(cf, ct!)})` : "") + `. clinic = VetBuddy (services + goods), pharmacy = GoFrugal.` +
+      (D === 0 ? " NO DATA for this period yet." : "") };
+}
+
+// get_month_status: month-to-date KPIs and targets (sheet_kpi)
+async function getMonthStatus(a: Row): Promise<Omit<ToolResult, "id">> {
+  const us = units(a.units), all = us.length >= ALL_UNITS.length;
+  const m = a.month && /^\d{4}-\d{2}/.test(String(a.month)) ? String(a.month).slice(0, 7) + "-01" : null;
+  const rows0 = await db`select * from vetbuddy.sheet_kpi where month = coalesce(${m}::date, (select max(month) from vetbuddy.sheet_kpi))
+    and (unit = 'TOTAL' or unit = any(string_to_array(${uList(us)}, '|')))` as unknown as Row[];
+  if (!rows0.length) throw new ToolInputError("No month KPIs for that month (only the latest month and the one before are kept).");
+  const n = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+  type K = { mtd: number; target: number | null; est: number | null; lm: number | null; req: number | null; ads: number | null; tpd: number | null; bal: number | null };
+  const mk = (unit: string, r: K): Row => ({
+    unit, mtd: r0(r.mtd), target: r0(r.target), achieved_pct: r.target ? r1((r.mtd * 100) / r.target) : null,
+    month_estimate: r0(r.est), estimate_pct: r.target && r.est !== null ? r1((r.est * 100) / r.target) : null,
+    last_month_same_days: r0(r.lm), growth_pct: growth(r.mtd, r.lm), required_per_day: r0(r.req), avg_daily_sales: r0(r.ads),
+    target_per_day: r0(r.tpd), balance_to_target: r0(r.bal) });
+  const pick = (r: Row): K => ({ mtd: Number(r.mtd ?? 0), target: n(r.target), est: n(r.month_estimate), lm: n(r.last_month_same_days),
+    req: n(r.required_per_day), ads: n(r.ads), tpd: n(r.target_per_day), bal: n(r.balance_to_target) });
+  const unitRows = rows0.filter((r) => r.unit !== "TOTAL" && us.includes(String(r.unit)));
+  const per = unitRows.map((r) => mk(titleUnit(String(r.unit)), pick(r))).sort((x, y) => Number(y.mtd ?? 0) - Number(x.mtd ?? 0));
+  const tot = rows0.find((r) => r.unit === "TOTAL");
+  let total: Row;
+  if (all && tot) total = mk("TOTAL", pick(tot));
+  else {
+    const s = (k: keyof K) => unitRows.reduce((acc, r) => acc + (pick(r)[k] ?? 0), 0);
+    total = mk("TOTAL", { mtd: s("mtd"), target: s("target"), est: s("est"), lm: s("lm"), req: s("req"), ads: s("ads"), tpd: s("tpd"), bal: s("bal") });
+  }
+  const f = rows0[0];
+  const rows = per.length === 1 ? per : a.by_unit ? [...per, total] : [total];
+  const mo = f.month instanceof Date ? ymd(f.month) : String(f.month).slice(0, 10);
+  const asOf = f.as_of instanceof Date ? ymd(f.as_of) : String(f.as_of).slice(0, 10);
+  return { title: `Month to date vs target - ${placeLabel(us)}, ${MON[day(mo).getUTCMonth()]} ${day(mo).getUTCFullYear()}`, rows,
+    info: `Month ${mo.slice(0, 7)}, as of ${asOf} (${dm(asOf)}): ${f.days_done} days done, ${f.days_left} days left. ` +
+      `month_estimate = projected month-end sales at the current pace; required_per_day = sales needed per remaining day to reach target; ` +
+      `growth_pct = vs the same days last month.` };
+}
+
+// get_breakdown: what makes up / drives sales (bill lines of clinic + pharmacy)
+const DIMS: Record<string, string> = { category: "plan_category", subcategory: "plan_subcategory", doctor: "doctor", item: "item_name",
+  species: "species", unit: "sales_unit", day: "sale_date", source: "source", weekday: "trim(to_char(sale_date,'Dy'))" };
+async function getBreakdown(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  const by = String(a.by ?? "").toLowerCase();
+  if (!DIMS[by]) throw new ToolInputError(`by must be one of: ${Object.keys(DIMS).join(", ")}`);
+  const us = units(a.units), from = dateArg(a.from, "from", latest)!, to = dateArg(a.to, "to", latest)!;
+  const cf = dateArg(a.compare_from, "compare_from", latest, true), ct = dateArg(a.compare_to, "compare_to", latest, true);
+  const top = Math.min(Math.max(Number(a.top_n ?? 10) || 10, 3), 25);
+  const src = String(a.source ?? "all").toLowerCase();
+  const filt = String(a.filter ?? "").trim();
+  const conds = [`sales_unit = any(string_to_array($1, '|'))`];
+  if (src === "clinic") conds.push(`source = 'VetBuddy'`); else if (src === "pharmacy") conds.push(`source = 'Pharmacy'`);
+  if (filt) conds.push(`(plan_category ilike $4 or plan_subcategory ilike $4 or item_name ilike $4 or coalesce(species,'') ilike $4)`);
+  const col = DIMS[by];
+  const agg = (d1: string, d2: string) => `select coalesce(nullif(trim(${col}::text),''),'(not recorded)') k, sum(amount)::float8 s, sum(qty)::float8 q,
+    count(distinct bill_no)::int b from vetbuddy.v_all_sales where sale_date between ${d1}::date and ${d2}::date and ${conds.join(" and ")} group by 1`;
+  const sql = `with cur as (${agg("$2", "$3")}), cmp as (${agg("$5", "$6")})
+    select cur.k, cur.s, cur.q, cur.b, cmp.s cs from cur left join cmp using (k)`;
+  const rows0 = await db.begin("read only", async (tx) => {
+    await tx.unsafe("set local statement_timeout = '20s'");
+    return await tx.unsafe(sql, [uList(us), from, to, filt ? `%${filt}%` : "", cf, ct]);
+  }) as unknown as Row[];
+  const T = rows0.reduce((s, r) => s + Number(r.s), 0), CT = rows0.reduce((s, r) => s + (r.cs === null ? 0 : Number(r.cs)), 0);
+  const isDay = by === "day";
+  const key = (r: Row) => r.k instanceof Date ? ymd(r.k) : String(r.k);
+  const sorted = [...rows0].sort((x, y) => isDay ? key(x).localeCompare(key(y)) : Number(y.s) - Number(x.s));
+  const shown = isDay ? sorted : sorted.slice(0, top), rest = isDay ? [] : sorted.slice(top);
+  const row = (k: string, s: number, q: number | null, b: number | null, c: number | null): Row => ({
+    [by]: k, sales: r0(s), share_pct: T ? r1((s * 100) / T) : null, ...(by === "item" ? { qty: r0(q) } : {}),
+    ...(b !== null ? { bills: b } : {}), ...(cf ? { compare_sales: r0(c), growth_pct: growth(s, c) } : {}) });
+  const out = shown.map((r) => row(isDay ? rangeLabel(key(r).slice(0, 10), key(r).slice(0, 10)) : by === "unit" ? titleUnit(key(r)) : key(r),
+    Number(r.s), Number(r.q), Number(r.b), r.cs === null ? null : Number(r.cs)));
+  if (rest.length) out.push(row(`Others (${rest.length})`, rest.reduce((s, r) => s + Number(r.s), 0), null, null,
+    cf ? rest.reduce((s, r) => s + (r.cs === null ? 0 : Number(r.cs)), 0) : null));
+  out.push(row("TOTAL", T, null, null, cf ? CT : null));
+  return { title: `Sales by ${by}${filt ? ` (${filt})` : ""} - ${placeLabel(us)}, ${rangeLabel(from, to)}${cf ? ` vs ${rangeLabel(cf, ct!)}` : ""}`, rows: out,
+    info: `From bill lines (clinic + pharmacy${src !== "all" ? `, only ${src}` : ""}${filt ? `, filter "${filt}"` : ""}); totals can differ slightly from the official daily report. ` +
+      `Period ${from}..${to}${cf ? `, compared with ${cf}..${ct}` : ""}. ${rows0.length} ${by} values in total.` };
+}
+
+// get_customers: pets, new pets, owners, bills and average bill (clinic)
+async function getCustomers(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  const us = units(a.units), from = dateArg(a.from, "from", latest)!, to = dateArg(a.to, "to", latest)!;
+  const cf = dateArg(a.compare_from, "compare_from", latest, true), ct = dateArg(a.compare_to, "compare_to", latest, true);
+  const byUnit = !!a.by_unit;
+  const q = (f: string, t: string) => db`select ${byUnit ? db`sales_unit` : db`'TOTAL'::text`} as unit,
+      count(distinct pet_key)::int pets, count(distinct pet_key) filter (where pet_category_split = 'New Pets')::int new_pets,
+      count(distinct owner_key)::int owners, count(distinct invoice_no)::int bills, sum(amount)::float8 sales
+    from vetbuddy.v_vetbuddy_pbi_bot where sale_date between ${f}::date and ${t}::date and sales_unit = any(string_to_array(${uList(us)}, '|'))
+    group by 1`;
+  const [cur, cmp] = await Promise.all([q(from, to), cf && ct ? q(cf, ct) : Promise.resolve([])]);
+  const cm = new Map((cmp as unknown as Row[]).map((r) => [String(r.unit), r]));
+  const rows = (cur as unknown as Row[]).map((r): Row => {
+    const c = cm.get(String(r.unit)), bills = Number(r.bills), avg = bills ? Number(r.sales) / bills : null;
+    const cAvg = c && Number(c.bills) ? Number(c.sales) / Number(c.bills) : null;
+    return { unit: r.unit === "TOTAL" ? "TOTAL" : titleUnit(String(r.unit)), pets: r.pets, new_pets: r.new_pets, repeat_pets: Number(r.pets) - Number(r.new_pets),
+      owners: r.owners, bills, avg_bill: r0(avg),
+      ...(c ? { compare_pets: c.pets, pets_growth_pct: growth(Number(r.pets), Number(c.pets)), compare_avg_bill: r0(cAvg), avg_bill_growth_pct: growth(avg, cAvg) } : {}) };
+  }).sort((x, y) => Number(y.pets) - Number(x.pets));
+  return { title: `Pets and bills - ${placeLabel(us)}, ${rangeLabel(from, to)}`, rows,
+    info: `Clinic (VetBuddy) visits only. new_pets = pets whose first visit ever is in this period. Period ${from}..${to}${cf ? `, compared with ${cf}..${ct}` : ""}.` };
+}
+
+// run_sql: the agent's own read-only query for anything the other tools don't cover
+const SCHEMA = `PostgreSQL, schema vetbuddy (always write vetbuddy.<name>). Money in Rs.
+sheet_daily(sale_date,unit,total,vetbuddy,gofrugal) official daily sales per unit (vetbuddy = clinic, gofrugal = pharmacy).
+sheet_kpi(month,unit,as_of,days_done,days_left,mtd,last_month_same_days,growth_vs_last_month,month_estimate,target,estimate_vs_target,balance_to_target,required_per_day,ads,target_per_day,vetbuddy_mtd,gofrugal_mtd) month KPIs (fractions, 0.12 = 12%; unit 'TOTAL' = division).
+sheet_targets(month,unit,target).
+v_all_sales(sale_date,source 'VetBuddy'|'Pharmacy',bill_no,clinic,item_name,plan_category,plan_subcategory,species,qty,amount,is_vow,sales_unit,doctor) every bill line.
+v_vetbuddy_pbi_bot clinic lines with pet analytics: sale_date,invoice_no,item_name,plan_category,plan_subcategory,amount,sales_unit,doctor,species,breed,pet_key,owner_key (anonymous ids),pet_category ('Puppy','Adult','Aged'),pet_category_split ('New Pets','With in 1 Months'...'More than 18 Months'),first_visit_date,last_visit_date,days_last_visited,client_visit_count,last_vaccination_visit,vaccination_status,no_of_days_still_visit_vaccination,last_bathing_visit,bathing_status,last_haircut_visit,haircut_status,callback_date_bathing,callback_date_haircut,services_due,total_client_revenue,is_night_service.
+Units (unit / sales_unit): ${ALL_UNITS.join(", ")}. Categories: surgery plan_subcategory='Surgery'; vaccination plan_category ILIKE 'Vaccination%'; lab ILIKE 'Laboratory%'; diagnostics ILIKE 'Diagnostics%'; grooming ILIKE 'Spa and Saloon%'; consultation plan_subcategory IN ('Consultation','OPD'); boarding ILIKE 'BOARDING%'; dog species='Canine', cat 'Feline'.
+Rules: one SELECT/WITH, no semicolon; compute every derived number (sums, growth %, shares, averages) in SQL with ROUND; readable aliases; ORDER BY + LIMIT 25.`;
+async function runSqlTool(a: Row): Promise<Omit<ToolResult, "id">> {
+  const clean = String(a.sql ?? "").trim().replace(/;+\s*$/, "");
+  if (!/^(select|with)\b/i.test(clean) || clean.includes(";")) throw new ToolInputError("Only one SELECT (or WITH) query, without semicolons.");
+  const rows = await db.begin("read only", async (tx) => {
+    await tx.unsafe("set local statement_timeout = '20s'");
+    return await tx.unsafe(`select * from (${clean}) as _q limit 60`);
+  }) as unknown as Row[];
+  const norm = rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k,
+    v instanceof Date ? ymd(v) : typeof v === "string" && ALL_UNITS.includes(v) ? titleUnit(v)
+      : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16 ? Number(v) : v])));
+  return { title: String(a.purpose || "Query result").slice(0, 80), rows: norm, info: `${rows.length} row(s)${rows.length === 60 ? " (first 60)" : ""}.` };
+}
+
+const TOOL_DEFS = [
+  { type: "function", function: { name: "get_sales", description:
+    "Official sales (the numbers management sees) for any day or period, optionally compared with another period, optionally split by unit. Use for: sales on a day, yesterday, a week, a month, totals, X vs Y comparisons, which unit did best or worst.",
+    parameters: { type: "object", properties: {
+      units: { type: "array", items: { type: "string" }, description: "Unit names, or city names (Chennai, Coimbatore, Madurai, Trichy - add 'clinics' or 'Vet on Wheels' to narrow), or ['all']. Default all." },
+      from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD (inclusive)" },
+      compare_from: { type: "string", description: "YYYY-MM-DD, only if a comparison is wanted" }, compare_to: { type: "string" },
+      by_unit: { type: "boolean", description: "true = one row per unit (splits, rankings, best / worst)" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_month_status", description:
+    "Month-to-date sales vs the monthly target: achieved %, projected month-end estimate, sales needed per remaining day, growth vs the same days last month. Use for target, pace and 'are we on track' questions.",
+    parameters: { type: "object", properties: {
+      units: { type: "array", items: { type: "string" }, description: "as in get_sales; default all" },
+      month: { type: "string", description: "YYYY-MM; default the current month" },
+      by_unit: { type: "boolean", description: "true = one row per unit" } } } } },
+  { type: "function", function: { name: "get_breakdown", description:
+    "What makes up or drives sales: split by category, subcategory, doctor, item, species, unit, day (trend), weekday or source (clinic vs pharmacy), with share % and an optional comparison period. Use for top-N lists, mix, 'what drove it', trends.",
+    parameters: { type: "object", properties: {
+      by: { type: "string", enum: Object.keys(DIMS) },
+      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
+      compare_from: { type: "string" }, compare_to: { type: "string" },
+      filter: { type: "string", description: "optional text filter on category / subcategory / item / species, e.g. 'Vaccination', 'Surgery', 'Canine'" },
+      source: { type: "string", enum: ["all", "clinic", "pharmacy"] },
+      top_n: { type: "integer", description: "rows to return (3-25), default 10" } }, required: ["by", "from", "to"] } } },
+  { type: "function", function: { name: "get_customers", description:
+    "Clinic customer metrics: pets seen, new vs repeat pets, owners, bills and average bill value, optionally compared and split by unit.",
+    parameters: { type: "object", properties: {
+      units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
+      compare_from: { type: "string" }, compare_to: { type: "string" }, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "run_sql", description:
+    "Run your own read-only SQL when the other tools cannot answer (e.g. services due, vaccination status, a specific item or doctor detail, breeds, night services). " + SCHEMA,
+    parameters: { type: "object", properties: { purpose: { type: "string", description: "short title of what this shows" }, sql: { type: "string" } }, required: ["purpose", "sql"] } } },
+];
+
+async function runTool(name: string, args: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  switch (name) {
+    case "get_sales": return await getSales(args, latest);
+    case "get_month_status": return await getMonthStatus(args);
+    case "get_breakdown": return await getBreakdown(args, latest);
+    case "get_customers": return await getCustomers(args, latest);
+    case "run_sql": return await runSqlTool(args);
+    default: throw new ToolInputError(`Unknown tool ${name}`);
+  }
+}
+
+// the tool result as the AI sees it: formatted numbers (Indian commas, %), compact CSV
+function fmtCell(col: string, v: unknown): string {
+  if (v === null || v === undefined) return "-";
+  if (typeof v === "number") return /pct|percent/i.test(col) ? pc(v) : inr(v, Number.isInteger(v) ? 0 : 1);
+  return String(v).replace(/[\n,]/g, " ").slice(0, 70);
+}
+function forModel(t: ToolResult) {
+  if (t.error) return `${t.id} ERROR: ${t.error}`;
+  if (!t.rows.length) return `${t.id} "${t.title}": no rows. ${t.info}`;
+  const cols = Object.keys(t.rows[0]);
+  return `${t.id} "${t.title}"\n${t.info}\n${cols.join(",")}\n` + t.rows.slice(0, 40).map((r) => cols.map((c) => fmtCell(c, r[c])).join(",")).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// accuracy check: every number in a reply must be traceable to tool results / the conversation
+// ---------------------------------------------------------------------------
+function claimed(text: string): { raw: string; value: number; dec: number }[] {
   const out: { raw: string; value: number; dec: number }[] = [];
-  const re = /(?<![\w.\/-])(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s*(?:lakhs?|lacs?|l\b|cr\b|crores?|%|k\b))?/gi;
+  const re = /(?<![\w.\/:-])(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s*(?:lakhs?|lacs?|l\b|cr\b|crores?|%|k\b))?/gi;
   for (const m of text.matchAll(re)) {
-    const raw = m[0].trim(), unit = (m[2] || "").trim().toLowerCase();
+    const unit = (m[2] || "").trim().toLowerCase();
     let v = Number(m[1].replace(/,/g, ""));
     if (!isFinite(v)) continue;
-    if (!unit && !m[1].includes(",") && !m[1].includes(".") && v <= 31) continue;      // days, counts of units, dates
+    if (!unit && !m[1].includes(",") && !m[1].includes(".") && v <= 31) continue;      // days, counts, dates
     if (!unit && v >= 1900 && v <= 2100 && !m[1].includes(",")) continue;                // years
     let dec = (m[1].split(".")[1] || "").length;
     if (unit === "k") { v *= 1000; dec = Math.max(0, dec - 3); }
-    out.push({ raw, value: v, dec });                                  // lakh / crore are compared with n/1e5, n/1e7
+    out.push({ raw: m[0].trim(), value: v, dec });
   }
   return out;
 }
-function isSupported(v: number, dec: number, pool: number[]): boolean {
-  const tol = Math.max(0.5 * Math.pow(10, -dec), Math.abs(v) * 0.001);                  // rounding of what was written
-  return pool.some((p) => Math.abs(p - v) <= tol + 1e-9);
+function numberPool(sets: Row[][], extra: string[]): number[] {
+  const out: number[] = [];
+  const add = (n: number) => out.push(n, Math.abs(n), n / 1e5, Math.abs(n) / 1e5, n / 1e7, n * 100);
+  for (const rows of sets) for (const r of rows.slice(0, 80)) for (const v of Object.values(r)) {
+    const n = typeof v === "number" ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : NaN;
+    if (isFinite(n)) add(n);
+  }
+  for (const t of extra) for (const c of claimed(t)) add(c.value);
+  return out;
 }
-function unsupported(texts: string[], sets: Record<string, unknown>[][]): string[] {
-  const pool = resultNumbers(sets);
+function unsupportedIn(text: string, pool: number[]): string[] {
   const bad = new Set<string>();
-  for (const t of texts) for (const c of claimedNumbers(t)) if (!isSupported(c.value, c.dec, pool)) bad.add(c.raw);
+  for (const c of claimed(text)) {
+    const tol = Math.max(0.5 * Math.pow(10, -c.dec), Math.abs(c.value) * 0.001);
+    if (!pool.some((p) => Math.abs(p - c.value) <= tol + 1e-9)) bad.add(c.raw);
+  }
   return [...bad];
 }
+function stripUnsupported(text: string, pool: number[]) {
+  return text.split("\n").map((ln) => unsupportedIn(ln, pool).length
+    ? ln.split(/(?<=[.!?])\s+/).filter((s) => !unsupportedIn(s, pool).length).join(" ") : ln)
+    .filter((ln, i, a) => ln.trim() || (i > 0 && a[i - 1].trim())).join("\n").trim();
+}
 
 // ---------------------------------------------------------------------------
-// answer one question: plan -> run -> (drill) -> write -> check
+// AI: Groq chat with tools; on a limit / error the next model continues the same conversation
 // ---------------------------------------------------------------------------
-type Result = { purpose: string; sql: string; rows: Record<string, unknown>[]; error?: string };
-type Answer = { title: string; points?: string[]; action?: string; tables?: { title: string; rows: Record<string, unknown>[] }[];
-                steps?: string[]; followups?: string[]; note?: string; checked?: string; sig?: string; cacheKey?: string };
 // deno-lint-ignore no-explicit-any
-type Draft = { headline: string; points: string[]; action: string; main: number; extra: number[]; drill: any; followups: string[] };
+type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string; name?: string };
 
-// results as the model sees them: numbers formatted exactly like the cards (Indian commas, %), so it copies them as-is
-function fmtCsv(rows: Record<string, unknown>[]) {
-  if (!rows.length) return "";
-  const cols = Object.keys(rows[0]);
-  const cell = (c: string, v: unknown) => fmt(c, v).replace(/;/g, " ");
-  return [cols.join(";"), ...rows.map((r) => cols.map((c) => cell(c, r[c])).join(";"))].join("\n");
-}
-function resultsText(results: Result[]) {
-  return results.map((r, i) => `#${i} ${r.purpose}\n` + (r.error ? `(failed: ${r.error.slice(0, 120)})` :
-    r.rows.length ? fmtCsv(r.rows.slice(0, 30)).slice(0, 2600) : "(no rows)")).join("\n\n");
-}
-// deno-lint-ignore no-explicit-any
-function cleanDraft(d: any, n: number): Draft {
-  const idx = (x: unknown) => Number.isInteger(x) && (x as number) >= 0 && (x as number) < n ? x as number : -1;
-  return { headline: String(d?.headline ?? "").trim(), points: Array.isArray(d?.points) ? d.points.map(String).filter(Boolean).slice(0, 6) : [],
-           action: String(d?.action ?? "").trim(),
-           main: idx(d?.main), extra: Array.isArray(d?.extra) ? d.extra.map(idx).filter((x: number) => x >= 0).slice(0, 2) : [],
-           drill: d?.drill && d.drill.sql ? d.drill : null, followups: Array.isArray(d?.followups) ? d.followups.map(String).slice(0, 3) : [] };
+async function chat(messages: Msg[], useTools: boolean, startAt: number, maxTokens = 1600): Promise<{ msg: Msg; tokens: number; model: string; index: number }> {
+  const errs: string[] = [];
+  let limited = 0;
+  for (let i = startAt; i < AGENT_MODELS.length; i++) {
+    const model = AGENT_MODELS[i];
+    const body: Row = { model, messages, temperature: 0.3, max_completion_tokens: maxTokens,
+      ...(useTools ? { tools: TOOL_DEFS, tool_choice: "auto" } : {}) };
+    if (model.includes("gpt-oss")) { body.reasoning_effort = "medium"; body.include_reasoning = false; }
+    else if (model.includes("qwen")) { body.reasoning_format = "hidden"; }
+    let r: Response;
+    try {
+      r = await fetch(GROQ_URL, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(45_000),
+        headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" } });
+    } catch (e) { errs.push(`${model.split("/").pop()} ${String(e).slice(0, 60)}`); continue; }
+    if (r.status === 429) { limited++; errs.push(`${model.split("/").pop()} busy`); continue; }
+    if (!r.ok) {
+      const t = await r.text();
+      console.error("ai", model, r.status, t.slice(0, 300));
+      errs.push(`${model.split("/").pop()} ${r.status} ${(t.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? ""}`);
+      continue;
+    }
+    const j = await r.json();
+    const tokens = j.usage?.total_tokens ?? 0;
+    await usage(tokens);
+    const m = j.choices?.[0]?.message ?? {};
+    const content = typeof m.content === "string" ? m.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim() : "";
+    if (!content && !m.tool_calls?.length) { errs.push(`${model.split("/").pop()} empty`); continue; }
+    return { msg: { role: "assistant", content: content || null, ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}) }, tokens, model, index: i };
+  }
+  if (limited && limited === AGENT_MODELS.length - startAt) throw new LimitError("All AI models are busy right now (per-minute limit). Please try again in a minute - the daily report buttons still work.");
+  throw new Error("AI unavailable: " + errs.join("; "));
 }
 
-async function runQuery(purpose: string, sql: string, place: Place, period: Period, used: Set<string>, tok: { n: number }): Promise<Result> {
-  try { return { purpose, sql, rows: await runSql(render(sql, place, period)) }; }
-  catch (e) {
-    const err = String((e as Error).message).slice(0, 300);
-    try {                                                     // one repair by the cheap model
-      const out = await aiCall("fix", FIX_SYSTEM, `Purpose: ${purpose}\nSQL:\n${sql}\nError: ${err}`, 1200);
-      used.add(out.model); tok.n += out.tokens;
-      const fixed = String(parseJson(out.text).sql ?? "");
-      if (fixed) return { purpose, sql: fixed, rows: await runSql(render(fixed, place, period)) };
-    } catch (e2) { return { purpose, sql, rows: [], error: String((e2 as Error).message) }; }
-    return { purpose, sql, rows: [], error: err };
-  }
-}
+const AGENT_SYSTEM = `You are "Sanchu Sales", the AI business analyst in the Sanchu Pet Hospitals management team's Teams chat. Sanchu runs veterinary clinics (Adyar, Neelangarai, Anna Nagar, Velachery and Valasaravakkam in Chennai; Coimbatore; Madurai; Trichy), a pharmacy, and Vet on Wheels home-visit units (Chennai, Coimbatore, Madurai, Trichy).
 
-const DETAIL_RE = /\b(insights?|why|explain|analy[sz]e|analysis|reasons?|drivers?|split|break ?down|breakup|table|list|top \d+|top|rank|ranking|wise|by (doctor|clinic|unit|item|category|species|city|day)|compare|comparison|vs|versus|trends?|details?|detailed|deep)\b/i;
-async function answer(question: string, who: string, conv = "", opt: { detail?: boolean; standalone?: boolean; spec?: Spec | null } = {}): Promise<Answer> {
-  const q = question.toLowerCase().replace(/[⁠​]/g, " ");
-  const wantInsight = new RegExp(INSIGHT_RE.source, "i").test(q);
-  const detail = opt.detail ?? (wantInsight || DETAIL_RE.test(q));
-  const dates = await dataDates();
-  const latest = dates.report || dates.detail || istDate();
-  const pp = parsePlace(q);
-  const pd = parsePeriod(pp.rest, latest);
-  let place = pp.place, period = pd.period, key = typeKey(pd.rest, pd.period.kind), follow = "";
-  const ownKey = key;
-  const ctx = opt.standalone || opt.spec ? null : await getCtx(conv);   // the assistant already wrote a self-contained question
-  // Conversation rules:
-  //  - a message with its own question ("pharmacy sales", "doctors") is a new question; if it names no place /
-  //    period, it uses the place / period of the conversation (like a person would)
-  //  - a message with no question of its own ("and Trichy?", "last month", "insights", "split by doctor"...)
-  //    continues the previous question
-  const isFollow = !!ctx && (FOLLOW_RE.test(q) || !ownKey);
-  if (ctx && (isFollow || ownKey)) {
-    const kept: string[] = [];
-    if (!key && isFollow) { key = ctx.key; kept.push("question"); }
-    if (!pp.given) { place = { units: ctx.units, label: ctx.place_label }; kept.push("place"); }
-    if (!pd.given) { period = { from: ctx.p_from, to: ctx.p_to, kind: ctx.p_kind as Period["kind"], label: ctx.p_label }; kept.push("period"); }
-    if (kept.length) follow = (isFollow ? "follow-up: same " : "same ") + kept.join(" & ");
-  }
-  if (!key) {
-    if (!pp.given && !pd.given && !isFollow && !opt.standalone) throw new NotAQuestion();   // "thank you", "ok", "stop" ...
-    key = "sale";
-  }
-  if (opt.spec) {                                  // the assistant understood units, period and comparison - use them as they are
-    const sp = opt.spec;
-    place = { units: sp.units, label: placeLabel(sp.units) };
-    period = { from: sp.from, to: sp.to, kind: "period", label: rangeLabel(sp.from, sp.to),
-               ...(sp.cmpFrom ? { cmpFrom: sp.cmpFrom, cmpTo: sp.cmpTo, cmpLabel: `${sp.cmpLabel} (${rangeLabel(sp.cmpFrom, sp.cmpTo!)})` } : {}) };
-    if (sp.cmpFrom && !/compare|vs/.test(key)) key = key + " compare";
-  }
-  const isFollowUp = follow.startsWith("follow-up") && !!ctx;
-  // what the AI is told: the question, and for a follow-up the conversation so far
-  const asked = isFollowUp && ctx ? `Previous question: ${ctx.question}${ctx.headline ? `\nPrevious answer: ${ctx.headline}` : ""}\nFollow-up: ${question}` : question;
-  const baseQuestion = isFollowUp && ctx ? ctx.question : question;
-  const sig = key + (wantInsight ? " +insight" : detail ? "" : " +brief");
-  const c = comparePeriods(period);
-  const cacheKey = `${sig}|${place.units.join(",")}|${period.from}|${period.to}|${period.cmpFrom ?? ""}|${latest}`;
-  const where = `${place.label} · ${period.label}${period.cmpLabel ? ` vs ${period.cmpLabel}` : ""}`;
+WHO YOU ARE
+- You talk like a capable, warm and professional colleague: natural, confident, concise. You are an AI assistant - if asked, say so plainly; never claim to be a person.
+- Hold a real conversation. Use the conversation so far to understand "it", "that clinic", "same for last month", "why?", "and Madurai?". If a request is genuinely ambiguous, ask one short question instead of guessing.
+- Greetings, thanks, small talk, "what can you do", drafting a message: reply directly without tools (for a greeting you may fetch one headline figure).
 
-  // 0. the same analysis was already done today on the same data -> reuse it (0 AI tokens)
-  const [hit] = await db`select answer from vetbuddy.bot_answer where cache_key = ${cacheKey}`;
-  if (hit) {
-    const a = hit.answer as Answer;
-    await setCtx(conv, key, baseQuestion, place, period, a.title);
-    return { ...a, sig, cacheKey, note: `${where} · data up to ${latest}` };
-  }
+WORKING WITH DATA
+- Every business number you state must come from a tool result in this conversation. Never guess, estimate or calculate a number yourself - the tools compute totals, comparisons, growth %, shares and averages. If you need a number the tools did not give, call a tool.
+- Choose tools like an analyst: get_sales (official sales for a day or period, comparisons, unit split), get_month_status (MTD vs target, estimate, required per day), get_breakdown (category / doctor / item / species / unit / day / clinic-vs-pharmacy mix and drivers), get_customers (pets, new pets, bills, average bill), run_sql (anything else).
+- Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers.
+- Dates: use the CONTEXT dates. "yesterday" = the day before today. "today" = today (usually not loaded yet). "this month" / "MTD" = 1st of this month to the latest data day. "last week" alone = the previous Monday-Sunday. "<day> vs last week" = the same weekday one week earlier. "<period> vs last month" = the same dates last month. If asked about a day after the latest data day, say that data isn't in yet and offer the latest day.
+- Places: a city means its clinic(s) plus its Vet on Wheels unless they say clinic or Vet on Wheels only. No place = the whole division.
+
+HOW YOU REPLY
+- The first sentence is the answer, with the key figure in **bold**, naming the unit and the exact date or period, e.g. "Anna Nagar did **Rs 98,596** on Sun, 2 Nov, 12.4% more than the previous Sunday."
+- Simple question: 1-3 sentences, no bullets. Insights / why / analysis: one answer line, then 3-5 short "- " bullets with the drivers (each with its number), then one practical suggestion.
+- Money as Rs with Indian commas exactly as the tools show; percentages as shown; unit names in Title Case; dates like "Tue, 10 Nov" or "1-10 Nov". No emojis, no slang, no headings. Never mention tools, SQL, queries, models or tokens.
+- Do not add comparisons, splits or extra numbers that were not asked for.
+- To attach a table, add on its own line at the end: TABLE: R<n> | <title>  - only when they asked for a split, list, ranking, breakdown or comparison across units (max 2 tables).
+- Always finish with one line: FOLLOWUPS: <question> | <question>  - two short, specific next questions they are likely to ask (max 7 words each).`;
+
+type AgentOut = { text: string; tables: { title: string; rows: Row[] }[]; followups: string[]; tools: string[]; models: string[]; tokens: number; checked: string };
+
+async function agent(question: string, who: string, conv: string): Promise<AgentOut> {
   const used = await usage();
-  if (used.tokens >= DAILY_CAP) throw new LimitError("Today's free AI allowance is used up.");
-  const models = new Set<string>(), tok = { n: 0 };
-  const wd = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
-  const facts = `Units asked: ${place.units.join(", ")} (${place.label}). Period: ${period.label}, ${period.from} (${wd(period.from)}) to ${period.to} (${wd(period.to)}). ` +
-    (period.cmpFrom ? `COMPARISON ASKED: ${period.cmpLabel}, ${c.prevFrom} to ${c.prevTo} - use the {{PREV_FROM}} / {{PREV_TO}} placeholders for it and compare ONLY with this. `
-      : `Previous period: ${c.prevFrom} to ${c.prevTo}. `) +
-    `Same days last month: ${c.lmFrom} to ${c.lmTo}. Data available up to ${latest}. The period is exactly ${period.from} to ${period.to} - never answer for another period.`;
-
-  // 1. PLAN: which queries answer this (saved per question type and re-used for any place / period)
-  const [saved] = await db`select plan from vetbuddy.bot_plan where good and signature = ${sig}`;
-  // deno-lint-ignore no-explicit-any
-  let plan: any = saved?.plan, planSaved = !!plan;
-  if (!plan || isFollowUp) {
-    const out = await aiCall("plan", PLAN_SYSTEM, `Question: ${asked}\n${facts}\n(Write placeholders, not these values.)` +
-      (detail ? "" : "\nBRIEF ANSWER WANTED: write exactly ONE query that answers precisely what was asked (with a TOTAL row when several units). No CONTEXT or DRIVERS queries."), 2500);
-    models.add(out.model); tok.n += out.tokens;
-    plan = parseJson(out.text); planSaved = false;
+  if (used.tokens >= DAILY_CAP) throw new LimitError("Today's AI allowance is used up. The daily report buttons below still work.");
+  const [latest, hist, rl] = await Promise.all([latestDay(), turns(conv), rules()]);
+  const name = firstName(who);
+  const system = AGENT_SYSTEM +
+    `\n\nCONTEXT\nNow: ${istNow()}. Today: ${istDate()}. Latest data day loaded: ${latest} (${wday(latest)}).\n` +
+    `Talking to: ${name ? `${name} (use the first name only in a greeting)` : "a shared team account - don't address anyone by name"}.\n` +
+    `Units: ${ALL_UNITS.join(", ")}.` +
+    (rl.length ? `\n\nHOUSE RULES - always follow these; they override everything above:\n${rl.map((r) => "- " + r.rule).join("\n")}` : "");
+  const messages: Msg[] = [{ role: "system", content: system },
+    ...hist.map((t) => ({ role: t.role === "user" ? "user" : "assistant", content: t.text })), { role: "user", content: question }];
+  const results: ToolResult[] = [], toolsUsed: string[] = [], models = new Set<string>();
+  let tokens = 0, idx = 0, final = "";
+  const t0 = Date.now();
+  for (let round = 0; round < 6; round++) {
+    const late = round === 5 || Date.now() - t0 > 80_000;
+    const out = await chat(messages, !late, idx);
+    idx = out.index; tokens += out.tokens; models.add(out.model);
+    const calls = out.msg.tool_calls ?? [];
+    if (!calls.length || late) { final = out.msg.content ?? ""; break; }
+    messages.push(out.msg);
+    for (const [k, c] of calls.entries()) {
+      if (k >= 4) { messages.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: "Skipped: at most 4 tool calls at a time." }); continue; }
+      // deno-lint-ignore no-explicit-any
+      let args: any = {};
+      try { args = JSON.parse(c.function?.arguments || "{}"); } catch { /* empty */ }
+      const id = `R${results.length + 1}`;
+      let res: ToolResult;
+      try { res = { id, ...(await runTool(String(c.function?.name), args, latest)) }; }
+      catch (e) {
+        const msg = e instanceof ToolInputError ? e.message : String((e as Error).message).slice(0, 220);
+        console.error("tool", c.function?.name, msg);
+        res = { id, title: String(c.function?.name), rows: [], info: "", error: msg };
+      }
+      results.push(res); toolsUsed.push(`${c.function?.name}${res.error ? "(error)" : ""}`);
+      messages.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: forModel(res) });
+    }
   }
-  // deno-lint-ignore no-explicit-any
-  const planned: { purpose: string; sql: string }[] = (Array.isArray(plan?.queries) ? plan.queries : []).filter((x: any) => x?.sql).slice(0, detail ? 4 : 1);
-  if (!planned.length) return { title: String(plan?.reply || "I couldn't work that out from our sales data. Try e.g. 'Madurai sales this month' or 'top doctors in Adyar last month'.") };
+  if (!final) { const out = await chat(messages, false, idx); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
 
-  // 2. RUN the queries (a failing one is repaired once by another model)
-  const results: Result[] = [];
-  for (const p of planned) results.push(await runQuery(String(p.purpose || "Query"), String(p.sql), place, period, models, tok));
-  const ok = results.filter((r) => !r.error);
-  if (!ok.length) throw new Error("the queries for this question failed: " + results[0].error);
-  if (!planSaved && ok.length === results.length && !isFollowUp) {
-    await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_plan (signature, question, plan, tokens, asked_by)
-      values (${sig}, ${question}, ${tx.json({ understanding: plan.understanding ?? "", queries: results.map((r) => ({ purpose: r.purpose, sql: r.sql })) })}, ${tok.n}, ${who})
-      on conflict (signature) do update set plan = excluded.plan, question = excluded.question, good = true, last_used_at = now()`);
-  } else if (planSaved) {
-    await db.begin("read write", (tx) => tx`update vetbuddy.bot_plan set uses = uses + 1, last_used_at = now() where signature = ${sig}`);
+  // accuracy check
+  const pool = numberPool(results.map((r) => r.rows), [question, ...hist.map((h) => h.text), latest, istDate()]);
+  let checked = results.length ? "numbers checked" : "";
+  const body = (t: string) => t.split("\n").filter((l) => !/^\s*\**(TABLE|FOLLOW-?UPS?)\**\s*:/i.test(l)).join("\n");
+  let bad = unsupportedIn(body(final), pool);
+  if (bad.length) {
+    try {
+      const fix = await chat([...messages, { role: "assistant", content: final }, { role: "user", content:
+        `(Internal check, not from the user) These numbers in your reply are not in the tool results: ${bad.join(", ")}. ` +
+        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx);
+      tokens += fix.tokens; models.add(fix.model);
+      if (fix.msg.content) final = fix.msg.content;
+    } catch { /* strip below */ }
+    bad = unsupportedIn(body(final), pool);
+    if (bad.length) { final = stripUnsupported(final, pool); checked = "unverified figures removed"; }
   }
 
-  // 3. ANALYSE the results; the analyst may ask for ONE more drill-down query
-  const analyseOnce = async () => {
-    const out = await aiCall("analyze", ANALYZE_SYSTEM,
-      `Question: ${asked}\n${facts}${wantInsight ? "\nThe manager wants insights: explain the why." : ""}\n\nRESULTS\n${resultsText(results)}`, 1800);
-    models.add(out.model); tok.n += out.tokens;
-    return cleanDraft(parseJson(out.text), results.length);
-  };
-  const briefOnce = async () => {
-    const out = await aiCall("analyze", BRIEF_SYSTEM, `Question: ${asked}\n${facts}\n\nRESULTS\n${resultsText(results)}`, 700);
-    models.add(out.model); tok.n += out.tokens;
-    const d = cleanDraft(parseJson(out.text), results.length);
-    return { ...d, points: d.points.slice(0, 1), action: "", extra: [], drill: null, followups: d.followups.slice(0, 2) };
-  };
-  let draft = detail ? await analyseOnce() : await briefOnce();
-  if (detail && draft.drill && results.length < 6) {
-    results.push(await runQuery(String(draft.drill.purpose || "Drill-down"), String(draft.drill.sql), place, period, models, tok));
-    if (!results[results.length - 1].error) draft = await analyseOnce();
+  // TABLE / FOLLOWUPS lines
+  const tables: { title: string; rows: Row[] }[] = [];
+  let followups: string[] = [];
+  const lines: string[] = [];
+  for (const ln of final.split("\n")) {
+    const tm = ln.match(/^\s*\**TABLE\**\s*:\s*R(\d+)\s*(?:\|\s*(.+))?$/i);
+    const fm = ln.match(/^\s*\**FOLLOW-?UPS?\**\s*:\s*(.+)$/i);
+    if (tm) { const r = results[Number(tm[1]) - 1]; if (r && r.rows.length && tables.length < 2) tables.push({ title: (tm[2] || r.title).trim(), rows: r.rows }); }
+    else if (fm) followups = fm[1].split("|").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter((s) => s && s.length <= 80).slice(0, 2);
+    else lines.push(ln);
   }
-
-  // 4. CHECK: a second model reviews every statement against the results, then every number is checked in code
-  const sets = results.map((r) => r.rows);
-  const texts = (d: Draft) => [d.headline, ...d.points, d.action];
-  let review = "", reviewedOk = false;
-  const bad0 = unsupported(texts(draft), sets);
-  if (detail && bad0.length) try {
-    const out = await aiCall("review", REPAIR_SYSTEM, `Question: ${asked}\n${bad0.length ? `Numbers NOT found in the results: ${bad0.join(", ")}\n` : ""}` +
-      `\nDRAFT\n${JSON.stringify({ ...draft, drill: null })}\n\nRESULTS\n${resultsText(results)}`, 1800);
-    models.add(out.model); tok.n += out.tokens;
-    const j = parseJson(out.text), fixed = cleanDraft(j, results.length);
-    review = String(j?.changes ?? "").trim(); reviewedOk = true;
-    if (fixed.headline || fixed.points.length) draft = { ...fixed, main: draft.main, extra: draft.extra, followups: draft.followups.length ? draft.followups : fixed.followups };
-  } catch { /* reviewer busy: the number check below still applies */ }
-  const removed = draft.points.filter((p) => unsupported([p], sets).length);
-  draft.points = draft.points.filter((p) => !removed.includes(p));
-  if (draft.action && (unsupported([draft.action], sets).length || !wantInsight)) draft.action = "";
-  if (draft.headline && unsupported([draft.headline], sets).length) {
-    draft.headline = draft.points.length ? draft.points.shift()!.replace(/^[^:]{1,30}:\s*/, "") : `${place.label} - ${period.label}`;
-  }
-  const checked = (reviewedOk && review && !/^none\.?$/i.test(review) ? "corrected by a 2nd AI · " : "") +
-    (removed.length ? `${removed.length} unverified point removed` : "numbers checked ✓");
-
-  // 5. the card
-  const show = [draft.main >= 0 ? draft.main : results.findIndex((r) => r.rows.length), ...draft.extra]
-    .filter((i, k, a) => i >= 0 && a.indexOf(i) === k && results[i] && results[i].rows.length).slice(0, 3);
-  const a: Answer = {
-    title: draft.headline || `${place.label} - ${period.label}`,
-    points: draft.points, action: draft.action,
-    tables: detail ? show.map((i) => ({ title: results[i].purpose, rows: results[i].rows })) : [],
-    followups: draft.followups, checked,
-  };
-  await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_answer (cache_key, plan_sig, answer)
-    values (${cacheKey}, ${sig}, ${tx.json(a as never)}) on conflict (cache_key) do update set answer = excluded.answer, created_at = now()`);
-  await setCtx(conv, key, baseQuestion, place, period, a.title);
-  return { ...a, sig, cacheKey, note: `${where} · data up to ${latest}` };
-}
-
-function toCsv(rows: Record<string, unknown>[]) {
-  if (!rows.length) return "";
-  const cols = Object.keys(rows[0]);
-  const v = (x: unknown) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x ?? "")).replace(/,/g, " ");
-  return [cols.join(","), ...rows.map((r) => cols.map((c) => v(r[c])).join(","))].join("\n");
+  const text = lines.join("\n").replace(/\(?\bR\d+\b\)?/g, "").replace(/[ \t]+([.,])/g, "$1").replace(/\n{3,}/g, "\n\n").trim() ||
+    "Sorry, I couldn't put that together. Could you rephrase it?";
+  return { text, tables, followups, tools: toolsUsed, models: [...models], tokens, checked };
 }
 
 // ---------------------------------------------------------------------------
-// Teams: Adaptive Card with the answer, the table and the split-up
+// DAILY REPORT buttons - answered from code (instant, no AI)
 // ---------------------------------------------------------------------------
-function fmt(col: string, v: unknown): string {
-  if (v === null || v === undefined) return "-";
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  const s = String(v);
-  if (/^-?\d+(\.\d+)?$/.test(s)) {
-    const n = Number(s);
-    if (/pct|percent|growth|_vs_/i.test(col)) return (Math.abs(n) <= 1.5 && !/pct/i.test(col) ? (n * 100).toFixed(1) : n.toFixed(1)) + "%";
-    if (/date|year|month_no|^id$/i.test(col)) return s;
-    return inr(n, Math.abs(n) < 100 && !Number.isInteger(n) ? 1 : 0);
+type Reply = { text: string; tables: { title: string; rows: Row[] }[]; followups: string[]; note?: string };
+const REPORT_BUTTONS = ["Yesterday's sales", "Month to date vs target", "Units behind target", "Last 7 days trend"];
+const REPORTS: Record<string, string> = Object.fromEntries(REPORT_BUTTONS.map((b, i) => [b.toLowerCase(), ["yesterday", "mtd", "behind", "week"][i]]));
+const reportCache = new Map<string, { at: number; reply: Reply }>();
+
+async function report(kind: string): Promise<Reply> {
+  const latest = await latestDay();
+  const key = kind + latest, hit = reportCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60e3) return hit.reply;
+  let reply: Reply;
+  if (kind === "yesterday") {
+    const prev = addDays(latest, -7);
+    const s = await getSales({ units: ["all"], from: latest, to: latest, compare_from: prev, compare_to: prev, by_unit: true }, latest);
+    const T = s.rows[s.rows.length - 1], per = s.rows.slice(0, -1).filter((r) => Number(r.sales) > 0);
+    const best = per[0];
+    const grow = per.filter((r) => r.growth_pct !== null).sort((a, b) => Number(b.growth_pct) - Number(a.growth_pct));
+    reply = { text: `**Sales on ${rangeLabel(latest, latest)}: ${rs(T.sales)}** (clinic ${rs(T.clinic)}, pharmacy ${rs(T.pharmacy)}), ` +
+      `${pc(T.growth_pct)} vs ${rangeLabel(prev, prev)} (${rs(T.compare_sales)}).` +
+      (best ? `\n\nTop unit: **${best.unit}** with ${rs(best.sales)}.` : "") +
+      (grow.length > 1 ? ` Biggest rise: ${grow[0].unit} (${pc(grow[0].growth_pct)}); biggest drop: ${grow[grow.length - 1].unit} (${pc(grow[grow.length - 1].growth_pct)}).` : ""),
+      tables: [{ title: `Unit-wise, ${rangeLabel(latest, latest)} vs ${rangeLabel(prev, prev)}`,
+        rows: s.rows.map((r) => ({ unit: r.unit, sales: r.sales, same_day_last_week: r.compare_sales, growth_pct: r.growth_pct, share_pct: r.share_pct })) }],
+      followups: [`What drove sales on ${dm(latest)}?`, `Category mix on ${dm(latest)}`] };
+  } else if (kind === "mtd" || kind === "behind") {
+    const m = await getMonthStatus({ units: ["all"], by_unit: true });
+    const T = m.rows[m.rows.length - 1], per = m.rows.slice(0, -1).filter((r) => r.target);
+    const days = (m.info.match(/(\d+) days done, (\d+) days left/) ?? []).slice(1);
+    if (kind === "mtd") {
+      reply = { text: `**Month to date: ${rs(T.mtd)}**, ${pc(T.achieved_pct, false)} of the ${rs(T.target)} target` +
+        (days.length ? ` with ${days[0]} days done and ${days[1]} to go.` : ".") +
+        `\n\nAt the current pace the month ends at ${rs(T.month_estimate)} (${pc(T.estimate_pct, false)} of target); ` +
+        `${rs(T.required_per_day)} a day is needed from here. Versus the same days last month: ${pc(T.growth_pct)}.`,
+        tables: [{ title: "Unit-wise month to date", rows: m.rows.map((r) => ({ unit: r.unit, mtd: r.mtd, target: r.target, achieved_pct: r.achieved_pct,
+          estimate_pct: r.estimate_pct, growth_pct: r.growth_pct })) }],
+        followups: ["Which category is behind this month?", "Top doctors this month"] };
+    } else {
+      const behind = per.filter((r) => r.estimate_pct !== null && Number(r.estimate_pct) < 100).sort((a, b) => Number(a.estimate_pct) - Number(b.estimate_pct));
+      reply = { text: behind.length
+        ? `**${behind.length} of ${per.length} units** are on course to miss their target this month. Furthest behind: ` +
+          behind.slice(0, 3).map((r) => `**${r.unit}** (estimate ${pc(r.estimate_pct, false)} of target; needs ${rs(r.required_per_day)} a day vs ${rs(r.avg_daily_sales)} now)`).join("; ") + "."
+        : `All ${per.length} units are on course to reach their target this month.`,
+        tables: behind.length ? [{ title: "Units projected below target", rows: behind.map((r) => ({ unit: r.unit, mtd: r.mtd, target: r.target,
+          estimate_pct: r.estimate_pct, required_per_day: r.required_per_day, avg_daily_sales: r.avg_daily_sales })) }] : [],
+        followups: behind.length ? [`Why is ${behind[0].unit} behind target?`, `${behind[0].unit} category mix this month`] : ["Top units this month"] };
+    }
+  } else {
+    const from = addDays(latest, -6), pf = addDays(latest, -13), pt = addDays(latest, -7);
+    const [s, d] = await Promise.all([
+      getSales({ units: ["all"], from, to: latest, compare_from: pf, compare_to: pt }, latest),
+      db`select a.sale_date::text d, sum(a.total)::float8 t,
+           (select sum(b.total) from vetbuddy.sheet_daily b where b.sale_date = a.sale_date - 7)::float8 p
+         from vetbuddy.sheet_daily a where a.sale_date between ${from}::date and ${latest}::date group by a.sale_date order by a.sale_date`]);
+    const T = s.rows[0];
+    const days = (d as unknown as Row[]).map((r) => ({ day: rangeLabel(String(r.d), String(r.d)), sales: r0(Number(r.t)),
+      same_day_last_week: r.p === null ? null : r0(Number(r.p)), growth_pct: growth(Number(r.t), r.p === null ? null : Number(r.p)) }));
+    const best = [...days].sort((a, b) => Number(b.sales) - Number(a.sales))[0], worst = [...days].sort((a, b) => Number(a.sales) - Number(b.sales))[0];
+    reply = { text: `**Last 7 days (${rangeLabel(from, latest)}): ${rs(T.sales)}**, ${pc(T.growth_pct)} vs the 7 days before (${rs(T.compare_sales)}), ` +
+      `${rs(T.avg_per_day)} a day on average.` + (best ? `\n\nBest day: ${best.day} (${rs(best.sales)}); slowest: ${worst.day} (${rs(worst.sales)}).` : ""),
+      tables: [{ title: "Day by day vs the same day last week", rows: days }], followups: ["Unit-wise sales last 7 days", "What drove this week's change?"] };
   }
-  if (ALL_UNITS.includes(s.toUpperCase()) && s === s.toUpperCase()) return titleUnit(s);
-  return s.length > 60 ? s.slice(0, 57) + "..." : s;
+  reply.note = `Daily report · data up to ${rangeLabel(latest, latest)}`;
+  reportCache.set(key, { at: Date.now(), reply });
+  return reply;
 }
 
-function table(rows: Record<string, unknown>[], max: number) {
-  const cols = Object.keys(rows[0]).slice(0, 8);
-  const isTot = (r: Record<string, unknown>) => /^total$/i.test(String(r[cols[0]] ?? ""));
-  return {
-    type: "Table", firstRowAsHeaders: true, showGridLines: true, spacing: "Medium",
-    columns: cols.map((_c, i) => ({ width: i === 0 ? 2 : 1 })),
-    rows: [
-      { type: "TableRow", style: "accent", cells: cols.map((c) => ({ type: "TableCell", items: [{ type: "TextBlock", text: colTitle(c), weight: "Bolder", wrap: true }] })) },
-      ...rows.slice(0, max).map((r) => ({ type: "TableRow", style: isTot(r) ? "emphasis" : "default",
-        cells: cols.map((c) => ({ type: "TableCell", items: [{ type: "TextBlock", text: fmt(c, r[c]), wrap: true, weight: isTot(r) ? "Bolder" : "Default" }] })) })),
-    ],
-  };
+// ---------------------------------------------------------------------------
+// conversation memory (vetbuddy.bot_turns) and log (vetbuddy.bot_log)
+// ---------------------------------------------------------------------------
+async function turns(conv: string): Promise<{ role: string; text: string }[]> {
+  if (!conv) return [];
+  try {
+    const r = await db`select role, text from vetbuddy.bot_turns where conversation = ${conv} and at > now() - interval '3 hours' order by at desc limit 12`;
+    return (r as unknown as { role: string; text: string }[]).reverse();
+  } catch { return []; }
+}
+async function addTurns(conv: string, ...t: [string, string][]) {
+  if (!conv) return;
+  try {
+    await db.begin("read write", async (tx) => {
+      for (const [role, text] of t) if (text) await tx`insert into vetbuddy.bot_turns (conversation, role, text) values (${conv}, ${role}, ${text.slice(0, 900)})`;
+      if (Math.random() < 0.05) await tx`delete from vetbuddy.bot_turns where at < now() - interval '14 days'`;
+    });
+  } catch (e) { console.error("bot_turns", String(e).slice(0, 150)); }
+}
+async function clearTurns(conv: string) {
+  try { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_turns where conversation = ${conv}`); } catch { /* ignore */ }
+}
+async function logTurn(l: { conv: string; who: string; q: string; reply?: string; tools?: string[]; models?: string[]; tokens?: number; ms: number; ok: boolean; error?: string }) {
+  try {
+    await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_log (conversation, who, question, reply, tools, models, tokens, ms, ok, error)
+      values (${l.conv}, ${l.who}, ${l.q.slice(0, 1000)}, ${(l.reply ?? "").slice(0, 2000)}, ${tx.json(l.tools ?? [])}, ${(l.models ?? []).join(",")},
+              ${l.tokens ?? 0}, ${l.ms}, ${l.ok}, ${l.error ?? null})`);
+  } catch (e) { console.error("bot_log", String(e).slice(0, 150)); }
 }
 
-// readable column titles
+// ---------------------------------------------------------------------------
+// Teams card
+// ---------------------------------------------------------------------------
 function colTitle(c: string): string {
-  const t = c.replace(/_pct$/, " %").replace(/\blm\b|_lm\b|^lm_/g, (m) => m.replace("lm", "last month")).replace(/_/g, " ")
-    .replace(/\bprev\b/g, "previous").replace(/\bmtd\b/g, "MTD").replace(/\bavg\b/g, "avg").replace(/\bvow\b/gi, "VOW").replace(/\bpct\b/g, "%");
+  const t = c.replace(/_pct$/, " %").replace(/_/g, " ").replace(/\bmtd\b/g, "MTD").replace(/\bavg\b/g, "avg");
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
-// a small bar chart column for the first money column of the main table
-function withBars(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  const cols = Object.keys(rows[0] ?? {});
-  const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : NaN);
-  const col = cols.slice(1).find((c) => !/pct|percent|growth|_vs_|date|year|count|bills|days|qty/i.test(c) && rows.some((r) => isFinite(num(r[c]))));
-  if (!col || rows.length < 2 || rows.length > 15 || cols.length >= 8) return rows;
-  const isTot = (r: Record<string, unknown>) => /^total$/i.test(String(r[cols[0]] ?? ""));
-  const max = Math.max(...rows.filter((r) => !isTot(r)).map((r) => Math.abs(num(r[col])) || 0));
-  if (!(max > 0)) return rows;
-  return rows.map((r) => ({ ...r, chart: isTot(r) || !isFinite(num(r[col])) ? "" : "█".repeat(Math.max(1, Math.round(10 * Math.abs(num(r[col])) / max))) }));
+function cell(col: string, v: unknown): string {
+  if (v === null || v === undefined) return "-";
+  if (typeof v === "number") return /pct/i.test(col) ? pc(v) : inr(v, Number.isInteger(v) ? 0 : 1);
+  const s = String(v);
+  return s.length > 50 ? s.slice(0, 47) + "..." : s;
 }
-
-function card(a: Answer) {
-  const brief = !(a.tables?.length);
-  const body: unknown[] = [{ type: "TextBlock", text: a.title, weight: brief ? "Default" : "Bolder", size: brief ? "Default" : "Medium", wrap: true }];
-  if (a.points?.length) {
-    body.push({ type: "TextBlock", text: a.points.map((p) => "- " + p.replace(/^([^:]{1,30}):\s*/, "**$1:** ")).join("\n"), wrap: true, spacing: "Small" });
+function table(rows: Row[]) {
+  const cols = Object.keys(rows[0]).slice(0, 7);
+  const isTot = (r: Row) => /^total$/i.test(String(r[cols[0]] ?? ""));
+  return { type: "Table", firstRowAsHeaders: true, showGridLines: true, spacing: "Small",
+    columns: cols.map((_c, i) => ({ width: i === 0 ? 2 : 1 })),
+    rows: [
+      { type: "TableRow", style: "accent", cells: cols.map((c, i) => ({ type: "TableCell",
+        items: [{ type: "TextBlock", text: colTitle(c), weight: "Bolder", wrap: true, horizontalAlignment: i ? "Right" : "Left" }] })) },
+      ...rows.slice(0, 25).map((r) => ({ type: "TableRow", style: isTot(r) ? "emphasis" : "default",
+        cells: cols.map((c, i) => ({ type: "TableCell", items: [{ type: "TextBlock", text: cell(c, r[c]), wrap: true, weight: isTot(r) ? "Bolder" : "Default",
+          horizontalAlignment: i ? "Right" : "Left",
+          color: /growth/.test(c) && typeof r[c] === "number" && r[c] !== 0 ? (Number(r[c]) < 0 ? "Attention" : "Good") : "Default" }] })) })),
+    ] };
+}
+function teamsText(t: string) {                   // Teams joins single line breaks; keep paragraphs and bullets
+  const ls = t.split("\n");
+  return ls.map((l, i) => (i === 0 ? "" : (/^\s*[-*\d]/.test(l) && /^\s*[-*\d]/.test(ls[i - 1]) ? "\n" : "\n\n")) + l).join("").replace(/\n{3,}/g, "\n\n");
+}
+const btn = (t: string) => ({ type: "Action.Submit", title: t.length > 50 ? t.slice(0, 47) + "..." : t, data: { msteams: { type: "messageBack", text: t, displayText: t } } });
+function card(r: Reply) {
+  const body: unknown[] = [{ type: "TextBlock", text: teamsText(r.text), wrap: true }];
+  for (const t of r.tables) {
+    body.push({ type: "TextBlock", text: t.title, weight: "Bolder", spacing: "Medium", wrap: true, size: "Small" });
+    body.push(table(t.rows));
   }
-  if (a.action) body.push({ type: "TextBlock", text: "**What to do:** " + a.action, wrap: true, spacing: "Small", color: "Accent" });
-  for (const [k, t] of (a.tables ?? []).entries()) {
-    const rows = t.rows, max = k ? 15 : 20;
-    body.push({ type: "TextBlock", text: t.title, weight: "Bolder", spacing: "Large", wrap: true });
-    body.push(table(rows, max));
-    if (rows.length > max) body.push({ type: "TextBlock", text: `Showing ${max} of ${rows.length >= 201 ? "200+" : rows.length} rows.`, isSubtle: true, size: "Small" });
-  }
-  const foot = [a.note ?? "", a.checked ?? "", a.sig ? "reply 'wrong' if not right" : ""].filter(Boolean).join(" · ");
-  if (foot) body.push({ type: "TextBlock", text: foot, isSubtle: true, size: "Small", wrap: true, spacing: "Medium" });
-  // follow-up questions as buttons (messageBack reaches the bot without an @mention)
-  const actions = (a.followups ?? []).slice(0, 3).map((f) => ({ type: "Action.Submit", title: f.length > 60 ? f.slice(0, 57) + "..." : f,
-    data: { msteams: { type: "messageBack", text: f, displayText: f } } }));
+  if (r.note) body.push({ type: "TextBlock", text: r.note, isSubtle: true, size: "Small", wrap: true, spacing: "Small" });
+  if (r.followups.length) body.push({ type: "ActionSet", spacing: "Medium", actions: r.followups.slice(0, 2).map(btn) });
+  body.push({ type: "TextBlock", text: "Daily report", isSubtle: true, size: "Small", spacing: "Medium", separator: true });
+  body.push({ type: "ActionSet", spacing: "Small", actions: REPORT_BUTTONS.map(btn) });
   return { contentType: "application/vnd.microsoft.card.adaptive",
-           content: { $schema: "http://adaptivecards.io/schemas/adaptive-card.json", type: "AdaptiveCard", version: "1.5", body,
-                      ...(actions.length ? { actions } : {}), msteams: { width: "Full" } } };
+    content: { $schema: "http://adaptivecards.io/schemas/adaptive-card.json", type: "AdaptiveCard", version: "1.5", body, msteams: { width: "Full" } } };
 }
 
 // ---------------------------------------------------------------------------
@@ -711,13 +688,11 @@ function card(a: Answer) {
 // ---------------------------------------------------------------------------
 const JWKS = createRemoteJWKSet(new URL("https://login.botframework.com/v1/.well-known/keys"));
 let botToken = { value: "", exp: 0 };
-// multi-tenant bots log in at botframework.com, single-tenant bots at their own tenant; try both
-let tokenTenants = ["botframework.com", env("BOT_TENANT_ID")].filter(Boolean);
+let tokenTenants = ["botframework.com", env("BOT_TENANT_ID")].filter(Boolean);   // multi- or single-tenant bot
 
 async function outboundToken() {
   if (botToken.value && Date.now() < botToken.exp - 60e3) return botToken.value;
-  const tenant = tokenTenants[0];
-  const r = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
+  const r = await fetch(`https://login.microsoftonline.com/${tokenTenants[0]}/oauth2/v2.0/token`, {
     method: "POST",
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: env("BOT_APP_ID"),
       client_secret: env("BOT_APP_SECRET"), scope: "https://api.botframework.com/.default" }),
@@ -730,17 +705,14 @@ async function outboundToken() {
   botToken = { value: j.access_token, exp: Date.now() + j.expires_in * 1000 };
   return botToken.value;
 }
-
 // deno-lint-ignore no-explicit-any
-async function send(act: any, msg: Record<string, unknown>) {
+async function send(act: any, msg: Row) {
   const url = `${act.serviceUrl.replace(/\/$/, "")}/v3/conversations/${encodeURIComponent(act.conversation.id)}/activities` +
     (act.id ? `/${encodeURIComponent(act.id)}` : "");
-  const r = await fetch(url, {
-    method: "POST",
+  const r = await fetch(url, { method: "POST",
     headers: { Authorization: `Bearer ${await outboundToken()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "message", replyToId: act.id, ...msg, _retry: undefined }),
-  });
-  if (r.status === 401 && tokenTenants.length > 1 && !msg._retry) {   // wrong login type -> switch and retry once
+    body: JSON.stringify({ type: "message", replyToId: act.id, ...msg, _retry: undefined }) });
+  if (r.status === 401 && tokenTenants.length > 1 && !msg._retry) {
     tokenTenants = tokenTenants.slice(1).concat(tokenTenants[0]); botToken = { value: "", exp: 0 };
     return send(act, { ...msg, _retry: true });
   }
@@ -748,307 +720,90 @@ async function send(act: any, msg: Record<string, unknown>) {
 }
 
 // ---------------------------------------------------------------------------
-// ASSISTANT: the front door. Every message is understood by an AI that knows the conversation, the person,
-// the time of day and a live sales snapshot; it chats itself or hands a clear question to the analyst.
+// one message
 // ---------------------------------------------------------------------------
-type SnapRow = Record<string, number | string | null>;
-let snapCache: { at: number; text: string; rows: SnapRow[] } | null = null;
-
-async function snapshot(): Promise<{ text: string; rows: SnapRow[] }> {
-  if (snapCache && Date.now() - snapCache.at < 10 * 60e3) return snapCache;
-  const rows = await db`
-    with k as (select * from vetbuddy.sheet_kpi where month = (select max(month) from vetbuddy.sheet_kpi) and unit not ilike '%unmapped%'),
-         d as (select max(sale_date) as day from vetbuddy.sheet_daily),
-         y as (select unit, sum(total) as s from vetbuddy.sheet_daily, d where sale_date = d.day group by unit)
-    select k.unit, (select day from d)::text as last_day, k.as_of::text as as_of, k.days_done::int as days_done, k.days_left::int as days_left,
-           round(y.s)::float8 as last_day_sales, round(k.mtd)::float8 as mtd, round(k.last_month_same_days)::float8 as lm_same_days,
-           round(k.target)::float8 as target, round(k.month_estimate)::float8 as estimate, round(k.required_per_day)::float8 as required_per_day
-    from k left join y on y.unit = k.unit order by k.mtd desc nulls last` as unknown as SnapRow[];
-  if (!rows.length) return { text: "(no snapshot available)", rows: [] };
-  const n = (v: unknown) => (typeof v === "number" ? v : Number(v ?? 0)) || 0;
-  const pct = (a: number, b: number) => (b ? Math.round((a * 1000) / b) / 10 : null);
-  const isTotal = (u: unknown) => /total|division|overall/i.test(String(u));
-  const units = rows.filter((r) => !isTotal(r.unit));
-  const tot: SnapRow = rows.find((r) => isTotal(r.unit)) ?? {
-    unit: "ALL UNITS (division)", last_day_sales: units.reduce((a, r) => a + n(r.last_day_sales), 0), mtd: units.reduce((a, r) => a + n(r.mtd), 0),
-    lm_same_days: units.reduce((a, r) => a + n(r.lm_same_days), 0), target: units.reduce((a, r) => a + n(r.target), 0),
-    estimate: units.reduce((a, r) => a + n(r.estimate), 0), required_per_day: units.reduce((a, r) => a + n(r.required_per_day), 0) };
-  if (tot.last_day_sales === null || tot.last_day_sales === undefined) tot.last_day_sales = units.reduce((a, r) => a + n(r.last_day_sales), 0);
-  const all: SnapRow[] = [tot, ...units].map((r): SnapRow => ({ ...r, growth_pct: r.lm_same_days ? pct(n(r.mtd) - n(r.lm_same_days), n(r.lm_same_days)) : null,
-    achieved_pct: pct(n(r.mtd), n(r.target)), estimate_pct: pct(n(r.estimate), n(r.target)) }));
-  const rs = (v: unknown) => (v === null || v === undefined ? "-" : "Rs " + inr(n(v)));
-  const pc = (v: unknown) => (v === null || v === undefined ? "-" : (n(v) > 0 ? "+" : "") + n(v).toFixed(1) + "%");
-  const f = rows[0];
-  const text = `Official sales report. Latest day loaded: ${f.last_day}. Month-to-date as of ${f.as_of ?? f.last_day}: ${f.days_done ?? "?"} days done, ${f.days_left ?? "?"} days left.\n` +
-    all.map((r) => `${r.unit}: ${f.last_day} sales ${rs(r.last_day_sales)} | MTD ${rs(r.mtd)} | vs same days last month ${pc(r.growth_pct)} | ` +
-      `target ${rs(r.target)} | achieved ${r.achieved_pct ?? "-"}% | month estimate ${rs(r.estimate)} (${r.estimate_pct ?? "-"}% of target) | needed per day ${rs(r.required_per_day)}`).join("\n");
-  snapCache = { at: Date.now(), text, rows: all as SnapRow[] };
-  return snapCache;
-}
-
-// the conversation (last turns, 3 hours) - table vetbuddy.bot_turns (SQL 13); works without it too
-async function turns(conv: string): Promise<{ role: string; text: string }[]> {
-  if (!conv) return [];
-  try {
-    const r = await db`select role, text from vetbuddy.bot_turns where conversation = ${conv} and at > now() - interval '3 hours' order by at desc limit 10`;
-    return (r as unknown as { role: string; text: string }[]).reverse();
-  } catch { return []; }
-}
-async function addTurns(conv: string, ...t: [string, string][]) {
-  if (!conv) return;
-  try {
-    await db.begin("read write", async (tx) => {
-      for (const [role, text] of t) if (text) await tx`insert into vetbuddy.bot_turns (conversation, role, text) values (${conv}, ${role}, ${text.slice(0, 700)})`;
-      if (Math.random() < 0.05) await tx`delete from vetbuddy.bot_turns where at < now() - interval '14 days'`;
-    });
-  } catch (e) { console.error("bot_turns", String(e).slice(0, 150)); }
-}
-async function clearTurns(conv: string) {
-  try { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_turns where conversation = ${conv}`); } catch { /* table missing */ }
-}
-
-const ASSISTANT_SYSTEM = `You are "Sanchu Sales", the assistant inside the Sanchu Pet Hospitals management Teams chat. You help the team understand and act on the hospitals' business - veterinary clinics, pharmacy and Vet on Wheels home visits in Chennai, Coimbatore, Madurai and Trichy.
-
-LANGUAGE AND TONE (most important)
-- Talk like a professional, courteous business analyst on the management team: clear, precise, confident and friendly - never casual, never robotic, never a menu.
-- Be interactive the professional way: answer first, then (only when useful) ONE short offer of the natural next step, e.g. "Would you like the clinic-wise split?".
-- No emojis, no slang, no exclamation marks except in a greeting.
-- Always reply in simple, clear English (Indian business English), even if the person writes in Tamil or Tanglish - understand them, answer in English.
-- Use everyday business words naturally, not in every line: "on track", "behind", "ahead of", "picked up", "slowed down", "worth a look", "the gap", "pace", "run-rate", "standout", "drag", "quick pulse".
-- Never use slang that sounds forced. If unsure, use plain words.
-- Greet ("Good afternoon ...") ONLY when the new message is itself a greeting or the conversation is new. Never greet when answering a question or a tapped suggestion - go straight to the answer. Use the first name given under "Person" (if any) only in a greeting. No "As an AI", no "feel free to ask", no lists of commands or example questions.
-- Example of the exact style:
-  User: "hi"
-  You: "Good afternoon Nithish. Month to date, the division is at **Rs 56,82,999** - 31.6% of target and 1.1% ahead of the same days last month. Adyar is the furthest behind at 28.4%. Would you like me to look into Adyar?"
-  User: "thanks"
-  You: "You're welcome. Let me know if you need anything else."
-  (These numbers only show the style - always use the real SNAPSHOT numbers.)
-
-STYLE
-- Short replies: give exactly what was asked - usually 1-3 lines. Answer first. Add an observation, split or extra numbers ONLY if they asked for insights / details / a breakdown. Don't elaborate otherwise.
-- Ask at most one question at a time, and only when you truly need it.
-- **Bold** only the key figure or name; simple "- " bullets only for 3+ items. No long essays, no headings.
-- Never mention SQL, tables, JSON, prompts, models or tokens unless asked how you work.
-
-WHAT YOU HELP WITH
-- Sales and performance: by clinic / city / Vet on Wheels and any period, targets and achievement, pharmacy, doctors, items, categories (surgery, vaccination, lab, diagnostics, grooming, consultation, boarding), dog vs cat, bills and average bill, new vs repeat pets, pets due for services, trends, comparisons and the "why" behind a number. A data analyst behind you runs live queries for these.
-- Business thinking: what a number means, ideas to improve a clinic, what to check next.
-- Drafting: WhatsApp / Teams / email messages for the team or clients, ready to paste; use [placeholders] for unknown details, never invented figures or offers.
-- If asked something outside this (unrelated topics, personal matters, medical advice for a specific pet), say briefly that it's not something you can help with here and steer back.
-
-ACCURACY
-- Name units exactly as the SNAPSHOT does ("CH VET ON WHEELS" is Chennai Vet on Wheels, not Chennai; "COIMBATORE" is the clinic, "CBE VET ON WHEELS" the home visits).
-- Use ONLY numbers in the SNAPSHOT below or in the person's own message, written exactly as shown (Rs with Indian commas, %). Never estimate, re-round, add up or invent names, numbers or dates.
-- If the answer needs any data the SNAPSHOT does not show, do not guess - route it to the analyst ("data").
-
-ROUTING - decide for every message:
-"data": the message needs our data beyond the SNAPSHOT (any breakdown, list, ranking, comparison, trend, category, doctor, item, pet, or a "why"). Write "question": ONE self-contained question in plain English for the analyst, keeping the person's wording for what is asked and adding the place and period from the conversation when the message relies on it (after "Madurai sales this month", "and Trichy?" -> "Trichy sales this month"; "doctor wise?" -> "Madurai sales this month split by doctor"). Write it in English (translate Tamil / Tanglish). Do not add a place or period nobody mentioned. Add "insights" when they ask why or for analysis. Also set "reply" to "" .
-"chat": greetings, thanks, small talk, "what can you do", questions about you, business thinking, drafting, or a sales question the SNAPSHOT fully answers. Write "reply". For a greeting or "what can you do": one friendly line, the pulse of the business from the SNAPSHOT (division MTD vs target or last month, plus the one unit that stands out), then one concrete offer.
-"suggestions": 2-3 short next questions this person would likely tap (max 8 words, in English, specific: real unit names and periods).
-For "data" ALSO fill (this is how the question is understood - be exact):
-  "units": the exact unit names from UNITS that the question is about ([] = all units / the whole division). A city means its clinic(s) + its Vet on Wheels unless they say clinic / VOW only.
-  "from","to": the period asked (YYYY-MM-DD). "yesterday" = the day before today; "today" = today (data may not be loaded yet); "this month"/"MTD" = 1st of this month to the latest data day; "last week" ALONE = the previous Monday-Sunday; a single date = that day. Never go beyond the latest data day.
-  "compare_from","compare_to","compare_label": ONLY when a comparison is asked, the period to compare with: "yesterday vs last week" = yesterday vs the SAME weekday one week earlier (compare_label "same day last week"); "vs last month" = the same dates last month; "vs previous day" = the day before. Else "".
-  Example (today 2026-11-11, Wed): "compare yesterday vs last week" -> from 2026-11-10, to 2026-11-10, compare_from 2026-11-03, compare_to 2026-11-03, compare_label "same day last week".
-"detail": true ONLY when they ask for insights, why, analysis, a breakdown / split, a list, a ranking / top N, a comparison or a trend; otherwise false - then they get just the figure they asked for, nothing more.
-Reply ONLY JSON: {"route":"data"|"chat","question":"","units":[],"from":"","to":"","compare_from":"","compare_to":"","compare_label":"","detail":false,"reply":"","suggestions":[]}`;
-
-type Spec = { units: string[]; from: string; to: string; cmpFrom?: string; cmpTo?: string; cmpLabel?: string };
-type Route = { route: "data" | "chat"; question: string; reply: string; suggestions: string[]; detail?: boolean; spec?: Spec | null; model?: string };
-
-// the assistant's understanding of the question -> checked values (or null: the question is parsed by rules)
-// deno-lint-ignore no-explicit-any
-function toSpec(j: any, latest: string): Spec | null {
-  const ok = (d: unknown) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d));
-  if (!ok(j.from) || !ok(j.to)) return null;
-  let from = String(j.from), to = String(j.to);
-  if (to > latest) to = latest;
-  if (from > to) from = to;
-  const units = Array.isArray(j.units) ? j.units.map((u: unknown) => String(u).toUpperCase().trim()).filter((u: string) => ALL_UNITS.includes(u)) : [];
-  const sp: Spec = { units: units.length ? units : [...ALL_UNITS], from, to };
-  if (ok(j.compare_from) && ok(j.compare_to) && String(j.compare_from) <= String(j.compare_to) && String(j.compare_to) < from) {
-    sp.cmpFrom = String(j.compare_from); sp.cmpTo = String(j.compare_to); sp.cmpLabel = String(j.compare_label || "comparison period").slice(0, 40);
-  }
-  return sp;
-}
-const titleUnit = (u: string) => u.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\b(Ch|Cbe|Vow)\b/g, (m) => m.toUpperCase()).replace(/\bOn\b/g, "on").replace(/\bNon Clinical\b/g, "Non-Clinical");
-function placeLabel(units: string[]) {
-  if (units.length >= ALL_UNITS.length) return "Division (all units)";
-  for (const c of CITIES) {
-    const all = [...c.clinic, ...c.vow];
-    if (units.length === all.length && all.every((u) => units.includes(u))) return c.name;
-  }
-  return units.length <= 3 ? units.map(titleUnit).join(", ") : `${units.length} units`;
-}
-function rangeLabel(f: string, t: string) {
-  const w = (d: string) => day(d).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
-  if (f === t) return `${w(f)}, ${nice(day(f))}`;
-  const a = day(f), b = day(t);
-  return a.getUTCMonth() === b.getUTCMonth() ? `${a.getUTCDate()}-${nice(b)}` : `${nice(a)} - ${nice(b)}`;
-}
-
-// first name of a person; nothing for shared / team accounts ("Data Analyst Sanchu", "Sanchu Reports" ...)
-function firstName(who: string) {
-  const w = who.replace(/\(.*?\)/g, "").trim();
-  if (!w || /\b(sanchu|analyst|team|admin|reports?|account|marketing|sales|hospital|office|desk|support|info|hr|accounts)\b/i.test(w)) return "";
-  return w.split(/\s+/)[0].replace(/[^A-Za-z.'-]/g, "");
-}
-
-function istNow() {
-  const d = new Date(Date.now() + 5.5 * 3600e3), h = d.getUTCHours();
-  const part = h < 5 ? "late night" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 21 ? "evening" : "night";
-  return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}), ${d.toISOString().slice(11, 16)} IST - ${part}`;
-}
-
-// drop the sentences / lines of a chat reply whose numbers are not in the snapshot or the conversation
-function keepSupported(reply: string, sets: Record<string, unknown>[][]): { text: string; removed: number } {
-  let removed = 0;
-  const lines = reply.split("\n").map((ln) => {
-    if (!unsupported([ln], sets).length) return ln;
-    const parts = ln.split(/(?<=[.!?])\s+/).filter((p) => { const ok = !unsupported([p], sets).length; if (!ok) removed++; return ok; });
-    return parts.join(" ");
-  });
-  return { text: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), removed };
-}
-
-async function assistant(text: string, who: string, conv: string): Promise<Route> {
-  const [snap, hist, ctx] = await Promise.all([snapshot().catch(() => ({ text: "(snapshot unavailable)", rows: [] as SnapRow[] })), turns(conv), getCtx(conv)]);
-  const history = hist.map((t) => `${t.role === "user" ? "Them" : "You"}: ${t.text}`).join("\n");
-  const name = firstName(who);
-  const dd = await dataDates().catch(() => ({ report: "", detail: "" }));
-  const latest = dd.report || dd.detail || istDate();
-  const user = `Now: ${istNow()}\nLatest data day loaded: ${latest}\nUNITS: ${ALL_UNITS.join(" | ")}\nPerson: ${name ? `${name} (use this first name only when greeting)` : "a shared team account - do not address anyone by name"}\n` +
-    (ctx ? `Last analysed question: ${ctx.question} (${ctx.place_label}, ${ctx.p_label})${ctx.headline ? ` -> ${ctx.headline}` : ""}\n` : "") +
-    `\nSNAPSHOT\n${snap.text}\n\nCONVERSATION SO FAR\n${history || "(new conversation)"}\n\nNEW MESSAGE\n${text}`;
-  const out = await aiCall("chat", ASSISTANT_SYSTEM, user, 900);
-  const j = parseJson(out.text);
-  const r: Route = { route: j.route === "data" ? "data" : "chat", question: String(j.question ?? "").trim(), reply: String(j.reply ?? "").trim(),
-    detail: j.detail === true || DETAIL_RE.test(text), spec: j.route === "data" ? toSpec(j, latest) : null,
-    suggestions: Array.isArray(j.suggestions) ? j.suggestions.map(String).filter(Boolean).slice(0, 3) : [], model: out.model };
-  if (r.route === "data" && !r.question) r.question = text;
-  if (r.route === "chat") {
-    const sets: Record<string, unknown>[][] = [snap.rows as Record<string, unknown>[],
-      [Object.fromEntries(claimedNumbers(text + "\n" + history).map((c, i) => [i, c.value]))]];
-    let bad = unsupported([r.reply], sets);
-    if (bad.length) {                                   // one rewrite without the unsupported numbers, then strip what is left
-      try {
-        const fix = await aiCall("chat", ASSISTANT_SYSTEM, user + `\n\nYour previous reply used numbers that are NOT in the snapshot: ${bad.join(", ")}. ` +
-          `Rewrite it using only snapshot numbers (or choose "data").\nPrevious reply: ${r.reply}`, 1400);
-        const j2 = parseJson(fix.text);
-        if (j2.route === "data" && j2.question) return { ...r, route: "data", question: String(j2.question) };
-        if (j2.reply) r.reply = String(j2.reply).trim();
-      } catch { /* keep and strip */ }
-      bad = unsupported([r.reply], sets);
-      if (bad.length) r.reply = keepSupported(r.reply, sets).text;
-    }
-    if (!r.reply) r.reply = "I'm here - ask me anything about the hospitals' sales, or tell me what you'd like to dig into.";
-  }
-  return r;
-}
-
-// Teams cards join single line breaks; keep paragraphs and bullet lists as written
-function teamsText(t: string) {
-  const ls = t.split("\n");
-  return ls.map((l, i) => (i === 0 ? "" : (/^\s*[-*\d]/.test(l) && /^\s*[-*\d]/.test(ls[i - 1]) ? "\n" : "\n\n")) + l).join("").replace(/\n{3,}/g, "\n\n");
-}
-function chatCard(reply: string, suggestions: string[]) {
-  const actions = suggestions.slice(0, 3).map((f) => ({ type: "Action.Submit", title: f.length > 60 ? f.slice(0, 57) + "..." : f,
-    data: { msteams: { type: "messageBack", text: f, displayText: f } } }));
-  return { contentType: "application/vnd.microsoft.card.adaptive",
-           content: { $schema: "http://adaptivecards.io/schemas/adaptive-card.json", type: "AdaptiveCard", version: "1.5",
-                      body: [{ type: "TextBlock", text: teamsText(reply), wrap: true }], ...(actions.length ? { actions } : {}), msteams: { width: "Full" } } };
-}
-
-const lastAnswer = new Map<string, { sig: string; cacheKey: string }>();   // conversation -> last analysis (for "wrong")
-
 // deno-lint-ignore no-explicit-any
 async function handle(act: any) {
   const conv = act.conversation?.id ?? "";
-  const text = String(act.text ?? "").replace(/<at>.*?<\/at>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").trim();
-  const cmd = text.toLowerCase();
+  const text = String(act.text ?? "").replace(/<at>.*?<\/at>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+  const cmd = text.toLowerCase().replace(/[!.?\s]+$/u, "").trim();
   const tenantOk = !env("BOT_TENANT_ID") || (act.conversation?.tenantId ?? act.channelData?.tenant?.id) === env("BOT_TENANT_ID");
-
   if (cmd === "chat id" && tenantOk) return send(act, { text: `This chat id is: ${conv}` });
-  if (!tenantOk || (ALLOWED.length && !ALLOWED.includes(conv))) {
-    return send(act, { text: "Sorry, this bot only works in the Sanchu Core team chat." });
-  }
-  const small = cmd.replace(/[!.?\s]+$/u, "").trim();
-  if (/^(stop|end|reset|clear|new( question| chat| topic)?|start over|start fresh|stop( the)? conversation|end( the)? conversation)$/.test(small)) {
-    if (conv) { await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_context where conversation = ${conv}`); await clearTurns(conv); }
+  if (!tenantOk || (ALLOWED.length && !ALLOWED.includes(conv))) return send(act, { text: "Sorry, this bot only works in the Sanchu management team chat." });
+  const who = String(act.from?.name ?? "").trim();
+  const t0 = Date.now();
+
+  // commands
+  if (/^(reset|clear|new chat|new topic|start over|start fresh)$/.test(cmd)) {
+    await clearTurns(conv);
     return send(act, { text: "Done - fresh start. What would you like to look at?" });
   }
-  if (/^(rules|show rules|list rules|house rules)$/.test(small)) {
+  if (/^(rules|show rules|list rules|house rules)$/.test(cmd)) {
     const list = await rules();
-    return send(act, { text: list.length ? "**House rules** (the bot must always follow these):\n\n" + list.map((r, i) => `${i + 1}. ${r.rule}`).join("\n\n") +
+    return send(act, { text: list.length ? "**House rules** (I always follow these):\n\n" + list.map((r, i) => `${i + 1}. ${r.rule}`).join("\n\n") +
       "\n\nAdd one with **add rule: never ...**, remove one with **remove rule 2**." : "No house rules yet. Add one with **add rule: never ...**" });
   }
   const addRule = text.match(/^\s*(?:add\s+)?rule\s*[:\-]\s*(.{5,300})$/i);
   if (addRule) {
-    await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_rules (rule, created_by) values (${addRule[1].trim()}, ${String(act.from?.name ?? "")})`);
+    await db.begin("read write", (tx) => tx`insert into vetbuddy.bot_rules (rule, created_by) values (${addRule[1].trim()}, ${who})`);
     rulesCache = null;
-    await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_answer`);          // saved answers were written under the old rules
-    return send(act, { text: `Rule added: "${addRule[1].trim()}". I'll follow it from now on. Type **rules** to see all.` });
+    return send(act, { text: `Rule added: "${addRule[1].trim()}". I'll follow it from now on. Type **rules** to see all of them.` });
   }
-  const delRule = small.match(/^(?:remove|delete|drop)\s+rule\s+(\d+)$/);
+  const delRule = cmd.match(/^(?:remove|delete|drop)\s+rule\s+(\d+)$/);
   if (delRule) {
     const list = await rules(), r = list[Number(delRule[1]) - 1];
     if (!r) return send(act, { text: `There is no rule ${delRule[1]}. Type **rules** to see the list.` });
     await db.begin("read write", (tx) => tx`update vetbuddy.bot_rules set active = false where id = ${r.id}`);
     rulesCache = null;
-    await db.begin("read write", (tx) => tx`delete from vetbuddy.bot_answer`);
     return send(act, { text: `Removed rule ${delRule[1]}: "${r.rule}".` });
   }
   if (cmd === "usage") {
     const u = await usage();
-    const [m] = await db`select count(*)::int as n, coalesce(sum(uses),0)::int as uses from vetbuddy.bot_plan where good`;
-    return send(act, { text: `Today: ${inr(u.tokens)} of ${inr(DAILY_CAP)} free AI tokens used (${u.calls} AI calls). ` +
-      `Memory: ${m.n} saved analysis plans, re-used ${m.uses} times.` });
+    const [l] = await db`select count(*)::int n, coalesce(round(avg(ms)/1000.0,1),0)::float8 s, count(*) filter (where not ok)::int e
+      from vetbuddy.bot_log where at > now() - interval '24 hours'`.catch(() => [{ n: 0, s: 0, e: 0 }]);
+    return send(act, { text: `Today: ${inr(u.tokens)} of ${inr(DAILY_CAP)} AI tokens used (${u.calls} AI calls). ` +
+      `Last 24 hours: ${l.n} questions, ${l.s} s average reply time, ${l.e} errors.` });
   }
-  if (cmd === "wrong" || cmd === "incorrect" || cmd === "not correct") {
-    const last = lastAnswer.get(conv);
-    if (last) await db.begin("read write", async (tx) => {
-      await tx`update vetbuddy.bot_plan set good = false where signature = ${last.sig}`;
-      await tx`delete from vetbuddy.bot_answer where plan_sig = ${last.sig}`;
-    });
-    return send(act, { text: "Thanks for flagging it - I've dropped that answer. Ask again (a little more detail helps) and I'll work it out fresh." });
+  if (/^(wrong|incorrect|not correct|that'?s wrong)$/.test(cmd)) {
+    try {
+      await db.begin("read write", (tx) => tx`update vetbuddy.bot_log set feedback = 'wrong'
+        where id = (select id from vetbuddy.bot_log where conversation = ${conv} and ok order by at desc limit 1)`);
+    } catch { /* ignore */ }
+    return send(act, { text: "Thanks for flagging it - I've noted it for review. Tell me what looks off (the period, the unit or the figure) and I'll redo it." });
   }
 
   await send(act, { type: "typing" });
-  const who = String(act.from?.name ?? "").trim();
-  const said = text || "hi";
-  let route: Route;
-  try {
-    route = await assistant(said, who, conv);
-  } catch (e) {
-    console.error("assistant", e);
-    if (e instanceof LimitError) return send(act, { text: e.message });
-    route = /\b(sale|sales|revenue|target|pharmacy|clinic|doctor|pet|pets|bill|bills|due|vaccin\w*|surger\w*|item|items|mtd|today|yesterday|month)\b/i.test(said)
-      ? { route: "data", question: said, reply: "", suggestions: [] }                  // AI busy -> straight to the analyst
-      : { route: "chat", question: "", reply: "Sure - tell me what you'd like to look at.", suggestions: [] };
-  }
-  if (route.route === "chat") {
-    await addTurns(conv, ["user", said], ["bot", route.reply]);
-    return send(act, { attachments: [chatCard(route.reply, route.suggestions)] });
-  }
-  try {
-    const a = await answer(route.question, who, conv, route.detail !== undefined ? { detail: route.detail, standalone: true, spec: route.spec } : {});
-    if (a.sig && a.cacheKey) lastAnswer.set(conv, { sig: a.sig, cacheKey: a.cacheKey });
-    await addTurns(conv, ["user", said], ["bot", [a.title, ...(a.points ?? []).slice(0, 2)].join(" ")]);
-    await send(act, { attachments: [card(a)] });
-  } catch (e) {
-    console.error(e);
-    if (e instanceof NotAQuestion) {
-      const reply = route.reply || "I'm not sure what you'd like me to look at - a clinic, a period, doctors, items, targets? Tell me and I'll dig in.";
-      await addTurns(conv, ["user", said], ["bot", reply]);
-      return send(act, { attachments: [chatCard(reply, route.suggestions)] });
+  // daily report buttons: instant, from code
+  const rk = REPORTS[cmd];
+  if (rk) {
+    try {
+      const r = await report(rk);
+      await addTurns(conv, ["user", text], ["bot", r.text]);
+      await logTurn({ conv, who, q: text, reply: r.text, tools: ["report:" + rk], ms: Date.now() - t0, ok: true });
+      return send(act, { attachments: [card(r)] });
+    } catch (e) {
+      console.error("report", e);
+      await logTurn({ conv, who, q: text, ms: Date.now() - t0, ok: false, error: String(e).slice(0, 300) });
+      return send(act, { text: "Sorry, I couldn't build that report just now. Please try again in a minute." });
     }
-    const msg = e instanceof LimitError ? e.message + " Questions asked before still work (they come from memory)."
-      : "Sorry, I hit a problem working that out (" + String((e as Error).message).slice(0, 160) + "). Try asking it a little differently.";
-    await send(act, { text: msg });
+  }
+  // everything else: the AI analyst
+  const said = text || "hi";
+  try {
+    const a = await agent(said, who, conv);
+    const latest = await latestDay();
+    await addTurns(conv, ["user", said], ["bot", a.text]);
+    await logTurn({ conv, who, q: said, reply: a.text, tools: a.tools, models: a.models, tokens: a.tokens, ms: Date.now() - t0, ok: true });
+    await send(act, { attachments: [card({ text: a.text, tables: a.tables, followups: a.followups,
+      note: a.tools.length ? `Data up to ${rangeLabel(latest, latest)} · ${a.checked} · reply "wrong" if something is off` : undefined })] });
+  } catch (e) {
+    console.error("agent", e);
+    await logTurn({ conv, who, q: said, ms: Date.now() - t0, ok: false, error: String((e as Error).message).slice(0, 300) });
+    const msg = e instanceof LimitError ? e.message : "Sorry, something went wrong while I was working on that. Please try again, or use the daily report buttons below.";
+    await send(act, { attachments: [card({ text: msg, tables: [], followups: [] })] });
   }
 }
 
-// keep working after the HTTP reply has gone back to Teams
 function background(p: Promise<unknown>) {
   // deno-lint-ignore no-explicit-any
   const rt = (globalThis as any).EdgeRuntime;
@@ -1064,11 +819,11 @@ Deno.serve(async (req) => {
     return new Response("unauthorized", { status: 401 });
   }
   const act = await req.json();
-  if (act.type === "message") {
-    // answer in the background; Teams wants a quick 200
-    background(handle(act));
-  } else if (act.type === "conversationUpdate" && act.membersAdded?.some((m: { id: string }) => m.id === act.recipient?.id)) {
-    background(send(act, { text: "Hi everyone! I'm **Sanchu Sales**, your AI assistant for the hospitals' numbers. Mention me and ask in plain words - how a clinic is doing, why sales moved, top doctors or items, targets - or just say hi for today's pulse." }));
+  if (act.type === "message") background(handle(act));               // Teams wants a quick 200; answer in the background
+  else if (act.type === "conversationUpdate" && act.membersAdded?.some((m: { id: string }) => m.id === act.recipient?.id)) {
+    background(send(act, { attachments: [card({ text: "Hello everyone. I'm **Sanchu Sales**, the team's AI analyst. Ask me anything about the hospitals' " +
+      "business in plain words - how a clinic is doing, why sales moved, doctors, items, pets, targets - and I'll dig into the data. " +
+      "The daily report buttons below give you the standard numbers instantly.", tables: [], followups: [] })] }));
   }
   return new Response(null, { status: 200 });
 });
