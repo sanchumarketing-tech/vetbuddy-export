@@ -281,6 +281,61 @@ async function getCustomers(a: Row, latest: string): Promise<Omit<ToolResult, "i
     info: `Clinic (VetBuddy) visits only. new_pets = pets whose first visit ever is in this period. Period ${from}..${to}${cf ? `, compared with ${cf}..${ct}` : ""}.` };
 }
 
+// get_camp_performance: camps from the Camp Master (SharePoint -> vetbuddy.camp_master) and how their items sold
+async function getCamp(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
+  const name = String(a.camp ?? "").trim();
+  const camps = await db`select camp_name, array_agg(distinct d order by d)::text[] dates, string_agg(distinct camp_type, ' + ') types
+    from vetbuddy.camp_master, unnest(camp_dates) d where (${name} = '' or camp_name ilike ${"%" + name + "%"}) group by 1` as unknown as Row[];
+  if (!camps.length) throw new ToolInputError(name ? `No camp called "${name}" in the Camp Master.` : "The Camp Master has no camps yet.");
+  const want = a.date ? dateArg(a.date, "date", latest) : null;
+  const c = camps.find((x) => !want || (x.dates as string[]).includes(want)) ?? camps[0];
+  const cname = String(c.camp_name);
+  const all = (c.dates as string[]).map((d) => String(d).slice(0, 10));
+  const done = all.filter((d) => d <= latest);
+  if (!done.length) {
+    return { title: `${cname} - not started yet`, rows: [], info: `${cname} (${c.types}) runs on ${all.map((d) => rangeLabel(d, d)).join(", ")}; no camp day has data yet (data up to ${latest}).` };
+  }
+  const day1 = want && done.includes(want) ? want : done[done.length - 1];
+  const items = String(a.view ?? "") === "items";
+  const days = items ? [day1, addDays(day1, -7)] : done.flatMap((d) => [d, addDays(d, -7)]);
+  // camp-item sales on the camp days and on the same weekday one week before (same items, same units)
+  const q = items
+    ? db`select s.sale_date::text d, m.item k, m.locations loc, sum(s.amount)::float8 amt, sum(s.qty)::float8 qty, count(distinct s.bill_no)::int bills
+        from vetbuddy.v_all_sales s join vetbuddy.camp_master m on m.camp_name = ${cname} and s.sales_unit = any(m.units)
+          and exists (select 1 from unnest(m.match_keywords) k where s.item_name ilike '%' || k || '%')
+        where s.sale_date = any(string_to_array(${days.join("|")}, '|')::date[]) group by 1, 2, 3`
+    : db`select s.sale_date::text d, 'camp' k, '' loc, sum(s.amount)::float8 amt, sum(s.qty)::float8 qty, count(distinct s.bill_no)::int bills
+        from vetbuddy.v_all_sales s
+        where s.sale_date = any(string_to_array(${days.join("|")}, '|')::date[]) and exists (select 1 from vetbuddy.camp_master m, unnest(m.match_keywords) k
+          where m.camp_name = ${cname} and s.sales_unit = any(m.units) and s.item_name ilike '%' || k || '%') group by 1`;
+  const [rows0, tot] = await Promise.all([q, db`select sale_date::text d, sum(total)::float8 t from vetbuddy.sheet_daily where sale_date = any(string_to_array(${days.join("|")}, '|')::date[]) group by 1`]);
+  const R = rows0 as unknown as Row[], T = new Map((tot as unknown as Row[]).map((r) => [String(r.d), Number(r.t)]));
+  const get = (d: string, k: string, loc = "") => R.find((r) => r.d === d && r.k === k && (r.loc ?? "") === loc);
+  let rows: Row[];
+  if (items) {
+    const keys = [...new Set(R.filter((r) => r.d === day1).map((r) => `${r.k}|${r.loc}`))];
+    rows = keys.map((kl) => {
+      const [k, loc] = kl.split("|"), cur = get(day1, k, loc), prev = get(addDays(day1, -7), k, loc);
+      return { item: k, locations: loc, sales: r0(Number(cur?.amt ?? 0)), qty: r0(Number(cur?.qty ?? 0)), bills: Number(cur?.bills ?? 0),
+        week_before_sales: r0(Number(prev?.amt ?? 0)), week_before_qty: r0(Number(prev?.qty ?? 0)) } as Row;
+    }).sort((x, y) => Number(y.sales) - Number(x.sales));
+  } else {
+    rows = done.map((d) => {
+      const cur = get(d, "camp"), prev = get(addDays(d, -7), "camp"), cs = Number(cur?.amt ?? 0), ps = Number(prev?.amt ?? 0);
+      const td = T.get(d) ?? null, tp = T.get(addDays(d, -7)) ?? null;
+      return { camp_day: rangeLabel(d, d), camp_item_sales: r0(cs), camp_bills: Number(cur?.bills ?? 0), camp_qty: r0(Number(cur?.qty ?? 0)),
+        same_items_week_before: r0(ps), week_before_bills: Number(prev?.bills ?? 0), week_before_qty: r0(Number(prev?.qty ?? 0)),
+        camp_items_growth_pct: growth(cs, ps), total_sales_that_day: r0(td), total_week_before: r0(tp),
+        total_growth_pct: growth(td, tp), camp_share_pct: td ? r1((cs * 100) / td) : null } as Row;
+    });
+  }
+  const list = await db`select item, locations, original_price::float8, camp_price::float8 from vetbuddy.camp_master where camp_name = ${cname} order by row_no`;
+  return { title: items ? `${cname} - item-wise, ${rangeLabel(day1, day1)} vs a week before` : `${cname} - camp days`, rows,
+    info: `${cname} (${c.types}); camp dates: ${all.map((d) => rangeLabel(d, d)).join(", ")}. Camp items: ` +
+      (list as unknown as Row[]).map((r) => `${r.item} (${r.locations}${r.camp_price ? `, camp Rs ${inr(Number(r.camp_price))}` : ""}${r.original_price ? ` vs Rs ${inr(Number(r.original_price))}` : ""})`).join("; ") +
+      `. Camp prices are discounted, so camp-item value can fall while volume (qty, bills) rises; extra visits also lift other sales. Sales of camp items are matched by item name in the camp's units and compared with the same weekday one week before. Data up to ${latest}.` };
+}
+
 // run_sql: the agent's own read-only query for anything the other tools don't cover
 const SCHEMA = `Schema vetbuddy. sheet_daily(sale_date,unit,total,vetbuddy,gofrugal); sheet_kpi(month,unit,mtd,target,month_estimate,required_per_day,...; unit 'TOTAL');
 v_all_sales(sale_date,source 'VetBuddy'|'Pharmacy',bill_no,item_name,plan_category,plan_subcategory,species,qty,amount,sales_unit,doctor);
@@ -327,6 +382,12 @@ const TOOL_DEFS = [
     parameters: { type: "object", properties: {
       units: { type: "array", items: { type: "string" } }, from: { type: "string" }, to: { type: "string" },
       compare_from: { type: "string" }, compare_to: { type: "string" }, by_unit: { type: "boolean" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "get_camp_performance", description:
+    "Camps / offers from the Camp Master (e.g. the Wednesday Camp): camp dates, items, camp prices, and how much the camp items sold on each camp day vs the same weekday a week before, with the camp's share of the day's total sales. view 'items' = item-wise for one camp day. Use whenever a camp day is involved or sales on a day look unusual.",
+    parameters: { type: "object", properties: {
+      camp: { type: "string", description: "camp name or part of it; empty = the camp on that date / the latest camp" },
+      date: { type: "string", description: "YYYY-MM-DD camp day (optional)" },
+      view: { type: "string", enum: ["days", "items"], description: "days (default) = every camp day so far; items = item-wise for one camp day" } } } } },
   { type: "function", function: { name: "run_sql", description:
     "Run your own read-only SQL when the other tools cannot answer (e.g. services due, vaccination status, a specific item or doctor detail, breeds, night services). " + SCHEMA,
     parameters: { type: "object", properties: { purpose: { type: "string", description: "short title of what this shows" }, sql: { type: "string" } }, required: ["purpose", "sql"] } } },
@@ -338,6 +399,7 @@ async function runTool(name: string, args: Row, latest: string): Promise<Omit<To
     case "get_month_status": return await getMonthStatus(args);
     case "get_breakdown": return await getBreakdown(args, latest);
     case "get_customers": return await getCustomers(args, latest);
+    case "get_camp_performance": return await getCamp(args, latest);
     case "run_sql": return await runSqlTool(args);
     default: throw new ToolInputError(`Unknown tool ${name}`);
   }
@@ -384,11 +446,23 @@ function numberPool(sets: Row[][], extra: string[]): number[] {
   for (const t of extra) for (const c of claimed(t)) add(c.value);
   return out;
 }
+let basePool: number[] = [];          // raw tool numbers of the current answer, for the arithmetic check
+function derivable(v: number, tol: number): boolean {
+  const b = basePool.filter((x) => isFinite(x) && x !== 0).slice(0, 400);
+  for (let i = 0; i < b.length; i++) for (let j = 0; j < b.length; j++) {
+    if (i === j) continue;
+    const x = b[i], y = b[j];
+    if (Math.abs(Math.abs(x - y) - v) <= tol || Math.abs(x + y - v) <= tol || Math.abs((x * 100) / y - v) <= Math.max(tol, 0.05) ||
+        Math.abs(((x - y) * 100) / Math.abs(y) - v) <= Math.max(tol, 0.05) || Math.abs(Math.abs(((x - y) * 100) / y) - v) <= Math.max(tol, 0.05) ||
+        Math.abs(Math.abs(x - y) / 1e5 - v) <= tol || Math.abs(x / y - v) <= Math.max(tol, 0.05)) return true;
+  }
+  return false;
+}
 function unsupportedIn(text: string, pool: number[]): string[] {
   const bad = new Set<string>();
   for (const c of claimed(text)) {
     const tol = Math.max(0.5 * Math.pow(10, -c.dec), Math.abs(c.value) * 0.001);
-    if (!pool.some((p) => Math.abs(p - c.value) <= tol + 1e-9)) bad.add(c.raw);
+    if (!pool.some((p) => Math.abs(p - c.value) <= tol + 1e-9) && !derivable(c.value, tol + 1e-9)) bad.add(c.raw);
   }
   return [...bad];
 }
@@ -478,6 +552,7 @@ WORKING WITH DATA
 - Choose tools like an analyst: get_sales (official sales for a day or period, comparisons, unit split), get_month_status (MTD vs target, estimate, required per day), get_breakdown (category / doctor / item / species / unit / day / clinic-vs-pharmacy mix and drivers), get_customers (pets, new pets, bills, average bill), run_sql (anything else).
 - Simple question: usually one tool call. "Why", "what drove it", "insights", "analyse": first get the movement, then break down the biggest contributors (2-4 tool calls), and explain the cause with numbers. When you already know which views you need, request them together in one step (several tool calls at once) - it is faster.
 - Dates: use the CONTEXT dates. "yesterday" = the day before today. "today" = today (usually not loaded yet). "this month" / "MTD" = 1st of this month to the latest data day. "last week" alone = the previous Monday-Sunday. "<day> vs last week" = the same weekday one week earlier. "<period> vs last month" = the same dates last month. If asked about a day after the latest data day, say that data isn't in yet and offer the latest day.
+- Camps: the CONTEXT lists camps and their days. When asked why a day was high or low, first check whether it was a camp day; if so quantify the camp's contribution (get_camp_performance) next to the overall movement.
 - Places: a city means its clinic(s) plus its Vet on Wheels unless they say clinic or Vet on Wheels only. No place = the whole division.
 
 HOW YOU REPLY
@@ -494,11 +569,16 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   const used = await usage();
   if (used.tokens >= DAILY_CAP) throw new LimitError("Today's AI allowance is used up. The daily report buttons below still work.");
   const [latest, hist, rl] = await Promise.all([latestDay(), turns(conv), rules()]);
+  const campRows = await db`select camp_name, string_agg(distinct camp_type, ' + ') types, array_agg(distinct d order by d)::text[] dates
+    from vetbuddy.camp_master, unnest(camp_dates) d where d between ${addDays(latest, -60)}::date and ${addDays(latest, 30)}::date group by 1`
+    .catch(() => []) as unknown as Row[];
+  const campText = campRows.length ? campRows.map((c) => `${c.camp_name} (${c.types}): ${(c.dates as string[]).map((d) => rangeLabel(d, d)).join(", ")}`).join("; ")
+    : "none recorded";
   const name = firstName(who);
   const system = AGENT_SYSTEM +
     `\n\nCONTEXT\nNow: ${istNow()}. Today: ${istDate()}. Latest data day loaded: ${latest} (${wday(latest)}).\n` +
     `Talking to: ${name ? `${name} (use the first name only in a greeting)` : "a shared team account - don't address anyone by name"}.\n` +
-    `Units: ${ALL_UNITS.join(", ")}.` +
+    `Units: ${ALL_UNITS.join(", ")}.\nCAMPS / OFFERS (Camp Master): ${campText}. A camp day usually lifts the camp items; when a day with a camp is asked about (or looks unusual), check get_camp_performance.` +
     (rl.length ? `\n\nHOUSE RULES - always follow these; they override everything above:\n${rl.map((r) => "- " + r.rule).join("\n")}` : "");
   const messages: Msg[] = [{ role: "system", content: system },
     ...hist.map((t) => ({ role: t.role === "user" ? "user" : "assistant", content: t.text })), { role: "user", content: question }];
@@ -533,6 +613,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
 
   // accuracy check
   const pool = numberPool(results.map((r) => r.rows), [question, ...hist.map((h) => h.text), latest, istDate()]);
+  basePool = results.flatMap((r) => r.rows.slice(0, 40).flatMap((row) => Object.values(row).filter((v): v is number => typeof v === "number")));
   let checked = results.length ? "numbers checked" : "";
   const body = (t: string) => t.split("\n").filter((l) => !/^\s*\**(TABLE|FOLLOW-?UPS?)\**\s*:/i.test(l)).join("\n");
   let bad = unsupportedIn(body(final), pool);
@@ -545,7 +626,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       if (fix.msg.content) final = fix.msg.content;
     } catch { /* strip below */ }
     bad = unsupportedIn(body(final), pool);
-    if (bad.length) { final = stripUnsupported(final, pool); checked = "unverified figures removed"; }
+    if (bad.length) { console.error("unverified", bad.join(", "), "|", final.slice(0, 600)); final = stripUnsupported(final, pool); checked = "unverified figures removed"; }
   }
 
   // TABLE / FOLLOWUPS lines

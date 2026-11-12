@@ -116,3 +116,8 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 ## v3.1 - 12-11-2026 12:05 (live, 62,212 chars)
 - Per-minute AI limits: on a 429 the bot tries every model, then waits the seconds Groq asks for and retries (deadline ~2 min). Daily limits skip the model.
 - Fewer tokens per call: gpt-oss reasoning low, shorter run_sql schema, max 26 rows per tool result, parallel tool calls encouraged, max 5 rounds.
+
+## v3.2 - 12-11-2026 12:40 (live, 70,130 chars)
+- Camp Master: SharePoint "Sanchu Reports/Camp Master.xlsx" -> vetbuddy.camp_master (camp_master_sync.py, workflow camp-master-sync.yml, 07:11 IST daily + on demand; sql/16).
+- Bot: tool get_camp_performance (camp days vs same weekday a week before: camp-item sales, qty, bills, share of the day; item-wise view); camps of -60..+30 days listed in the agent context.
+- Number check also accepts simple arithmetic between two tool numbers (difference, sum, ratio %, change %); removed figures are logged.

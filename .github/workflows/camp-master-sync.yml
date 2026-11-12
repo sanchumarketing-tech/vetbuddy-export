@@ -1,0 +1,36 @@
+name: Camp master sync
+
+# SharePoint "Sanchu Reports/Camp Master.xlsx" -> Supabase vetbuddy.camp_master (used by the Teams bot).
+# Runs every morning and whenever started by hand (Actions -> Camp master sync -> Run workflow) after editing the sheet.
+# Creates the workbook (with the November 2026 Wednesday Camp) if it does not exist yet.
+
+on:
+  schedule:
+    # Times are UTC (IST = UTC + 5:30)
+    - cron: "41 1 * * *"    # 07:11 AM IST
+  workflow_dispatch:
+
+concurrency:
+  group: camp-master
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests openpyxl "psycopg[binary]"
+      - name: Sync camp master
+        env:
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_CAMP_SITE_URL: ${{ vars.SP_CAMP_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_CAMP_LIBRARY: ${{ vars.SP_CAMP_LIBRARY || 'Documents' }}
+          SP_CAMP_MASTER_PATH: ${{ vars.SP_CAMP_MASTER_PATH || 'Sanchu Reports/Camp Master.xlsx' }}
+        run: python camp_master_sync.py
