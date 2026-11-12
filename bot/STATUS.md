@@ -139,3 +139,6 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - 15:29 question hung 110 s before the first AI call (a set-up DB lookup with no time limit, most likely the taxonomy). Now: taxonomy from a built-in list, refreshed in the background (6 s limit); every set-up lookup capped at 6 s; each data tool capped at 25 s.
 - Final answer round sends tool results as plain text ("flatten"), so models cannot try to call a tool there ("Tool choice is none, but model called a tool").
 - Budget: tools until 40 s, answer by ~70 s, watchdog 85 s (reply always sent well inside the platform limit). Setup timing logged.
+
+## v3.7 - 12-11-2026 15:45 (live, 77,942 chars)
+- get_service_counts by "invoice" lists the invoice numbers behind a count (up to 60); run_sql schema notes unit values are UPPER CASE (the bot had queried "Anna Nagar" and found nothing).

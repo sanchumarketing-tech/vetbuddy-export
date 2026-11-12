@@ -287,7 +287,7 @@ async function getCustomers(a: Row, latest: string): Promise<Omit<ToolResult, "i
 
 // get_service_counts: how many services were done (consultations, vaccinations, surgeries, baths ...) - clinic bill lines
 // filtered by plan category / plan sub category / goods-or-service / item, counted as quantity, pets, bills and value
-const SDIMS: Record<string, string> = { none: "'TOTAL'", unit: "sales_unit", doctor: "doctor", day: "sale_date", item: "item_name", species: "species",
+const SDIMS: Record<string, string> = { none: "'TOTAL'", invoice: "invoice_no", unit: "sales_unit", doctor: "doctor", day: "sale_date", item: "item_name", species: "species",
   category: "regexp_replace(plan_category, '\\s*\\d+%\\s*$', '')", subcategory: "plan_subcategory" };
 const listArg = (v: unknown) => (Array.isArray(v) ? v : String(v ?? "").split(",")).map((x) => String(x).trim().toLowerCase()).filter(Boolean).join("|");
 async function getServiceCounts(a: Row, latest: string): Promise<Omit<ToolResult, "id">> {
@@ -297,7 +297,7 @@ async function getServiceCounts(a: Row, latest: string): Promise<Omit<ToolResult
   const cf = dateArg(a.compare_from, "compare_from", latest, true), ct = dateArg(a.compare_to, "compare_to", latest, true);
   const cat = listArg(a.plan_category), sub = listArg(a.plan_subcategory), gos = listArg(a.goods_or_service), item = String(a.item ?? "").trim();
   if (!cat && !sub && !gos && !item) throw new ToolInputError("Give plan_category and/or plan_subcategory (or item) - see the TAXONOMY.");
-  const top = Math.min(Math.max(Number(a.top_n ?? 15) || 15, 3), 30);
+  const top = by === "invoice" ? 60 : Math.min(Math.max(Number(a.top_n ?? 15) || 15, 3), 30);
   const conds = `sales_unit = any(string_to_array($1, '|'))
     and ($4 = '' or exists (select 1 from unnest(string_to_array($4, '|')) c where lower(plan_category) like c || '%'))
     and ($5 = '' or lower(trim(plan_subcategory)) = any(string_to_array($5, '|')))
@@ -405,7 +405,7 @@ async function getCamp(a: Row, latest: string): Promise<Omit<ToolResult, "id">> 
 const SCHEMA = `Schema vetbuddy. sheet_daily(sale_date,unit,total,vetbuddy,gofrugal); sheet_kpi(month,unit,mtd,target,month_estimate,required_per_day,...; unit 'TOTAL');
 v_all_sales(sale_date,source 'VetBuddy'|'Pharmacy',bill_no,item_name,plan_category,plan_subcategory,species,qty,amount,sales_unit,doctor);
 v_vetbuddy_pbi_bot(sale_date,invoice_no,item_name,plan_category,amount,sales_unit,doctor,species,breed,pet_key,owner_key,pet_category,pet_category_split,first_visit_date,last_visit_date,last_vaccination_visit,vaccination_status,bathing_status,haircut_status,services_due,is_night_service).
-Vaccination plan_category ILIKE 'Vaccination%'; surgery plan_subcategory='Surgery'. One SELECT, no semicolon, compute derived numbers in SQL, LIMIT 25.`;
+Unit values are UPPER CASE (sales_unit = 'ANNA NAGAR'). Vaccination plan_category ILIKE 'Vaccination%'; surgery plan_subcategory='Surgery'. One SELECT, no semicolon, compute derived numbers in SQL, LIMIT 25.`;
 async function runSqlTool(a: Row): Promise<Omit<ToolResult, "id">> {
   const clean = String(a.sql ?? "").trim().replace(/;+\s*$/, "");
   if (!/^(select|with)\b/i.test(clean) || clean.includes(";")) throw new ToolInputError("Only one SELECT (or WITH) query, without semicolons.");
@@ -430,7 +430,7 @@ const TOOL_DEFS = [
     parameters: { type: "object", properties: { by: { type: "string", enum: Object.keys(DIMS) }, units: U_ARG, from: D, to: D, compare_from: D, compare_to: D,
       plan_category: { type: "string" }, plan_subcategory: { type: "string" }, filter: { type: "string", description: "text in category/item/species" },
       source: { type: "string", enum: ["all", "clinic", "pharmacy"] }, top_n: { type: "integer" } }, required: ["by", "from", "to"] } } },
-  { type: "function", function: { name: "get_service_counts", description: "COUNT of services done (consultations, vaccinations, surgeries, baths, lab tests...) by plan_category / plan_subcategory from the TAXONOMY or item text: count, pets, bills, value; optional split and comparison.",
+  { type: "function", function: { name: "get_service_counts", description: "COUNT of services done (consultations, vaccinations, surgeries, baths, lab tests...) by plan_category / plan_subcategory from the TAXONOMY or item text: count, pets, bills, value; optional split (by invoice = list of the invoice / bill numbers) and comparison.",
     parameters: { type: "object", properties: { plan_category: { type: "string" }, plan_subcategory: { type: "string" }, goods_or_service: { type: "string" },
       item: { type: "string" }, units: U_ARG, from: D, to: D, compare_from: D, compare_to: D, by: { type: "string", enum: Object.keys(SDIMS) }, top_n: { type: "integer" } },
       required: ["from", "to"] } } },
@@ -603,7 +603,7 @@ async function chat(messages: Msg[], useTools: boolean, startAt: number, maxToke
 const AGENT_SYSTEM = `You are "Sanchu Sales", the AI business analyst in the Sanchu Pet Hospitals management Teams chat (clinics in Chennai - Adyar, Neelangarai, Anna Nagar, Velachery, Valasaravakkam - Coimbatore, Madurai, Trichy; pharmacy; Vet on Wheels home visits).
 STYLE: a warm, professional colleague - natural and concise. You are an AI (say so if asked). Use the conversation to resolve "it", "same for last month", "and Madurai?". Ask one short question only if truly ambiguous. Small talk / drafting: reply without tools.
 DATA: every business number must come from a tool result - never estimate or calculate yourself. Simple question = one tool call; "why"/insights = get the movement, then break down the biggest drivers (request several tools at once when you can).
-- Service counts (consultations, vaccinations, surgeries, baths...): get_service_counts with plan_subcategory / plan_category from the TAXONOMY (consultation = sub category "Consultation"). Never use pets as a stand-in.
+- Service counts (consultations, vaccinations, surgeries, baths...): get_service_counts with plan_subcategory / plan_category from the TAXONOMY (consultation = sub category "Consultation"). Never use pets as a stand-in. For the invoice / bill numbers behind a count use get_service_counts by "invoice".
 - Dates: yesterday = day before today; this month = 1st to latest data day; "<day> vs last week" = same weekday a week earlier; "vs last month" = same dates last month. After the latest data day there is no data yet.
 - A city = its clinics + its Vet on Wheels. No place = whole division. On camp days (CONTEXT) check get_camp_performance when explaining a movement.
 REPLY: first sentence = the answer with the key figure in **bold**, naming unit and exact date/period (e.g. "Anna Nagar did **Rs 98,596** on Sun, 2 Nov."). Simple question: 1-3 sentences. Insights: one line + 3-5 "- " bullets with numbers + one suggestion. Rs with Indian commas as the tools show; unit names in Title Case; no emojis, no headings, never mention tools/SQL/models. No extra comparisons or splits unless asked.
