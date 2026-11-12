@@ -328,16 +328,22 @@ async function getServiceCounts(a: Row, latest: string): Promise<Omit<ToolResult
 
 // TAXONOMY: plan categories and their sub categories (from the last 60 days) - shown to the AI
 let taxCache: { at: number; text: string } | null = null;
-async function taxonomy(): Promise<string> {
-  if (taxCache && Date.now() - taxCache.at < 6 * 3600e3) return taxCache.text;
+const TAX_DEFAULT = "Treatment: Medication, Certificate, Consultation, Procedure, OPD, Transport, Health check up, Surgery, Grooming Consultation, Review | " +
+  "Spa and Saloon: Hygenine, Bathing, Haircut, Grooming | Laboratory: HAEMATOLOGY, CLINICAL BIOCHEMISTRY, CLINICAL PATHOLOGY, MOLECULAR TEST, Diagnostics, MICROBIOLOGY, IMMUNOLOGY, Laboratory - B2B | " +
+  "Vaccination: vaccination | BOARDING: HOLIDAY BOARDING, Home made food, IP Boarding | Diagnostics: SCAN, RAPID TEST | OTHER SERVICES: TRANSPORT, OTHER VETERINARY SERVICES";
+let taxLoading = false;
+function taxonomy(): string {
+  if (!taxCache || Date.now() - taxCache.at > 6 * 3600e3) { if (!taxLoading) { taxLoading = true; loadTaxonomy().finally(() => { taxLoading = false; }); } }
+  return taxCache?.text || TAX_DEFAULT;
+}
+async function loadTaxonomy() {
   try {
-    const r = await db`select cat, string_agg(sub, ', ' order by n desc) subs from (
+    const r = await db.begin("read only", async (tx) => { await tx.unsafe("set local statement_timeout = '6s'"); return await tx`select cat, string_agg(sub, ', ' order by n desc) subs from (
         select regexp_replace(plan_category, '\s*\d+%\s*$', '') cat, plan_subcategory sub, count(*) n from vetbuddy.v_vetbuddy_pbi_bot
         where sale_date >= current_date - 60 and plan_category is not null and plan_subcategory is not null group by 1, 2) x
-      group by cat order by sum(n) desc` as unknown as Row[];
-    taxCache = { at: Date.now(), text: r.map((x) => `${x.cat}: ${x.subs}`).join(" | ") };
-  } catch { taxCache = { at: Date.now(), text: "(not available)" }; }
-  return taxCache.text;
+      group by cat order by sum(n) desc`; }) as unknown as Row[];
+    if (r.length) taxCache = { at: Date.now(), text: r.map((x) => `${x.cat}: ${x.subs}`).join(" | ") };
+  } catch (e) { console.error("taxonomy", String(e).slice(0, 120)); taxCache = { at: Date.now() - 5 * 3600e3, text: TAX_DEFAULT }; }
 }
 
 // get_camp_performance: camps from the Camp Master (SharePoint -> vetbuddy.camp_master) and how their items sold
@@ -522,6 +528,10 @@ function stripUnsupported(text: string, pool: number[]) {
 // deno-lint-ignore no-explicit-any
 type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string; name?: string };
 
+// a lookup that takes longer than ms is abandoned (the answer goes on with the fallback)
+function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p.catch(() => fallback), new Promise<T>((r) => setTimeout(() => { console.error("slow lookup abandoned after", ms, "ms"); r(fallback); }, ms))]);
+}
 const deadModels = new Set<string>();      // models Groq says do not exist (retired) - skipped from then on
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // seconds Groq asks us to wait after a per-minute limit ("Please try again in 7.4s" / retry-after header)
@@ -599,15 +609,33 @@ DATA: every business number must come from a tool result - never estimate or cal
 REPLY: first sentence = the answer with the key figure in **bold**, naming unit and exact date/period (e.g. "Anna Nagar did **Rs 98,596** on Sun, 2 Nov."). Simple question: 1-3 sentences. Insights: one line + 3-5 "- " bullets with numbers + one suggestion. Rs with Indian commas as the tools show; unit names in Title Case; no emojis, no headings, never mention tools/SQL/models. No extra comparisons or splits unless asked.
 To attach a table (only when a split, list, ranking or breakdown was asked): last lines "TABLE: R<n> | <title>". Always end with "FOLLOWUPS: <question> | <question>" (max 7 words each).`;
 
+function flatten(messages: Msg[]): Msg[] {
+  const out: Msg[] = [];
+  for (const m of messages) {
+    if (m.role === "tool") { out.push({ role: "user", content: `(data) ${m.content}` }); continue; }
+    if (m.tool_calls?.length) {
+      const asked = m.tool_calls.map((c) => `${c.function?.name}(${String(c.function?.arguments ?? "").slice(0, 200)})`).join("; ");
+      out.push({ role: "assistant", content: `${m.content ?? ""} [looked up: ${asked}]`.trim() });
+      continue;
+    }
+    out.push({ role: m.role, content: m.content });
+  }
+  out.push({ role: "user", content: "(Write the final answer now from the data above. Do not call any tools.)" });
+  return out;
+}
+
 type AgentOut = { text: string; tables: { title: string; rows: Row[] }[]; followups: string[]; tools: string[]; models: string[]; tokens: number; checked: string };
 
 async function agent(question: string, who: string, conv: string): Promise<AgentOut> {
-  const used = await usage();
+  const used = await within(usage(), 6000, { tokens: 0, calls: 0 });
   if (used.tokens >= DAILY_CAP) throw new LimitError("Today's AI allowance is used up. The daily report buttons below still work.");
-  const [latest, hist, rl, tax] = await Promise.all([latestDay(), turns(conv), rules(), taxonomy()]);
-  const campRows = await db`select camp_name, string_agg(distinct camp_type, ' + ') types, array_agg(distinct d order by d)::text[] dates
+  const tq = Date.now();
+  const [latest, hist, rl] = await Promise.all([latestDay(), within(turns(conv), 6000, []), within(rules(), 6000, [])]);
+  const tax = taxonomy();
+  const campRows = await within(db`select camp_name, string_agg(distinct camp_type, ' + ') types, array_agg(distinct d order by d)::text[] dates
     from vetbuddy.camp_master, unnest(camp_dates) d where d between ${addDays(latest, -60)}::date and ${addDays(latest, 30)}::date group by 1`
-    .catch(() => []) as unknown as Row[];
+    .then((r) => r as unknown as Row[]), 6000, [] as Row[]);
+  console.log("setup", Date.now() - tq, "ms");
   const campText = campRows.length ? campRows.map((c) => `${c.camp_name} (${c.types}): ${(c.dates as string[]).map((d) => rangeLabel(d, d)).join(", ")}`).join("; ")
     : "none recorded";
   const name = firstName(who);
@@ -622,8 +650,8 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   let tokens = 0, idx = 0, final = "";
   const t0 = Date.now();
   for (let round = 0; round < 6; round++) {
-    const late = round === 4 || Date.now() - t0 > 60_000;
-    const out = await chat(messages, !late, idx, 1200, t0 + (late ? 85_000 : 75_000));
+    const late = round === 4 || Date.now() - t0 > 40_000;
+    const out = await chat(late ? flatten(messages) : messages, !late, idx, 1200, t0 + (late ? 70_000 : 55_000));
     idx = out.index; tokens += out.tokens; models.add(out.model);
     const calls = out.msg.tool_calls ?? [];
     if (!calls.length || late) { final = out.msg.content ?? ""; break; }
@@ -636,7 +664,8 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       const id = `R${results.length + 1}`;
       let res: ToolResult;
       const tt = Date.now();
-      try { res = { id, ...(await runTool(String(c.function?.name), args, latest)) }; console.log("tool", c.function?.name, Date.now() - tt, "ms"); }
+      try { res = { id, ...(await Promise.race([runTool(String(c.function?.name), args, latest),
+        sleep(25_000).then((): never => { throw new ToolInputError("This lookup took too long - use a shorter period or fewer units."); })])) }; console.log("tool", c.function?.name, Date.now() - tt, "ms"); }
       catch (e) {
         const msg = e instanceof ToolInputError ? e.message : String((e as Error).message).slice(0, 220);
         console.error("tool", c.function?.name, msg);
@@ -646,7 +675,7 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
       messages.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: forModel(res) });
     }
   }
-  if (!final) { const out = await chat(messages, false, idx, 1200, t0 + 90_000); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
+  if (!final) { const out = await chat(flatten(messages), false, idx, 1200, t0 + 72_000); tokens += out.tokens; models.add(out.model); final = out.msg.content ?? ""; }
 
   // accuracy check
   const pool = numberPool(results.map((r) => r.rows), [question, ...hist.map((h) => h.text), latest, istDate()]);
@@ -656,9 +685,9 @@ async function agent(question: string, who: string, conv: string): Promise<Agent
   let bad = unsupportedIn(body(final), pool);
   if (bad.length) {
     try {
-      const fix = await chat([...messages, { role: "assistant", content: final }, { role: "user", content:
+      const fix = await chat([...flatten(messages), { role: "assistant", content: final }, { role: "user", content:
         `(Internal check, not from the user) These numbers in your reply are not in the tool results: ${bad.join(", ")}. ` +
-        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx, 1200, t0 + 98_000);
+        `Rewrite the same reply using only numbers from the tool results (or leave them out). Keep the same format, TABLE and FOLLOWUPS lines.` }], false, idx, 1200, t0 + 78_000);
       tokens += fix.tokens; models.add(fix.model);
       if (fix.msg.content) final = fix.msg.content;
     } catch { /* strip below */ }
@@ -950,7 +979,7 @@ async function handle(act: any) {
   }
   try {
     const a = await Promise.race([agent(said, who, conv),
-      sleep(110_000).then(() => { throw new LimitError("That one took me too long to work out - please ask again (a narrower question, e.g. one unit or one period, is quicker), or use the daily report buttons below."); })]);
+      sleep(85_000).then(() => { throw new LimitError("That one took me too long to work out - please ask again (a narrower question, e.g. one unit or one period, is quicker), or use the daily report buttons below."); })]);
     const latest = await latestDay();
     await addTurns(conv, ["user", said], ["bot", a.text]);
     await logTurn({ conv, who, q: said, reply: a.text, tools: a.tools, models: a.models, tokens: a.tokens, ms: Date.now() - t0, ok: true });

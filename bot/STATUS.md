@@ -134,3 +134,8 @@ bot login type (code tries botframework.com then the Sanchu tenant automatically
 - Logs showed: llama-3.3-70b-versatile retired (404), Groq free limits 7-8k tokens/min per model while each call sent 4-5k tokens, and get_breakdown failing ("could not determine data type of parameter $4") when no text filter was given.
 - Fixed: model chain gpt-oss-120b -> qwen3.8-27b -> gpt-oss-20b (retired models skipped automatically); prompt + tool definitions cut by about half; history 6 turns x 400 chars; max 900 output tokens; all SQL parameters typed.
 - Small talk (hi / thanks / bye / ok ...) answered by one tiny AI call (12 s) without data tools, with a fallback reply.
+
+## v3.6 - 12-11-2026 15:45 (live, 77,706 chars)
+- 15:29 question hung 110 s before the first AI call (a set-up DB lookup with no time limit, most likely the taxonomy). Now: taxonomy from a built-in list, refreshed in the background (6 s limit); every set-up lookup capped at 6 s; each data tool capped at 25 s.
+- Final answer round sends tool results as plain text ("flatten"), so models cannot try to call a tool there ("Tool choice is none, but model called a tool").
+- Budget: tools until 40 s, answer by ~70 s, watchdog 85 s (reply always sent well inside the platform limit). Setup timing logged.
