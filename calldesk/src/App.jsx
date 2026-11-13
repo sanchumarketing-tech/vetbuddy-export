@@ -60,43 +60,49 @@ function rowDone(r) {
 }
 
 // ------------------------------------------------------------------ customer panel
-function Customer({ row, me, onSaved, onNext }) {
-  const [outcome, setOutcome] = useState(row.outcome || "");
-  const [note, setNote] = useState(row.note || "");
-  const [cb, setCb] = useState(row.callback_at ? toLocalInput(row.callback_at) : "");
+function Customer({ row, onSaved, onNext }) {
   const [calls, setCalls] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [bills, setBills] = useState(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    setOutcome(row.outcome || ""); setNote(row.note || ""); setCb(row.callback_at ? toLocalInput(row.callback_at) : "");
-    setErr(""); setCalls(null);
+    setCalls(null); setBills(null);
     rpc("cd_calls", { p_phone: row.phone }).then(setCalls).catch(() => setCalls([]));
+    rpc("cd_bills", { p_phone: row.phone }).then(setBills).catch(() => setBills([]));
   }, [row.id]);
 
-  const dial = () => { rpc("cd_dial", { p_id: row.id }).then(() => onSaved({ ...row, dialed_at: new Date().toISOString() }, false)).catch(() => {}); };
-  const copy = async () => { try { await navigator.clipboard.writeText(row.phone); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ } };
-
-  const save = async (next) => {
-    setErr("");
-    if (outcome === "callback" && !cb) { setErr("Pick the call-back date and time."); return; }
-    setBusy(true);
-    try {
-      const callback = outcome === "callback" ? new Date(cb).toISOString() : null;
-      await rpc("cd_save", { p_id: row.id, p_outcome: outcome || null, p_note: note || null, p_callback: callback });
-      onSaved({ ...row, outcome: outcome || null, note: note || null, callback_at: callback,
-        status: outcome === "callback" && !row.connected_at ? "callback" : outcome && outcome !== "other" && outcome !== "callback" ? "closed" : row.status }, next);
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(row.phone); } catch { /* ignore */ }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
+    if (!row.dialed_at) rpc("cd_dial", { p_id: row.id }).then(() => onSaved({ ...row, dialed_at: new Date().toISOString() })).catch(() => {});
   };
 
+  // bills grouped by invoice (one line per visit)
+  const visits = useMemo(() => {
+    const m = new Map();
+    (bills || []).forEach((b) => {
+      const k = b.invoice_no || b.sale_date;
+      if (!m.has(k)) m.set(k, { date: b.sale_date, unit: b.unit, pets: new Set(), items: [], amount: 0, doctor: b.doctor });
+      const v = m.get(k);
+      if (b.pet) v.pets.add(b.pet);
+      v.items.push(b.plan_subcategory && !/^(medication|pharmacy)$/i.test(b.plan_subcategory) ? `${b.item}` : b.item);
+      v.amount += Number(b.amount || 0);
+    });
+    return [...m.values()].slice(0, 10);
+  }, [bills]);
+  const pets = row.pets || [];
+  const spend = pets.reduce((mx, p) => Math.max(mx, Number(p.revenue || 0)), 0);
+  const firstVisit = pets.map((p) => p.first_visit).filter(Boolean).sort()[0];
+  const lastVisit = pets.map((p) => p.last_visit).filter(Boolean).sort().reverse()[0];
+  const visitDays = pets.reduce((mx, p) => Math.max(mx, Number(p.visits || 0)), 0);
+  const reasons = [...row.reasons].sort((a, b) => a.rank - b.rank);
   const [sLabel, sTone] = STATUS[row.status] || ["", "neutral"];
+
   return (
     <div className="customer">
       <div className="cust-head">
         <div>
-          <div className="cust-name">{title(row.client) || "Unknown name"}</div>
+          <div className="cust-name">{title(row.client) || "Name not in VetBuddy"}</div>
           <div className="muted">{title(row.unit)}{row.carried_from ? ` · carried from ${fmtDate(row.carried_from)}` : ""}{row.tries ? ` · ${row.tries} earlier ${row.tries === 1 ? "try" : "tries"}` : ""}</div>
         </div>
         <Chip tone={sTone}>{sLabel}</Chip>
@@ -104,28 +110,51 @@ function Customer({ row, me, onSaved, onNext }) {
 
       <div className="dialer">
         <div className="phone">{phoneFmt(row.phone)}</div>
-        <a className="primary call" href={`tel:${row.phone}`} onClick={dial}>Call</a>
-        <button className="ghost" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+        <button className="primary" onClick={copy}>{copied ? "Copied" : "Copy number"}</button>
+        <button className="ghost" onClick={onNext}>Next customer</button>
       </div>
-      <div className="muted small">
-        {row.dialed_at ? `You clicked Call at ${fmtTime(row.dialed_at)}. ` : ""}
-        {row.last_call ? `Last logged call: ${row.last_call}.` : "Calls show here the next morning, from the Corefactor and Runo logs."}
-      </div>
+      <div className="muted small">{row.last_call ? `Last logged call: ${row.last_call}.` : "Calls show here the next morning, from the Corefactor and Runo logs."}</div>
 
-      <section>
-        <h3>Why we are calling</h3>
+      <section className="purpose">
+        <h3>Purpose of calling</h3>
         <ul className="reasons">
-          {row.reasons.map((r, i) => (
-            <li key={i}><ReasonChip r={r} /> <span>{r.label}{r.pet ? <span className="muted"> · {r.pet}</span> : null}</span></li>
+          {reasons.map((r, i) => (
+            <li key={i}><ReasonChip r={r} /> <span>{r.label}{r.pet ? <strong> · {r.pet}</strong> : null}</span></li>
           ))}
         </ul>
       </section>
 
-      {row.pets?.length > 0 && (
+      <section>
+        <h3>VetBuddy summary</h3>
+        <div className="summary">
+          <div><span>{firstVisit ? fmtDate(firstVisit) : "–"}</span>customer since</div>
+          <div><span>{lastVisit ? fmtDate(lastVisit) : "–"}</span>last visit</div>
+          <div><span>{visitDays || "–"}</span>visit days</div>
+          <div><span>{spend ? rs(spend) : "–"}</span>total spend</div>
+        </div>
+        {bills === null ? <p className="muted small">Loading bills…</p> : visits.length === 0 ? <p className="muted small">No bills in the last 13 months.</p> : (
+          <table className="mini">
+            <thead><tr><th>Date</th><th>Unit</th><th>Pet</th><th>Billed</th><th className="num">Amount</th></tr></thead>
+            <tbody>
+              {visits.map((v, i) => (
+                <tr key={i}>
+                  <td className="nowrap">{fmtDate(v.date)}</td>
+                  <td>{title(v.unit)}</td>
+                  <td>{[...v.pets].join(", ")}</td>
+                  <td>{[...new Set(v.items)].slice(0, 6).join(", ")}{v.items.length > 6 ? ` +${v.items.length - 6} more` : ""}</td>
+                  <td className="num">{rs(Math.round(v.amount))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {pets.length > 0 && (
         <section>
           <h3>Pets</h3>
           <div className="pets">
-            {row.pets.map((p) => (
+            {pets.map((p) => (
               <div className="pet" key={p.pet_id}>
                 <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
                 <dl>
@@ -134,34 +163,12 @@ function Customer({ row, me, onSaved, onNext }) {
                   {p.last_consultation && (<><dt>Consultation</dt><dd>{fmtDate(p.last_consultation)}</dd></>)}
                   {p.last_bath && (<><dt>Bath</dt><dd>{fmtDate(p.last_bath)}</dd></>)}
                   {p.last_haircut && (<><dt>Haircut</dt><dd>{fmtDate(p.last_haircut)}</dd></>)}
-                  <dt>Customer since</dt><dd>{fmtDate(p.first_visit)}{p.visits ? ` · ${p.visits} visit days` : ""}</dd>
-                  {p.revenue ? (<><dt>Total spend</dt><dd>{rs(p.revenue)}</dd></>) : null}
                 </dl>
               </div>
             ))}
           </div>
         </section>
       )}
-
-      <section>
-        <h3>What happened</h3>
-        <div className="outcomes">
-          {OUTCOMES.map(([k, v]) => (
-            <button key={k} className={`opt ${outcome === k ? "on" : ""} ${["wrong_number", "dnd", "deceased"].includes(k) ? "warnopt" : ""}`} onClick={() => setOutcome(outcome === k ? "" : k)}>{v}</button>
-          ))}
-        </div>
-        {outcome === "callback" && (
-          <label className="inline">Call back on <input type="datetime-local" value={cb} onChange={(e) => setCb(e.target.value)} /></label>
-        )}
-        {["wrong_number", "dnd", "deceased"].includes(outcome) && <p className="note warn">This number will not be put on any list again.</p>}
-        <textarea rows={3} placeholder="Note (what the customer said, best time to call...)" value={note} onChange={(e) => setNote(e.target.value)} />
-        {err && <p className="note warn">{err}</p>}
-        <div className="actions">
-          <button className="ghost" disabled={busy} onClick={() => save(false)}>Save</button>
-          <button className="primary" disabled={busy} onClick={() => save(true)}>Save and next</button>
-          <button className="link" onClick={onNext}>Skip</button>
-        </div>
-      </section>
 
       <section>
         <h3>Call history</h3>
@@ -267,7 +274,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
           <div className="bar"><span style={{ width: `${total ? Math.min(100, (attempted / total) * 100) : 0}%` }} /></div>
         </div>
         <div className="filters">
-          {[["todo", "To call"], ["callback", "Call-backs"], ["done", "Done"], ["all", "All"]].map(([k, v]) => (
+          {[["todo", "To call"], ["done", "Answered"], ["all", "All"]].map(([k, v]) => (
             <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{v} <span>{counts[k]}</span></button>
           ))}
         </div>
@@ -296,7 +303,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
                   <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span><Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip></div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{top?.label}</span></div>
-                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · dialed ${fmtTime(r.dialed_at)}` : ""}</div>
+                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}</div>
                 </div>
               </div>
             );
@@ -308,13 +315,13 @@ function CallList({ me, agentId, agents, day, setDay }) {
         {current ? (
           <>
             <button className="link back" onClick={() => setSel(null)}>← Back to list</button>
-            <Customer key={current.id} row={current} me={me} onSaved={onSaved} onNext={next} />
+            <Customer key={current.id} row={current} onSaved={(u) => onSaved(u, false)} onNext={next} />
           </>
         ) : (
           <div className="empty">
             <h2>{counts.todo ? `${counts.todo} customers to call` : rows?.length ? "All done for today" : ""}</h2>
             {counts.todo > 0 && <button className="primary" onClick={() => setSel(shown.find((r) => !rowDone(r))?.id || null)}>Start with the first one</button>}
-            <p className="muted small">The list is sorted by urgency: call-backs, missed calls, appointments, post-surgery checks and reminders come first.</p>
+            <p className="muted small">Each list mixes every purpose: appointments, cancellations, post-surgery checks, vaccine and review reminders, grooming and follow-ups.</p>
           </div>
         )}
       </main>
@@ -338,24 +345,24 @@ function Team({ day, setDay, openAgent }) {
       </div>
       <div className="kpis">
         <div><span>{sum("assigned") + t.unassigned}</span>on the lists</div>
-        <div><span>{sum("dialed")}</span>Call clicked</div>
+        <div><span>{sum("dialed")}</span>numbers copied</div>
         <div><span>{sum("attempted")}</span>called (logs)</div>
         <div><span>{sum("connected")}</span>answered (logs)</div>
-        <div><span>{sum("booked")}</span>booked</div>
+        
       </div>
       <p className="muted small">"Called" and "answered" come from the Corefactor and Runo logs, loaded each morning (latest call loaded: {fmtDT(t.last_call_loaded) || "none yet"}).</p>
       <table className="grid">
-        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Call clicked</th><th>Called</th><th>Answered</th><th>Booked</th><th>Call-backs</th><th>Done %</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Copied</th><th>Called</th><th>Answered</th><th>Done %</th></tr></thead>
         <tbody>
           {t.agents.filter((a) => a.role === "agent").map((a) => (
             <tr key={a.id} className="click" onClick={() => openAgent(a.id)}>
               <td>{a.name}{!a.active && <span className="muted"> (off)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td>
-              <td>{a.assigned}</td><td>{a.must_call}</td><td>{a.dialed}</td><td>{a.attempted}</td><td>{a.connected}</td><td>{a.booked}</td><td>{a.callbacks}</td>
+              <td>{a.assigned}</td><td>{a.must_call}</td><td>{a.dialed}</td><td>{a.attempted}</td><td>{a.connected}</td>
               <td>{a.assigned ? Math.round((Math.max(a.attempted, a.dialed) / a.assigned) * 100) : 0}%</td>
             </tr>
           ))}
-          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={7} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
+          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={5} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
         </tbody>
       </table>
       <h3>By reason</h3>

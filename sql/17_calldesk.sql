@@ -225,27 +225,6 @@ begin
                             type text, rank int, label text, due date, score numeric) on commit drop;
 
   -- 1 missed inbound yesterday (or earlier, up to 3 days) with no call back since
-  insert into t_cand
-  select m.phone,
-         coalesce(p.client_name, m.log_name,
-                  (select l.name from calldesk.leads l where l.phone = m.phone and nullif(l.name, '') is not null order by l.created_at desc limit 1),
-                  (select a2.client from calldesk.appointments a2 where calldesk.norm_phone(a2.phone) = m.phone order by a2.appt_date desc limit 1)),
-         p.unit, null, null, 'missed_call', 1,
-         'Inbound call not answered' || case when m.tries > 1 then ' (' || m.tries || ' tries)' else '' end ||
-         ' - ' || to_char(m.last_at, 'DD Mon HH12:MI am') || coalesce(' - ' || m.via, '') ||
-         coalesce(' - IVR option ' || m.dtmf, '') ||
-         case when p.client_name is null then ' - new caller, not in VetBuddy' else '' end,
-         m.last_at::date, extract(epoch from m.last_at)
-  from (select k.phone, count(*) tries, max(k.call_at) last_at,
-               (array_agg(nullif(k.customer_name, '') order by k.call_at desc) filter (where k.customer_name !~* '^\s*(unknown|na|n/a|-|pet ?parent|customer|client)?\s*$|\d{6}'))[1] log_name,
-               (array_agg(k.source || coalesce(' ' || nullif(k.line, ''), '') order by k.call_at desc))[1] via,
-               (array_agg(nullif(k.dtmf, '') order by k.call_at desc) filter (where nullif(k.dtmf, '') is not null))[1] dtmf
-          from calldesk.calls k
-         where k.direction = 'in' and not k.answered and k.call_at >= (d - 3)::timestamp and k.call_at < d::timestamp
-           and not exists (select 1 from calldesk.calls o where o.phone = k.phone and o.call_at > k.call_at
-                            and (o.direction <> 'in' or o.answered))
-         group by k.phone) m
-  left join lateral (select client_name, unit from t_pet where t_pet.phone = m.phone order by last_visit desc limit 1) p on true;
 
   -- 2 appointment tomorrow: confirm
   insert into t_cand
@@ -286,13 +265,15 @@ begin
          coalesce(p.unit, upper(rm.clinic)), rm.patient_id, rm.pet,
          case when rm.purpose ~* 'vaccin|booster|rabies|dhpp|tri ?cat|arv|lepto|kennel|corona' then 'vaccine_due'
               when rm.purpose ~* 'review|follow' then 'review_due'
-              when rm.purpose ~* 'bath|hair|groom|nail' then 'grooming_due'
+              when rm.purpose ~* 'hair ?cut|trim|styl' then 'haircut_due'
+              when rm.purpose ~* 'bath|groom|spa|nail|hygien' then 'bath_due'
               when rm.purpose ~* 'report' then 'report_ready'
               else 'reminder' end,
-         case when rm.purpose ~* 'bath|hair|groom|nail' then 7 else 5 end,
+         case when rm.purpose ~* 'hair ?cut|trim|styl' then 8 when rm.purpose ~* 'bath|groom|spa|nail|hygien' then 7 else 5 end,
          case when rm.purpose ~* 'vaccin|booster|rabies|dhpp|tri ?cat|arv|lepto|kennel|corona' then 'Vaccine due '
               when rm.purpose ~* 'review|follow' then 'Review due '
-              when rm.purpose ~* 'bath|hair|groom|nail' then 'Grooming due '
+              when rm.purpose ~* 'hair ?cut|trim|styl' then 'Haircut due '
+              when rm.purpose ~* 'bath|groom|spa|nail|hygien' then 'Bath due '
               when rm.purpose ~* 'report' then 'Report ready to collect '
               else 'Reminder due ' end || to_char(rm.due, 'DD Mon') || ': ' || rm.purpose,
          rm.due, -(rm.due - d)
@@ -328,11 +309,6 @@ begin
   where p.last_consultation_visit between d - 9 and d - 7 and p.last_visit <= p.last_consultation_visit;
 
   -- 10 new pet welcome (first visit in the last 3 days)
-  insert into t_cand
-  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'new_pet', 10,
-         'New pet - first visit ' || to_char(p.first_visit_date, 'DD Mon') || ' - welcome call', p.first_visit_date, 0
-  from t_pet p
-  where p.first_visit_date between d - 3 and d - 1;
 
   -- 11 Lead Box enquiries from the last 2 days that are still open
   insert into t_cand
@@ -345,15 +321,13 @@ begin
     and calldesk.norm_phone(l.phone) is not null;
 
   -- 12 churned regulars (2+ visit days, last visit 60-90 days ago): fills the lists, best customers first
-  insert into t_cand
-  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'churned', 12,
-         'Win back - last visit ' || to_char(p.last_visit, 'DD Mon') || coalesce(' (' || lower(p.last_service_name) || ')', ''),
-         p.last_visit, coalesce(p.total_client_revenue, 0)
-  from t_pet p
-  where p.client_visit_count >= 2 and p.last_visit between d - 90 and d - 60
-    and not exists (select 1 from t_pet o where o.phone = p.phone and o.last_visit > d - 60);
 
   -- ---- exclusions
+  -- one reason per pet: a VetBuddy reminder and the bills-based rule for the same pet and service count once
+  -- (the reminder, inserted first, is kept - it names the exact item)
+  delete from t_cand a using t_cand b
+   where a.phone = b.phone and a.type = b.type and a.ctid > b.ctid
+     and lower(coalesce(a.pet_id, a.pet, '')) in (lower(coalesce(b.pet_id, b.pet, '')), lower(coalesce(b.pet, '')));
   delete from t_cand c where c.phone is null or c.phone !~ '^[6-9]\d{9}$'
      or exists (select 1 from calldesk.exclusions x where x.phone = c.phone);
   -- non-urgent reasons: skip numbers that were in touch (any call, in or out) in the last 3 days
@@ -523,6 +497,25 @@ begin
       from calldesk.calls k where k.phone = p_phone order by k.call_at desc limit 15) x), '[]');
 end $$;
 
+-- VetBuddy summary: the latest bill lines of the pets on a number that is on a list
+create or replace function public.cd_bills(p_phone text) returns jsonb
+language plpgsql stable security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me(); ids text[];
+begin
+  if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  select array_agg(distinct e->>'pet_id') into ids
+    from calldesk.queue q, jsonb_array_elements(q.pets) e
+   where q.phone = p_phone and q.list_date >= calldesk.today() - 30;
+  return coalesce((select jsonb_agg(x order by x.sale_date desc, x.invoice_no) from (
+    select s.sale_date, s.invoice_no, s.sales_unit unit, s.patient_name pet, s.item_name item, s.plan_category,
+           s.plan_subcategory, s.doctor, round(s.amount) amount
+      from vetbuddy.sales s
+     where (calldesk.norm_phone(s.client_phone) = p_phone
+            or substring(s.client_id from '\(([^)]*)\)') = any (coalesce(ids, '{}')))
+       and s.sale_date >= calldesk.today() - 400
+     order by s.sale_date desc, s.invoice_no limit 40) x), '[]');
+end $$;
+
 -- the agent clicked "Call" (only shown in the app; "called or not" still comes from the logs)
 create or replace function public.cd_dial(p_id bigint) returns void
 language plpgsql security definer set search_path = calldesk, public as $$
@@ -648,11 +641,11 @@ revoke all on schema calldesk from public, anon, authenticated;
 revoke execute on function public.cd_me(), public.cd_list(date, int), public.cd_calls(text), public.cd_dial(bigint),
   public.cd_save(bigint, text, text, timestamptz), public.cd_team(date),
   public.cd_agent_save(text, text, text, text[], int, boolean), public.cd_assign(bigint[], int),
-  public.cd_kpi(date, date) from public, anon;
+  public.cd_kpi(date, date), public.cd_bills(text) from public, anon;
 grant execute on function public.cd_me(), public.cd_list(date, int), public.cd_calls(text), public.cd_dial(bigint),
   public.cd_save(bigint, text, text, timestamptz), public.cd_team(date),
   public.cd_agent_save(text, text, text, text[], int, boolean), public.cd_assign(bigint[], int),
-  public.cd_kpi(date, date) to authenticated, anon;   -- anon: no sign-in (see calldesk.me)
+  public.cd_kpi(date, date), public.cd_bills(text) to authenticated, anon;   -- anon: no sign-in (see calldesk.me)
 
 -- the daily loader (vb_loader): fill the source tables and build the list
 grant usage on schema calldesk to vb_loader;
