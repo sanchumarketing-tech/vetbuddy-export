@@ -237,7 +237,7 @@ begin
          case when p.client_name is null then ' - new caller, not in VetBuddy' else '' end,
          m.last_at::date, extract(epoch from m.last_at)
   from (select k.phone, count(*) tries, max(k.call_at) last_at,
-               (array_agg(nullif(k.customer_name, '') order by k.call_at desc) filter (where k.customer_name !~* '^\s*(unknown|na|n/a|-)?\s*$'))[1] log_name,
+               (array_agg(nullif(k.customer_name, '') order by k.call_at desc) filter (where k.customer_name !~* '^\s*(unknown|na|n/a|-|pet ?parent|customer|client)?\s*$|\d{6}'))[1] log_name,
                (array_agg(k.source || coalesce(' ' || nullif(k.line, ''), '') order by k.call_at desc))[1] via,
                (array_agg(nullif(k.dtmf, '') order by k.call_at desc) filter (where nullif(k.dtmf, '') is not null))[1] dtmf
           from calldesk.calls k

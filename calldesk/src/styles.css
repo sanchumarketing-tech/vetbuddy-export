@@ -110,6 +110,7 @@ textarea { width: 100%; resize: vertical; margin-top: 8px; }
 .row-main { flex: 1; min-width: 0; }
 .row-top { display: flex; justify-content: space-between; gap: 8px; }
 .row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .row-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 12.5px; min-width: 0; }
 .row-sub .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-meta { font-size: 12px; margin-top: 2px; }

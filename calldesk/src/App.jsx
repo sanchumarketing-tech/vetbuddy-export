@@ -341,8 +341,9 @@ function CallList({ me, agentId, agents, day, setDay }) {
                 {isLead && <input type="checkbox" checked={picked.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(picked); e.target.checked ? s.add(r.id) : s.delete(r.id); setPicked(s); }} />}
                 <div className="row-main">
                   <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span><Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip></div>
-                  <div className="row-sub">{top && <ReasonChip r={top} />}<span className="muted">{top?.label}</span></div>
-                  <div className="row-meta muted">{title(r.unit)}{r.reasons.length > 1 ? ` · +${r.reasons.length - 1} more` : ""}{r.dialed_at ? ` · dialed ${fmtTime(r.dialed_at)}` : ""}</div>
+                  <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
+                  <div className="row-sub"><span className="muted">{top?.label}</span></div>
+                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · dialed ${fmtTime(r.dialed_at)}` : ""}</div>
                 </div>
               </div>
             );
