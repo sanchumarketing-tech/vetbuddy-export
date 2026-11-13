@@ -35,7 +35,7 @@ jobs:
           VERCEL_SCOPE: ${{ vars.VERCEL_SCOPE }}
           PROJECT: ${{ vars.CALLDESK_PROJECT || 'sanchu-calldesk' }}
         run: |
-          if [ -z "$VERCEL_TOKEN" ]; then echo "::error::Add the VERCEL_TOKEN repository secret first"; exit 1; fi
+          if [ -z "$VERCEL_TOKEN" ]; then echo "::notice::Built OK. Not published: add the VERCEL_TOKEN repository secret to publish on Vercel."; exit 0; fi
           mkdir -p "../$PROJECT" && cp -r dist/. "../$PROJECT/" && cp vercel.json "../$PROJECT/"
           cd "../$PROJECT"
           scope=""; if [ -n "$VERCEL_SCOPE" ]; then scope="--scope $VERCEL_SCOPE"; fi
