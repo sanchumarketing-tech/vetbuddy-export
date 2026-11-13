@@ -16,6 +16,14 @@ export const TYPES = {
   bath_due: { name: "Bath due", tone: "sky" },
   haircut_due: { name: "Haircut due", tone: "sky" },
   consult_followup: { name: "Consult follow-up", tone: "teal" },
+  rabies_course: { name: "Rabies course", tone: "red" },
+  vaccine_course: { name: "Vaccine course", tone: "teal" },
+  deworm_due: { name: "Deworming due", tone: "teal" },
+  tick_recheck: { name: "Tick fever review", tone: "orange" },
+  sibling_vaccine: { name: "Vaccine check", tone: "green" },
+  birthday: { name: "Birthday", tone: "violet" },
+  senior_check: { name: "Senior check-up", tone: "blue" },
+  vaccine_never: { name: "Vaccine status", tone: "green" },
   new_pet: { name: "New pet", tone: "green" },
   lead: { name: "Enquiry", tone: "blue" },
   churned: { name: "Win back", tone: "grey" },
@@ -55,12 +63,35 @@ function ReasonChip({ r }) {
   const t = TYPES[r.type] || { name: r.type, tone: "grey" };
   return <Chip tone={t.tone}>{t.name}</Chip>;
 }
+const isCb = (r) => r.outcome === "callback" && !!r.callback_at;
+const cbDue = (r, now) => isCb(r) && new Date(r.callback_at).getTime() <= now;
+const cbWaiting = (r, now) => isCb(r) && new Date(r.callback_at).getTime() > now;
 function rowDone(r) {
   return !!r.outcome && r.outcome !== "callback";
 }
 
 // ------------------------------------------------------------------ customer panel
 function Customer({ row, onSaved, onNext }) {
+  const [cbOpen, setCbOpen] = useState(false);
+  const [cbAt, setCbAt] = useState("");
+  const [cbNote, setCbNote] = useState(row.note || "");
+  const [cbErr, setCbErr] = useState("");
+  const openCb = () => { setCbAt(toLocalInput(row.callback_at || new Date(Date.now() + 3600e3).toISOString())); setCbNote(row.note || ""); setCbErr(""); setCbOpen(true); };
+  const quick = (mins) => setCbAt(toLocalInput(new Date(Date.now() + mins * 60e3).toISOString()));
+  const saveCb = async (next) => {
+    if (!cbAt) { setCbErr("Pick the date and time."); return; }
+    try {
+      const at = new Date(cbAt).toISOString();
+      await rpc("cd_save", { p_id: row.id, p_outcome: "callback", p_note: cbNote || null, p_callback: at });
+      onSaved({ ...row, outcome: "callback", note: cbNote || null, callback_at: at, status: row.connected_at ? row.status : "callback" });
+      setCbOpen(false);
+      if (next) onNext();
+    } catch (e) { setCbErr(e.message); }
+  };
+  const clearCb = async () => {
+    try { await rpc("cd_save", { p_id: row.id, p_outcome: null, p_note: row.note || null, p_callback: null }); onSaved({ ...row, outcome: null, callback_at: null, status: row.connected_at ? "connected" : row.attempted_at ? "attempted" : "new" }); setCbOpen(false); }
+    catch (e) { setCbErr(e.message); }
+  };
   const [calls, setCalls] = useState(null);
   const [bills, setBills] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -111,8 +142,27 @@ function Customer({ row, onSaved, onNext }) {
       <div className="dialer">
         <div className="phone">{phoneFmt(row.phone)}</div>
         <button className="primary" onClick={copy}>{copied ? "Copied" : "Copy number"}</button>
+        <button className="ghost" onClick={openCb}>{isCb(row) ? "Change call-back time" : "Call back later"}</button>
         <button className="ghost" onClick={onNext}>Next customer</button>
       </div>
+      {isCb(row) && !cbOpen && (
+        <div className="cbline">Call back at <strong>{fmtDT(row.callback_at)}</strong>{row.note ? ` · ${row.note}` : ""} <button className="link" onClick={clearCb}>Remove</button></div>
+      )}
+      {cbOpen && (
+        <div className="cbbox">
+          <div className="cbrow">
+            <label className="inline">Call back at <input type="datetime-local" value={cbAt} onChange={(e) => setCbAt(e.target.value)} /></label>
+            <button className="opt" onClick={() => quick(30)}>+30 min</button>
+            <button className="opt" onClick={() => quick(60)}>+1 hour</button>
+            <button className="opt" onClick={() => quick(120)}>+2 hours</button>
+            <button className="opt" onClick={() => { const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(10, 0, 0, 0); setCbAt(toLocalInput(t.toISOString())); }}>Tomorrow 10 am</button>
+          </div>
+          <input className="cbnote" placeholder="Note (optional) - what the customer said" value={cbNote} onChange={(e) => setCbNote(e.target.value)} />
+          {cbErr && <p className="note warn">{cbErr}</p>}
+          <div className="actions"><button className="primary" onClick={() => saveCb(true)}>Save and next</button><button className="ghost" onClick={() => saveCb(false)}>Save</button><button className="link" onClick={() => setCbOpen(false)}>Cancel</button></div>
+          <p className="muted small">At that time this customer moves to the top of your list.</p>
+        </div>
+      )}
       <div className="muted small">{row.last_call ? `Last logged call: ${row.last_call}.` : "Calls show here the next morning, from the Corefactor and Runo logs."}</div>
 
       <section className="purpose">
@@ -222,25 +272,35 @@ function CallList({ me, agentId, agents, day, setDay }) {
   }, [day, agentId, isLead]);
   useEffect(() => { setRows(null); setPicked(new Set()); load(); }, [load]);
 
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 20000); return () => clearInterval(t); }, []);
+  const answered = (r) => (rowDone(r) || r.status === "connected") && !isCb(r);
   const counts = useMemo(() => {
-    const c = { todo: 0, done: 0, all: rows?.length || 0, callback: 0 };
+    const c = { todo: 0, done: 0, all: rows?.length || 0, callback: 0, due: 0 };
     (rows || []).forEach((r) => {
-      if (r.status === "callback") c.callback++;
-      if (rowDone(r) || r.status === "connected") c.done++; else c.todo++;
+      if (isCb(r)) c.callback++;
+      if (cbDue(r, now)) c.due++;
+      if (answered(r)) c.done++; else if (!cbWaiting(r, now)) c.todo++;
     });
     return c;
-  }, [rows]);
+  }, [rows, now]);
 
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
     return (rows || []).filter((r) => {
-      if (filter === "todo" && (rowDone(r) || r.status === "connected")) return false;
-      if (filter === "done" && !(rowDone(r) || r.status === "connected")) return false;
-      if (filter === "callback" && r.status !== "callback") return false;
+      if (filter === "todo" && (answered(r) || cbWaiting(r, now))) return false;
+      if (filter === "done" && !answered(r)) return false;
+      if (filter === "callback" && !isCb(r)) return false;
       if (!t) return true;
       return (r.client || "").toLowerCase().includes(t) || r.phone.includes(t) || (r.pets || []).some((p) => (p.name || "").toLowerCase().includes(t));
-    });
-  }, [rows, filter, q]);
+    }).map((r, i) => [r, i]).sort((a, b) => {
+      if (filter === "callback") return new Date(a[0].callback_at) - new Date(b[0].callback_at);
+      const da = cbDue(a[0], now), db = cbDue(b[0], now);
+      if (da !== db) return da ? -1 : 1;
+      if (da && db) return new Date(a[0].callback_at) - new Date(b[0].callback_at);
+      return a[1] - b[1];
+    }).map((x) => x[0]);
+  }, [rows, filter, q, now]);
 
   const current = rows?.find((r) => r.id === sel) || null;
   const next = () => {
@@ -274,7 +334,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
           <div className="bar"><span style={{ width: `${total ? Math.min(100, (attempted / total) * 100) : 0}%` }} /></div>
         </div>
         <div className="filters">
-          {[["todo", "To call"], ["done", "Answered"], ["all", "All"]].map(([k, v]) => (
+          {[["todo", "To call"], ["callback", "Call-backs"], ["done", "Answered"], ["all", "All"]].map(([k, v]) => (
             <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{v} <span>{counts[k]}</span></button>
           ))}
         </div>
@@ -297,10 +357,10 @@ function CallList({ me, agentId, agents, day, setDay }) {
             const top = r.reasons[0] && [...r.reasons].sort((a, b) => a.rank - b.rank)[0];
             const [sl, st] = STATUS[r.status] || ["", "neutral"];
             return (
-              <div key={r.id} className={`row ${sel === r.id ? "sel" : ""} ${rowDone(r) ? "done" : ""}`} onClick={() => setSel(r.id)}>
+              <div key={r.id} className={`row ${sel === r.id ? "sel" : ""} ${rowDone(r) ? "done" : ""} ${cbDue(r, now) ? "cbdue" : ""}`} onClick={() => setSel(r.id)}>
                 {isLead && <input type="checkbox" checked={picked.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(picked); e.target.checked ? s.add(r.id) : s.delete(r.id); setPicked(s); }} />}
                 <div className="row-main">
-                  <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span><Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip></div>
+                  <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{top?.label}</span></div>
                   <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}</div>

@@ -207,7 +207,7 @@ begin
 
   -- pets: latest owner, phone, unit per pet (last 15 months of bills) + the per-pet visit summary
   create temp table t_pet on commit drop as
-  select distinct on (s.pet_id) s.*, m.first_visit_date, m.client_visit_count, m.total_client_revenue,
+  select distinct on (s.pet_id) s.*, m.first_visit_date, m.client_visit_count, m.first_bathing_visit, m.bathing_visit_count, m.first_haircut_visit, m.haircut_visit_count, m.total_client_revenue,
          m.last_service_name, m.last_bathing_visit, m.last_haircut_visit, m.last_vaccination_visit,
          m.last_consultation_visit
   from (select substring(client_id from '\(([^)]*)\)') pet_id, client_name, calldesk.norm_phone(client_phone) phone,
@@ -287,18 +287,18 @@ begin
   -- 7 bathing due (30-45 days since the last bath, no visit since)
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'bath_due', 7,
-         'Bath due - last bath ' || to_char(p.last_bathing_visit, 'DD Mon'), p.last_bathing_visit + 30,
+         'Bath due - last bath ' || to_char(p.last_bathing_visit, 'DD Mon') || case when coalesce(p.bathing_visit_count, 0) >= 3 then ' (regular: ' || p.bathing_visit_count || ' baths, usually every ' || greatest(20, least(90, (p.last_bathing_visit - p.first_bathing_visit) / (p.bathing_visit_count - 1))) || ' days)' else '' end, p.last_bathing_visit + 30,
          d - p.last_bathing_visit
   from t_pet p
-  where p.last_bathing_visit between d - 45 and d - 30 and p.last_visit <= p.last_bathing_visit;
+  where p.last_visit <= p.last_bathing_visit and ((coalesce(p.bathing_visit_count, 0) >= 3 and (d - p.last_bathing_visit) between greatest(20, least(90, (p.last_bathing_visit - p.first_bathing_visit) / (p.bathing_visit_count - 1))) and 1.6 * greatest(20, least(90, (p.last_bathing_visit - p.first_bathing_visit) / (p.bathing_visit_count - 1)))) or (coalesce(p.bathing_visit_count, 0) < 3 and p.last_bathing_visit between d - 45 and d - 30));
 
   -- 8 haircut due (45-60 days since the last haircut, no visit since)
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'haircut_due', 8,
-         'Haircut due - last haircut ' || to_char(p.last_haircut_visit, 'DD Mon'), p.last_haircut_visit + 45,
+         'Haircut due - last haircut ' || to_char(p.last_haircut_visit, 'DD Mon') || case when coalesce(p.haircut_visit_count, 0) >= 3 then ' (regular: ' || p.haircut_visit_count || ' haircuts, usually every ' || greatest(30, least(120, (p.last_haircut_visit - p.first_haircut_visit) / (p.haircut_visit_count - 1))) || ' days)' else '' end, p.last_haircut_visit + 45,
          d - p.last_haircut_visit
   from t_pet p
-  where p.last_haircut_visit between d - 60 and d - 45 and p.last_visit <= p.last_haircut_visit;
+  where p.last_visit <= p.last_haircut_visit and ((coalesce(p.haircut_visit_count, 0) >= 3 and (d - p.last_haircut_visit) between greatest(30, least(120, (p.last_haircut_visit - p.first_haircut_visit) / (p.haircut_visit_count - 1))) and 1.6 * greatest(30, least(120, (p.last_haircut_visit - p.first_haircut_visit) / (p.haircut_visit_count - 1)))) or (coalesce(p.haircut_visit_count, 0) < 3 and p.last_haircut_visit between d - 60 and d - 45));
 
   -- 9 consultation follow-up (7-9 days after a consultation, no visit since)
   insert into t_cand
@@ -325,6 +325,71 @@ begin
   -- ---- exclusions
   -- one reason per pet: a VetBuddy reminder and the bills-based rule for the same pet and service count once
   -- (the reminder, inserted first, is kept - it names the exact item)
+  -- ---- extra reasons from the bills (13 Nov 2026): per-pet facts in one pass
+  create temp table t_ext on commit drop as
+  select z.pet_id,
+         max(case when z.patient_dob_text ~ '^[A-Z][a-z]{2}, \d{2} \d{4}$' then to_date(z.patient_dob_text, 'Mon, DD YYYY') end) as dob,
+         max(z.sale_date) filter (where z.item_name ~* 'deworming' and z.item_name !~* 'advice') as last_deworm,
+         max(z.sale_date) filter (where z.item_name ~* 'tick' and z.plan_category ilike 'laborator%') as last_tick,
+         max(z.sale_date) filter (where z.plan_category ilike 'laborator%' or z.plan_subcategory ilike 'health check%') as last_lab,
+         (array_agg(z.item_name order by z.sale_date desc) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%'))[1] as last_vac_item,
+         max(z.sale_date) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%') as last_vac,
+         count(distinct z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_n
+  from (select substring(client_id from '\(([^)]*)\)') as pet_id, patient_dob_text, sale_date, item_name, plan_category, plan_subcategory
+          from vetbuddy.sales where client_id is not null and sale_date >= d - 460 and sale_date < d) z
+  group by z.pet_id;
+  create index on t_ext (pet_id);
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'rabies_course', 4,
+         'Anti-rabies (post bite) course: ' || e.pb_n || ' of 5 doses given, last on ' || to_char(e.last_vac, 'DD Mon') || ' - next dose is due',
+         e.last_vac, d - e.last_vac
+  from t_pet p join t_ext e using (pet_id)
+  where e.last_vac_item ~* 'post bite' and d - e.last_vac between 7 and 28 and e.pb_n < 5;
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_course', 5,
+         'Vaccine course not finished: ' || regexp_replace(e.last_vac_item, '^Vaccination & Physical Examination - ', '') || ' given on ' || to_char(e.last_vac, 'DD Mon') || ' - next dose is due',
+         e.last_vac + 21, d - e.last_vac
+  from t_pet p join t_ext e using (pet_id)
+  where e.last_vac_item ~* 'primary|1st booster|2nd booster' and e.last_vac_item !~* 'annual' and d - e.last_vac between 21 and 60;
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'deworm_due', 6,
+         'Deworming due - last done on ' || to_char(e.last_deworm, 'DD Mon') || ' (every 3 months)', e.last_deworm + 90, d - e.last_deworm
+  from t_pet p join t_ext e using (pet_id)
+  where d - e.last_deworm between 85 and 120;
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'tick_recheck', 6,
+         'Tick fever test on ' || to_char(e.last_tick, 'DD Mon') || ', no visit since - ask how the pet is, offer review / re-test', e.last_tick, d - e.last_tick
+  from t_pet p join t_ext e using (pet_id)
+  where d - e.last_tick between 10 and 30 and p.last_visit <= e.last_tick;
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'sibling_vaccine', 9,
+         'Vaccination check: no vaccine with us in the last year, but ' || sb.pet_name || ' (same owner) was vaccinated on ' || to_char(sb.last_vaccination_visit, 'DD Mon'),
+         sb.last_vaccination_visit, coalesce(p.total_client_revenue, 0)
+  from t_pet p
+  join lateral (select o.pet_name, o.last_vaccination_visit from t_pet o where o.phone = p.phone and o.pet_id <> p.pet_id
+                 and o.last_vaccination_visit >= d - 90 order by o.last_vaccination_visit desc limit 1) sb on true
+  where p.last_vaccination_visit is null and p.last_visit >= d - 180;
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'birthday', 10,
+         'Birthday on ' || to_char(e.dob, 'DD Mon') || ' (turning ' || (extract(year from d)::int - extract(year from e.dob)::int) || ') - wish them, offer a birthday groom / health check',
+         d, coalesce(p.total_client_revenue, 0)
+  from t_pet p join t_ext e using (pet_id)
+  where e.dob is not null and p.last_visit >= d - 180 and extract(year from e.dob) < extract(year from d)
+    and to_char(e.dob, 'MMDD') between to_char(d, 'MMDD') and to_char(d + 3, 'MMDD');
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'senior_check', 11,
+         'Senior pet (' || ((d - e.dob) / 365) || ' yrs): ' || case when e.last_lab is null then 'no health check or lab test in the last year' else 'last health check / lab on ' || to_char(e.last_lab, 'DD Mon') end || ' - offer a senior check-up',
+         d, coalesce(p.total_client_revenue, 0)
+  from t_pet p join t_ext e using (pet_id)
+  where e.dob <= d - 2555 and p.last_visit between d - 365 and d - 30 and (e.last_lab is null or e.last_lab < d - 180);
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_never', 11,
+         'Grooming regular (' || p.bathing_visit_count || ' baths), no vaccination with us in the last year - check vaccine and deworming status',
+         d, coalesce(p.total_client_revenue, 0)
+  from t_pet p
+  where coalesce(p.bathing_visit_count, 0) >= 2 and p.last_bathing_visit >= d - 120 and p.last_vaccination_visit is null;
+  delete from t_cand a using t_cand b where a.type = 'vaccine_course' and b.type = 'vaccine_due' and a.phone = b.phone and lower(coalesce(a.pet, '')) = lower(coalesce(b.pet, ''));
+  delete from t_cand a using t_cand b where a.type = 'vaccine_never' and b.type = 'sibling_vaccine' and a.phone = b.phone and a.pet_id = b.pet_id;
   delete from t_cand a using t_cand b
    where a.phone = b.phone and a.type = b.type and a.ctid > b.ctid
      and lower(coalesce(a.pet_id, a.pet, '')) in (lower(coalesce(b.pet_id, b.pet, '')), lower(coalesce(b.pet, '')));
@@ -402,7 +467,7 @@ begin
                                       when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
                                       when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
                                       when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
-                                      when 'new_pet' then 10 when 'lead' then 10 else 1 end,
+                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'lead' then 10 else 1 end,
                     t.rank, t.phone loop
     a := null;
     if capacity > 0 then
