@@ -1,0 +1,45 @@
+name: Call Desk web app
+
+# Builds the Call Desk web app (calldesk/) and publishes it on Vercel.
+# Runs when the app's code changes on main, or by hand. Needs the repository secret VERCEL_TOKEN
+# (Vercel -> Account Settings -> Tokens). Optional variables: VERCEL_SCOPE (team slug),
+# CALLDESK_PROJECT (Vercel project name, default "sanchu-calldesk").
+
+on:
+  push:
+    branches: [main]
+    paths: ["calldesk/**", ".github/workflows/calldesk-web.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: calldesk-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: calldesk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Publish on Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_SCOPE: ${{ vars.VERCEL_SCOPE }}
+          PROJECT: ${{ vars.CALLDESK_PROJECT || 'sanchu-calldesk' }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then echo "::error::Add the VERCEL_TOKEN repository secret first"; exit 1; fi
+          mkdir -p "../$PROJECT" && cp -r dist/. "../$PROJECT/" && cp vercel.json "../$PROJECT/"
+          cd "../$PROJECT"
+          scope=""; if [ -n "$VERCEL_SCOPE" ]; then scope="--scope $VERCEL_SCOPE"; fi
+          url=$(npx --yes vercel@39.1.1 deploy --prod --yes --token "$VERCEL_TOKEN" $scope)
+          echo "Published: $url"
+          echo "### Call Desk published" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
