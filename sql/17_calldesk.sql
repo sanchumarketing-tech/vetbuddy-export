@@ -407,6 +407,52 @@ begin
   from t_pet p join t_ext e using (pet_id)
   join calldesk.holidays h on d between h.starts - 21 and h.starts - 7
   where e.last_board is not null;
+  -- Sanchu's Elite Grooming Club: Bath (Rs 1,500 = 6 free baths) / Full Groom (Rs 2,500 = 6 baths + 2 haircuts), 3 months, per pet
+  create temp table t_sub on commit drop as
+  with s as (select substring(client_id from '\(([^)]*)\)') as pet_id, sale_date, item_name from vetbuddy.sales
+              where client_id is not null and sale_date >= d - 200 and sale_date < d
+                and item_name in ('Bath Subscription Plan', 'Bath & Haircut Subscription Plan', 'Subscription Bath', 'Subscription Haircut')),
+       b as (select distinct on (pet_id) pet_id, sale_date as bought, item_name as plan from s where item_name like '%Plan' order by pet_id, sale_date desc)
+  select b.pet_id, b.bought, (b.bought + interval '3 months')::date as ends,   -- validity: 3 calendar months from purchase
+         case when b.plan like 'Bath & Haircut%' then 'Elite Full Groom subscription' else 'Elite Bath subscription' end as pname,
+         case when b.plan like 'Bath & Haircut%' then 2 else 0 end as cuts,
+         count(*) filter (where s.item_name = 'Subscription Bath' and s.sale_date between b.bought and (b.bought + interval '3 months')::date)::int as baths_used,
+         count(*) filter (where s.item_name = 'Subscription Haircut' and s.sale_date between b.bought and (b.bought + interval '3 months')::date)::int as cuts_used,
+         max(s.sale_date) filter (where s.item_name like 'Subscription %' and s.sale_date between b.bought and (b.bought + interval '3 months')::date) as last_use
+  from b left join s on s.pet_id = b.pet_id
+  group by b.pet_id, b.bought, b.plan;
+  -- ends within 3 weeks with free visits left
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'sub_expiring', 4,
+         u.pname || ' ends on ' || to_char(u.ends, 'DD Mon') || ' with ' || greatest(6 - u.baths_used, 0) || ' free bath(s)' ||
+         case when u.cuts - u.cuts_used > 0 then ' + ' || (u.cuts - u.cuts_used) || ' free haircut(s)' else '' end || ' unused - book now so they are not lost',
+         u.ends, -(u.ends - d)
+  from t_pet p join t_sub u using (pet_id)
+  where d <= u.ends and u.ends - d <= 21 and (u.baths_used < 6 or u.cuts_used < u.cuts);
+  -- active, visits left, 14+ days since the last subscription visit (6 baths in 90 days = one every 15 days)
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'sub_due', 6,
+         u.pname || ': ' || u.baths_used || ' of 6 free baths used' ||
+         case when u.cuts > 0 then ', ' || u.cuts_used || ' of 2 haircuts used' else '' end ||
+         ' - valid till ' || to_char(u.ends, 'DD Mon') || ', last visit ' || to_char(coalesce(u.last_use, u.bought), 'DD Mon') || ' - book the next one',
+         coalesce(u.last_use, u.bought) + 14, d - coalesce(u.last_use, u.bought)
+  from t_pet p join t_sub u using (pet_id)
+  where d <= u.ends and u.ends - d > 21 and (u.baths_used < 6 or u.cuts_used < u.cuts)
+    and d - coalesce(u.last_use, u.bought) >= 14 and p.last_visit <= coalesce(u.last_use, u.bought);
+  -- ended in the last 30 days, or all free visits used 7-30 days ago: offer renewal
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'sub_renew', 7,
+         u.pname || ' finished' ||
+         case when u.baths_used >= 6 and u.cuts_used >= u.cuts then ' - all free visits used'
+              else ' on ' || to_char(u.ends, 'DD Mon') || ' (' || u.baths_used || ' of 6 baths used)' end ||
+         ' - offer to renew (Rs ' || case when u.cuts > 0 then '2,500: 6 baths + 2 haircuts' else '1,500: 6 baths' end || ', 3 months)',
+         least(u.ends, coalesce(u.last_use, u.ends)), coalesce(p.total_client_revenue, 0)
+  from t_pet p join t_sub u using (pet_id)
+  where (d > u.ends and d - u.ends <= 30)
+     or (u.baths_used >= 6 and u.cuts_used >= u.cuts and d - u.last_use between 7 and 30);
+  -- subscription pets get the subscription call, not the general bath / haircut due call
+  delete from t_cand c where c.type in ('bath_due', 'haircut_due')
+     and exists (select 1 from t_cand x where x.type in ('sub_due', 'sub_expiring', 'sub_renew') and x.phone = c.phone and x.pet_id = c.pet_id);
   delete from t_cand a using t_cand b where a.type = 'vaccine_course' and b.type = 'vaccine_due' and a.phone = b.phone and lower(coalesce(a.pet, '')) = lower(coalesce(b.pet, ''));
   delete from t_cand a using t_cand b where a.type = 'vaccine_never' and b.type = 'sibling_vaccine' and a.phone = b.phone and a.pet_id = b.pet_id;
   delete from t_cand a using t_cand b
@@ -486,7 +532,7 @@ begin
                                       when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
                                       when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
                                       when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
-                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'lead' then 10 else 1 end,
+                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'sub_due' then 15 when 'sub_expiring' then 15 when 'sub_renew' then 10 when 'lead' then 10 else 1 end,
                     t.rank, t.phone loop
     a := null;
     if capacity > 0 then
