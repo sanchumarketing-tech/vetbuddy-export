@@ -1,0 +1,47 @@
+name: VetBuddy master extract
+
+# On demand: copies a date range of the VetBuddy master workbook into a new Excel file
+# (download it from the run's artifacts). Read-only - the master is never changed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "First date YYYY-MM-DD"
+        required: true
+      to:
+        description: "Last date YYYY-MM-DD"
+        required: true
+      name:
+        description: "File name (without .xlsx)"
+        required: true
+        default: "VB_extract"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests openpyxl xlrd
+      - name: Extract
+        env:
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_MASTER_SITE_URL: ${{ vars.SP_MASTER_SITE_URL }}
+          SP_MASTER_LIBRARY: ${{ vars.SP_MASTER_LIBRARY }}
+          SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+          OUTPUT_DIR: ${{ runner.temp }}/out
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+          IN_NAME: ${{ inputs.name }}
+        run: python master_extract.py --from "$IN_FROM" --to "$IN_TO" --name "$IN_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}
+          path: ${{ runner.temp }}/out/${{ inputs.name }}.xlsx
+          retention-days: 3
