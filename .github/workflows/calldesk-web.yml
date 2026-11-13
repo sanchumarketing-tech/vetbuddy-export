@@ -39,7 +39,7 @@ jobs:
           mkdir -p "../$PROJECT" && cp -r dist/. "../$PROJECT/" && cp vercel.json "../$PROJECT/"
           cd "../$PROJECT"
           scope=""; if [ -n "$VERCEL_SCOPE" ]; then scope="--scope $VERCEL_SCOPE"; fi
-          url=$(npx --yes vercel@39.1.1 deploy --prod --yes --token "$VERCEL_TOKEN" $scope)
+          url=$(npx --yes vercel@65.2.0 deploy --prod --yes --token "$VERCEL_TOKEN" $scope)
           echo "Published: $url"
           echo "### Call Desk published" >> "$GITHUB_STEP_SUMMARY"
           echo "$url" >> "$GITHUB_STEP_SUMMARY"
