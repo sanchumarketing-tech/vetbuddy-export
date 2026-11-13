@@ -98,7 +98,10 @@ def corefactor_rows(sp, first, last, seen):
             except Exception:  # noqa: BLE001  not there with this extension
                 continue
             n = 0
-            for r in rc.read_table(name, data):
+            table = rc.read_table(name, data)
+            if table and d == last:
+                log.info("Corefactor columns: %s", ", ".join(table[0].keys()))
+            for r in table:
                 ph = norm_phone(rc.pick(r, "Customer Number", "Phone", "Caller Number"))
                 when = cf.parse_dt(rc.pick(r, "Start Time", "Call Date")) or cf.parse_dt(rc.pick(r, "Call Date"))
                 if not ph or not when:
@@ -108,8 +111,13 @@ def corefactor_rows(sp, first, last, seen):
                 dur = seconds(rc.pick(r, "Total Time", "Duration", "Talk Time"))
                 agent = str(rc.pick(r, "Agent Name") or "")
                 seen[("Corefactor", kind, status)] += 1
+                txt = lambda *names: (str(rc.pick(r, *names) or "").strip()[:200] or None)   # noqa: E731
+                line = txt("DID Number", "DID", "Virtual Number", "Did Number")
+                if line and re.fullmatch(r"\d+\.0", line):
+                    line = line[:-2]
                 out.append(("Corefactor", key(when, ph, kind, status, agent, dur), when, ph, direction(kind, status),
-                            kind, status, answered(status, dur), dur, agent))
+                            kind, status, answered(status, dur), dur, agent,
+                            txt("Customer Name"), line, txt("DTMF", "IVR Input", "Dtmf"), txt("Notes", "Remarks")))
                 n += 1
             log.info("Corefactor %s: %d calls", d, n)
             break
@@ -128,7 +136,7 @@ def runo_rows(first, last, seen):
     it = wb.worksheets[0].iter_rows(values_only=True)
     hdr = [cf.norm(h) for h in next(it)]
     want = ("phone", "callstartdate", "calltype", "calltag", "status", "callername", "duration", "callduration",
-            "callid", "id")
+            "callid", "id", "name", "notes")
     ix = {n: hdr.index(n) for n in want if n in hdr}
     if "phone" not in ix or "callstartdate" not in ix:
         raise RuntimeError(f"Runo call log: 'Phone' / 'Call Start Date' not found in {hdr[:20]}")
@@ -148,7 +156,8 @@ def runo_rows(first, last, seen):
         agent = str(g("callername"))
         seen[("Runo", kind, tag or status)] += 1
         out.append(("Runo", str(g("callid") or g("id") or key(when, ph, kind, agent, dur)), when, ph,
-                    direction(kind, tag), kind, tag or status, answered(tag or status, dur), dur, agent))
+                    direction(kind, tag), kind, tag or status, answered(tag or status, dur), dur, agent,
+                    str(g("name") or "")[:120] or None, agent or None, None, str(g("notes") or "")[:200] or None))
     log.info("Runo %s .. %s: %d calls", first, last, len(out))
     return out
 
@@ -169,16 +178,18 @@ def load_calls(cur, today, days):
     if not rows:
         return 0
     cur.execute("create temp table t_calls (like calldesk.calls including defaults) on commit drop")
-    with cur.copy("copy t_calls (source, call_key, call_at, phone, direction, call_type, status, answered, duration_s, agent)"
-                  " from stdin") as cp:
+    with cur.copy("copy t_calls (source, call_key, call_at, phone, direction, call_type, status, answered, duration_s, agent,"
+                  " customer_name, line, dtmf, notes) from stdin") as cp:
         for r in rows:
             cp.write_row(r)
     cur.execute("""insert into calldesk.calls (source, call_key, call_at, phone, direction, call_type, status, answered,
-                                               duration_s, agent)
+                                               duration_s, agent, customer_name, line, dtmf, notes)
                    select distinct on (source, call_key) source, call_key, call_at, phone, direction, call_type, status,
-                          answered, duration_s, agent from t_calls
+                          answered, duration_s, agent, customer_name, line, dtmf, notes from t_calls
                    on conflict (source, call_key) do update set direction = excluded.direction,
-                          status = excluded.status, answered = excluded.answered, duration_s = excluded.duration_s""")
+                          status = excluded.status, answered = excluded.answered, duration_s = excluded.duration_s,
+                          customer_name = excluded.customer_name, line = excluded.line, dtmf = excluded.dtmf,
+                          notes = excluded.notes""")
     log.info("Call logs: %d rows loaded (%s .. %s)", cur.rowcount, first, last)
     return cur.rowcount
 

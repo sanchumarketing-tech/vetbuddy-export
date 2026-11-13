@@ -4,10 +4,14 @@ import { supabase, rpc } from "./supabase.js";
 // ------------------------------------------------------------------ labels
 export const TYPES = {
   callback: { name: "Call-back", tone: "violet" },
-  missed_call: { name: "Missed call", tone: "red" },
+  missed_call: { name: "Inbound - not answered", tone: "red" },
   appt_tomorrow: { name: "Appointment tomorrow", tone: "blue" },
   appt_missed: { name: "Cancelled / no-show", tone: "orange" },
   post_surgery: { name: "Post-surgery", tone: "red" },
+  vaccine_due: { name: "Vaccine due", tone: "teal" },
+  review_due: { name: "Review due", tone: "teal" },
+  report_ready: { name: "Report ready", tone: "blue" },
+  grooming_due: { name: "Grooming due", tone: "sky" },
   reminder: { name: "Reminder", tone: "teal" },
   bath_due: { name: "Bath due", tone: "sky" },
   haircut_due: { name: "Haircut due", tone: "sky" },

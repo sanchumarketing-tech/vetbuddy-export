@@ -46,6 +46,10 @@ create table if not exists calldesk.calls (
   loaded_at   timestamptz not null default now(),
   primary key (source, call_key)
 );
+alter table calldesk.calls add column if not exists customer_name text;   -- name in the call log (Corefactor)
+alter table calldesk.calls add column if not exists line text;            -- number / CRM the customer rang
+alter table calldesk.calls add column if not exists dtmf text;            -- IVR option pressed
+alter table calldesk.calls add column if not exists notes text;
 create index if not exists calls_phone_at on calldesk.calls (phone, call_at);
 create index if not exists calls_at on calldesk.calls (call_at);
 
@@ -222,15 +226,26 @@ begin
 
   -- 1 missed inbound yesterday (or earlier, up to 3 days) with no call back since
   insert into t_cand
-  select k.phone, p.client_name, p.unit, null, null, 'missed_call', 1,
-         'Missed call on ' || to_char(max(k.call_at), 'DD Mon HH12:MI am') || ' - call back', max(k.call_at)::date,
-         extract(epoch from max(k.call_at))
-  from calldesk.calls k
-  left join lateral (select client_name, unit from t_pet where t_pet.phone = k.phone order by last_visit desc limit 1) p on true
-  where k.direction = 'in' and not k.answered and k.call_at >= (d - 3)::timestamp and k.call_at < d::timestamp
-    and not exists (select 1 from calldesk.calls o where o.phone = k.phone and o.call_at > k.call_at
-                     and (o.direction <> 'in' or o.answered))
-  group by k.phone, p.client_name, p.unit;
+  select m.phone,
+         coalesce(p.client_name, m.log_name,
+                  (select l.name from calldesk.leads l where l.phone = m.phone and nullif(l.name, '') is not null order by l.created_at desc limit 1),
+                  (select a2.client from calldesk.appointments a2 where calldesk.norm_phone(a2.phone) = m.phone order by a2.appt_date desc limit 1)),
+         p.unit, null, null, 'missed_call', 1,
+         'Inbound call not answered' || case when m.tries > 1 then ' (' || m.tries || ' tries)' else '' end ||
+         ' - ' || to_char(m.last_at, 'DD Mon HH12:MI am') || coalesce(' - ' || m.via, '') ||
+         coalesce(' - IVR option ' || m.dtmf, '') ||
+         case when p.client_name is null then ' - new caller, not in VetBuddy' else '' end,
+         m.last_at::date, extract(epoch from m.last_at)
+  from (select k.phone, count(*) tries, max(k.call_at) last_at,
+               (array_agg(nullif(k.customer_name, '') order by k.call_at desc) filter (where k.customer_name !~* '^\s*(unknown|na|n/a|-)?\s*$'))[1] log_name,
+               (array_agg(k.source || coalesce(' ' || nullif(k.line, ''), '') order by k.call_at desc))[1] via,
+               (array_agg(nullif(k.dtmf, '') order by k.call_at desc) filter (where nullif(k.dtmf, '') is not null))[1] dtmf
+          from calldesk.calls k
+         where k.direction = 'in' and not k.answered and k.call_at >= (d - 3)::timestamp and k.call_at < d::timestamp
+           and not exists (select 1 from calldesk.calls o where o.phone = k.phone and o.call_at > k.call_at
+                            and (o.direction <> 'in' or o.answered))
+         group by k.phone) m
+  left join lateral (select client_name, unit from t_pet where t_pet.phone = m.phone order by last_visit desc limit 1) p on true;
 
   -- 2 appointment tomorrow: confirm
   insert into t_cand
@@ -268,8 +283,19 @@ begin
   -- 5 VetBuddy reminders due yesterday .. tomorrow with no call (in or out) from due - 3 days
   insert into t_cand
   select coalesce(calldesk.norm_phone(rm.phone), p.phone), coalesce(nullif(rm.client, ''), p.client_name),
-         coalesce(p.unit, upper(rm.clinic)), rm.patient_id, rm.pet, 'reminder', 5,
-         'Reminder: ' || rm.purpose || ' due ' || to_char(rm.due, 'DD Mon'), rm.due, -(rm.due - d)
+         coalesce(p.unit, upper(rm.clinic)), rm.patient_id, rm.pet,
+         case when rm.purpose ~* 'vaccin|booster|rabies|dhpp|tri ?cat|arv|lepto|kennel|corona' then 'vaccine_due'
+              when rm.purpose ~* 'review|follow' then 'review_due'
+              when rm.purpose ~* 'bath|hair|groom|nail' then 'grooming_due'
+              when rm.purpose ~* 'report' then 'report_ready'
+              else 'reminder' end,
+         case when rm.purpose ~* 'bath|hair|groom|nail' then 7 else 5 end,
+         case when rm.purpose ~* 'vaccin|booster|rabies|dhpp|tri ?cat|arv|lepto|kennel|corona' then 'Vaccine due '
+              when rm.purpose ~* 'review|follow' then 'Review due '
+              when rm.purpose ~* 'bath|hair|groom|nail' then 'Grooming due '
+              when rm.purpose ~* 'report' then 'Report ready to collect '
+              else 'Reminder due ' end || to_char(rm.due, 'DD Mon') || ': ' || rm.purpose,
+         rm.due, -(rm.due - d)
   from calldesk.reminders rm
   left join t_pet p on p.pet_id = rm.patient_id
   where rm.due between d - 1 and d + 1
@@ -365,6 +391,7 @@ begin
   -- ---- one row per phone number, every reason on it, ranked
   create temp table t_row on commit drop as
   select c.phone,
+         (array_agg(c.type order by c.rank, c.score desc))[1] as top_type,
          (array_agg(c.client order by c.rank) filter (where c.client is not null))[1] as client,
          (array_agg(c.unit order by c.rank) filter (where c.unit is not null))[1] as unit,
          min(c.rank) as rank,
@@ -394,7 +421,15 @@ begin
   from calldesk.agents ag where ag.active and ag.role = 'agent' and ag.daily_target > 0;
   select coalesce(sum(target), 0) into capacity from t_agent;
 
-  for r in select t.*, rp.pets from t_row t join t_rowpets rp using (phone) order by t.rank, t.score desc nulls last, t.phone loop
+  -- share of a 200 list per reason (rows of a reason are spread evenly through the list)
+  for r in select t.*, rp.pets from t_row t join t_rowpets rp using (phone)
+           order by (t.rank = 12), row_number() over (partition by t.top_type order by t.score desc nulls last, t.phone)::numeric
+                    / case t.top_type when 'missed_call' then 40 when 'appt_tomorrow' then 35 when 'appt_missed' then 20
+                                      when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
+                                      when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
+                                      when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
+                                      when 'new_pet' then 10 when 'lead' then 10 else 1 end,
+                    t.rank, t.phone loop
     a := null;
     if capacity > 0 then
       select id into a from t_agent where n < target and (units = '{}' or r.unit = any (units))
