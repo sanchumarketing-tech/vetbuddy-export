@@ -133,6 +133,12 @@ create table if not exists calldesk.queue (
   superseded     boolean not null default false,   -- carried into a later day's list
   unique (list_date, phone)
 );
+alter table calldesk.queue add column if not exists try_slot text;   -- morning | afternoon | evening: best part of the day to call
+alter table calldesk.queue add column if not exists try_note text;
+-- holidays for the "holiday boarding" calls (edit / add rows any time)
+create table if not exists calldesk.holidays (name text primary key, starts date not null);
+insert into calldesk.holidays values ('Christmas and New Year holidays', date '2026-12-24'), ('Pongal holidays', date '2027-01-14'),
+  ('Summer holidays', date '2027-05-01'), ('Diwali holidays', date '2027-10-28') on conflict (name) do nothing;
 create index if not exists queue_agent_day on calldesk.queue (agent_id, list_date);
 create index if not exists queue_phone on calldesk.queue (phone, list_date);
 
@@ -334,7 +340,8 @@ begin
          max(z.sale_date) filter (where z.plan_category ilike 'laborator%' or z.plan_subcategory ilike 'health check%') as last_lab,
          (array_agg(z.item_name order by z.sale_date desc) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%'))[1] as last_vac_item,
          max(z.sale_date) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%') as last_vac,
-         count(distinct z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_n
+         count(distinct z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_n,
+         max(z.sale_date) filter (where z.plan_subcategory ilike 'holiday boarding') as last_board
   from (select substring(client_id from '\(([^)]*)\)') as pet_id, patient_dob_text, sale_date, item_name, plan_category, plan_subcategory
           from vetbuddy.sales where client_id is not null and sale_date >= d - 460 and sale_date < d) z
   group by z.pet_id;
@@ -388,6 +395,14 @@ begin
          d, coalesce(p.total_client_revenue, 0)
   from t_pet p
   where coalesce(p.bathing_visit_count, 0) >= 2 and p.last_bathing_visit >= d - 120 and p.last_vaccination_visit is null;
+  -- past holiday boarders, 21 to 7 days before each holiday in calldesk.holidays
+  insert into t_cand
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'boarding_holiday', 10,
+         h.name || ' from ' || to_char(h.starts, 'DD Mon') || ' - boarded with us on ' || to_char(e.last_board, 'DD Mon YYYY') || ' - offer to book boarding early',
+         h.starts, coalesce(p.total_client_revenue, 0)
+  from t_pet p join t_ext e using (pet_id)
+  join calldesk.holidays h on d between h.starts - 21 and h.starts - 7
+  where e.last_board is not null;
   delete from t_cand a using t_cand b where a.type = 'vaccine_course' and b.type = 'vaccine_due' and a.phone = b.phone and lower(coalesce(a.pet, '')) = lower(coalesce(b.pet, ''));
   delete from t_cand a using t_cand b where a.type = 'vaccine_never' and b.type = 'sibling_vaccine' and a.phone = b.phone and a.pet_id = b.pet_id;
   delete from t_cand a using t_cand b
@@ -467,7 +482,7 @@ begin
                                       when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
                                       when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
                                       when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
-                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'lead' then 10 else 1 end,
+                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'lead' then 10 else 1 end,
                     t.rank, t.phone loop
     a := null;
     if capacity > 0 then
@@ -499,6 +514,27 @@ begin
     update t_agent set n = n + 1 where id = a;
   end loop;
 
+  -- best time of day to call each number, from the last 30 days of call logs:
+  -- the part of the day it answered before, else a part of the day not tried yet
+  update calldesk.queue q set try_slot = h.slot, try_note = h.note
+  from (select x.phone,
+               coalesce(x.ans_slot, case when not x.f_m then 'morning' when not x.f_e then 'evening' when not x.f_a then 'afternoon' else 'evening' end) as slot,
+               case when x.ans_slot is not null then 'Answered before in the ' || x.ans_slot
+                    else 'Not answered ' || x.fails || case when x.fails = 1 then ' time' else ' times' end || ' (' || x.failed || ') - try the ' ||
+                         case when not x.f_m then 'morning' when not x.f_e then 'evening' when not x.f_a then 'afternoon' else 'evening' end end as note
+        from (select k.phone,
+                     mode() within group (order by k.slot) filter (where k.answered) as ans_slot,
+                     count(*) filter (where not k.answered and k.direction <> 'in') as fails,
+                     string_agg(distinct k.slot, ', ') filter (where not k.answered and k.direction <> 'in') as failed,
+                     coalesce(bool_or(k.slot = 'morning') filter (where not k.answered and k.direction <> 'in'), false) as f_m,
+                     coalesce(bool_or(k.slot = 'afternoon') filter (where not k.answered and k.direction <> 'in'), false) as f_a,
+                     coalesce(bool_or(k.slot = 'evening') filter (where not k.answered and k.direction <> 'in'), false) as f_e
+              from (select phone, answered, coalesce(direction, '?') as direction,
+                           case when extract(hour from call_at) < 12 then 'morning' when extract(hour from call_at) < 16 then 'afternoon' else 'evening' end as slot
+                      from calldesk.calls where call_at >= (d - 30)::timestamp) k
+              group by k.phone) x
+        where x.ans_slot is not null or x.fails > 0) h
+  where q.list_date = d and q.phone = h.phone;
   select jsonb_build_object('day', d, 'agents', (select count(*) from t_agent), 'capacity', capacity,
            'rows', count(*), 'carried', count(*) filter (where carried_from is not null),
            'must_call_not_fitted', dropped,
@@ -542,7 +578,7 @@ begin
              'rank', q.rank, 'reasons', q.reasons, 'pets', q.pets, 'tries', q.tries, 'carried_from', q.carried_from,
              'calls', q.call_count, 'attempted_at', q.attempted_at, 'connected_at', q.connected_at, 'last_call', q.last_call,
              'dialed_at', q.dialed_at, 'outcome', q.outcome, 'note', q.note, 'callback_at', q.callback_at,
-             'status', calldesk.status_of(q))
+             'status', calldesk.status_of(q), 'try_slot', q.try_slot, 'try_note', q.try_note)
            order by q.rank, q.score desc, q.id)
     from calldesk.queue q
     where q.list_date = coalesce(p_day, calldesk.today())

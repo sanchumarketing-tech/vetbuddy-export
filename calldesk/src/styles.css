@@ -186,3 +186,5 @@ table.mini td.num, table.mini th.num { text-align: right; white-space: nowrap; }
 .cbrow label.inline { margin: 0 6px 0 0; color: var(--ink); }
 .cbnote { width: 100%; margin-top: 8px; }
 .row.cbdue { background: var(--violet-bg); box-shadow: inset 3px 0 0 var(--violet); }
+
+.tryline { margin-top: 8px; padding: 8px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 13px; }

@@ -24,6 +24,7 @@ export const TYPES = {
   birthday: { name: "Birthday", tone: "violet" },
   senior_check: { name: "Senior check-up", tone: "blue" },
   vaccine_never: { name: "Vaccine status", tone: "green" },
+  boarding_holiday: { name: "Holiday boarding", tone: "orange" },
   new_pet: { name: "New pet", tone: "green" },
   lead: { name: "Enquiry", tone: "blue" },
   churned: { name: "Win back", tone: "grey" },
@@ -63,6 +64,8 @@ function ReasonChip({ r }) {
   const t = TYPES[r.type] || { name: r.type, tone: "grey" };
   return <Chip tone={t.tone}>{t.name}</Chip>;
 }
+const slotNow = (now) => { const h = new Date(now).getHours(); return h < 12 ? "morning" : h < 16 ? "afternoon" : "evening"; };
+const SLOT_TIME = { morning: "before 12", afternoon: "12 to 4 pm", evening: "after 4 pm" };
 const isCb = (r) => r.outcome === "callback" && !!r.callback_at;
 const cbDue = (r, now) => isCb(r) && new Date(r.callback_at).getTime() <= now;
 const cbWaiting = (r, now) => isCb(r) && new Date(r.callback_at).getTime() > now;
@@ -145,6 +148,7 @@ function Customer({ row, onSaved, onNext }) {
         <button className="ghost" onClick={openCb}>{isCb(row) ? "Change call-back time" : "Call back later"}</button>
         <button className="ghost" onClick={onNext}>Next customer</button>
       </div>
+      {row.try_note && <div className="tryline">Best time to call: <strong>{row.try_slot} ({SLOT_TIME[row.try_slot]})</strong> · {row.try_note}</div>}
       {isCb(row) && !cbOpen && (
         <div className="cbline">Call back at <strong>{fmtDT(row.callback_at)}</strong>{row.note ? ` · ${row.note}` : ""} <button className="link" onClick={clearCb}>Remove</button></div>
       )}
@@ -305,6 +309,9 @@ function CallList({ me, agentId, agents, day, setDay }) {
       const da = cbDue(a[0], now), db = cbDue(b[0], now);
       if (da !== db) return da ? -1 : 1;
       if (da && db) return new Date(a[0].callback_at) - new Date(b[0].callback_at);
+      // best time of day: numbers that suit this part of the day first, numbers that suit another part last
+      const cur = slotNow(now), tier = (r) => (!r.try_slot ? 1 : r.try_slot === cur ? 0 : 2);
+      if (filter === "todo" && tier(a[0]) !== tier(b[0])) return tier(a[0]) - tier(b[0]);
       return a[1] - b[1];
     }).map((x) => x[0]);
   }, [rows, filter, q, now, reason]);
@@ -374,7 +381,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
                   <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{(reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label}</span></div>
-                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}</div>
+                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}</div>
                 </div>
               </div>
             );
