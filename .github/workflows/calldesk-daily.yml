@@ -1,0 +1,78 @@
+name: Call Desk daily list
+
+# Loads the Corefactor + Runo call logs, VetBuddy reminders, appointments and Lead Box into Supabase
+# (schema calldesk) and builds today's call lists (200 per agent) for the Call Desk web app.
+# Runs after the call-log (06:53, 07:13), Lead Box (07:03), appointment (07:23) and reminder (07:47) jobs.
+# Only reads their files and VetBuddy; it changes nothing of theirs.
+
+on:
+  schedule:
+    # Times are UTC (IST = UTC + 5:30)
+    - cron: "35 2 * * *"    # 08:05 AM IST
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "List day YYYY-MM-DD (empty = today)"
+        required: false
+      rebuild:
+        description: "Rebuild the day's list (rows nobody has touched yet)"
+        type: boolean
+        default: false
+      days:
+        description: "Days of call logs to (re)load"
+        required: false
+        default: "3"
+      only:
+        description: "Run only one step"
+        type: choice
+        options: [all, calls, reminders, appointments, leads, build]
+        default: all
+
+concurrency:
+  group: calldesk-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Load and build the lists
+        env:
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_CALLLOG_ARCHIVE_FOLDER: ${{ vars.SP_CALLLOG_ARCHIVE_FOLDER || 'Call Log Archive' }}
+          SP_LEADBOX_ARCHIVE_FOLDER: ${{ vars.SP_LEADBOX_ARCHIVE_FOLDER || 'Lead Box Archive' }}
+          SP_RUNO_SITE_URL: ${{ vars.SP_RUNO_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_RUNO_LIBRARY: ${{ vars.SP_RUNO_LIBRARY || 'Documents' }}
+          SP_RUNO_MASTER_PATH: ${{ vars.SP_RUNO_MASTER_PATH || 'Sanchu Reports/Runo CallLog.xlsx' }}
+          IN_DAY: ${{ inputs.day }}
+          IN_REBUILD: ${{ inputs.rebuild }}
+          IN_DAYS: ${{ inputs.days }}
+          IN_ONLY: ${{ inputs.only }}
+        run: |
+          args="--days ${IN_DAYS:-3}"
+          if [ -n "$IN_DAY" ]; then args="$args --day $IN_DAY"; fi
+          if [ "$IN_REBUILD" = "true" ]; then args="$args --rebuild"; fi
+          if [ -n "$IN_ONLY" ] && [ "$IN_ONLY" != "all" ]; then args="$args --only $IN_ONLY"; fi
+          python calldesk_load.py $args
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calldesk-${{ github.run_number }}
+          path: login_debug.html
+          if-no-files-found: ignore
+          retention-days: 7
