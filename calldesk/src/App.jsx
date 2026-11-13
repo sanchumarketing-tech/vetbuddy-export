@@ -272,6 +272,12 @@ function CallList({ me, agentId, agents, day, setDay }) {
   }, [day, agentId, isLead]);
   useEffect(() => { setRows(null); setPicked(new Set()); load(); }, [load]);
 
+  const [reason, setReason] = useState("");
+  const reasonCounts = useMemo(() => {
+    const m = new Map();
+    (rows || []).forEach((r) => new Set(r.reasons.map((x) => x.type)).forEach((t) => m.set(t, (m.get(t) || 0) + 1)));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [rows]);
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 20000); return () => clearInterval(t); }, []);
   const answered = (r) => (rowDone(r) || r.status === "connected") && !isCb(r);
@@ -291,6 +297,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
       if (filter === "todo" && (answered(r) || cbWaiting(r, now))) return false;
       if (filter === "done" && !answered(r)) return false;
       if (filter === "callback" && !isCb(r)) return false;
+      if (reason && !r.reasons.some((x) => x.type === reason)) return false;
       if (!t) return true;
       return (r.client || "").toLowerCase().includes(t) || r.phone.includes(t) || (r.pets || []).some((p) => (p.name || "").toLowerCase().includes(t));
     }).map((r, i) => [r, i]).sort((a, b) => {
@@ -300,7 +307,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
       if (da && db) return new Date(a[0].callback_at) - new Date(b[0].callback_at);
       return a[1] - b[1];
     }).map((x) => x[0]);
-  }, [rows, filter, q, now]);
+  }, [rows, filter, q, now, reason]);
 
   const current = rows?.find((r) => r.id === sel) || null;
   const next = () => {
@@ -338,6 +345,10 @@ function CallList({ me, agentId, agents, day, setDay }) {
             <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{v} <span>{counts[k]}</span></button>
           ))}
         </div>
+        <select className="search" value={reason} onChange={(e) => setReason(e.target.value)}>
+          <option value="">All reasons ({rows?.length || 0})</option>
+          {reasonCounts.map(([t, n]) => <option key={t} value={t}>{(TYPES[t] || { name: t }).name} ({n})</option>)}
+        </select>
         <input className="search" placeholder="Search name, pet or number" value={q} onChange={(e) => setQ(e.target.value)} />
         {isLead && picked.size > 0 && (
           <div className="movebar">
@@ -362,7 +373,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
                 <div className="row-main">
                   <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
-                  <div className="row-sub"><span className="muted">{top?.label}</span></div>
+                  <div className="row-sub"><span className="muted">{(reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label}</span></div>
                   <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}</div>
                 </div>
               </div>
