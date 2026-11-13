@@ -139,6 +139,10 @@ alter table calldesk.queue add column if not exists try_note text;
 create table if not exists calldesk.holidays (name text primary key, starts date not null);
 insert into calldesk.holidays values ('Christmas and New Year holidays', date '2026-12-24'), ('Pongal holidays', date '2027-01-14'),
   ('Summer holidays', date '2027-05-01'), ('Diwali holidays', date '2027-10-28') on conflict (name) do nothing;
+-- bills of the customers on the current lists (refilled by build_list; read by cd_bills - fast, no scan of all sales)
+create table if not exists calldesk.bills (phone text not null, sale_date date, invoice_no text, unit text, pet text, item text,
+  plan_category text, plan_subcategory text, doctor text, amount numeric);
+create index if not exists bills_phone on calldesk.bills (phone);
 create index if not exists queue_agent_day on calldesk.queue (agent_id, list_date);
 create index if not exists queue_phone on calldesk.queue (phone, list_date);
 
@@ -516,6 +520,11 @@ begin
 
   -- best time of day to call each number, from the last 30 days of call logs:
   -- the part of the day it answered before, else a part of the day not tried yet
+  delete from calldesk.bills;
+  insert into calldesk.bills
+  select x.phone, x.sale_date, x.invoice_no, x.sales_unit, x.patient_name, x.item_name, x.plan_category, x.plan_subcategory, x.doctor, round(x.amount)
+  from (select calldesk.norm_phone(s2.client_phone) as phone, s2.* from vetbuddy.sales s2 where s2.sale_date >= d - 400) x
+  where x.phone in (select q3.phone from calldesk.queue q3 where q3.list_date >= d - 1);
   update calldesk.queue q set try_slot = h.slot, try_note = h.note
   from (select x.phone,
                coalesce(x.ans_slot, case when not x.f_m then 'morning' when not x.f_e then 'evening' when not x.f_a then 'afternoon' else 'evening' end) as slot,
@@ -601,20 +610,12 @@ end $$;
 -- VetBuddy summary: the latest bill lines of the pets on a number that is on a list
 create or replace function public.cd_bills(p_phone text) returns jsonb
 language plpgsql stable security definer set search_path = calldesk, public as $$
-declare m calldesk.agents := calldesk.me(); ids text[];
+declare m calldesk.agents := calldesk.me();
 begin
   if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
-  select array_agg(distinct e->>'pet_id') into ids
-    from calldesk.queue q, jsonb_array_elements(q.pets) e
-   where q.phone = p_phone and q.list_date >= calldesk.today() - 30;
   return coalesce((select jsonb_agg(x order by x.sale_date desc, x.invoice_no) from (
-    select s.sale_date, s.invoice_no, s.sales_unit unit, s.patient_name pet, s.item_name item, s.plan_category,
-           s.plan_subcategory, s.doctor, round(s.amount) amount
-      from vetbuddy.sales s
-     where (calldesk.norm_phone(s.client_phone) = p_phone
-            or substring(s.client_id from '\(([^)]*)\)') = any (coalesce(ids, '{}')))
-       and s.sale_date >= calldesk.today() - 400
-     order by s.sale_date desc, s.invoice_no limit 40) x), '[]');
+    select b.sale_date, b.invoice_no, b.unit, b.pet, b.item, b.plan_category, b.plan_subcategory, b.doctor, b.amount
+      from calldesk.bills b where b.phone = p_phone order by b.sale_date desc, b.invoice_no limit 40) x), '[]');
 end $$;
 
 -- the agent clicked "Call" (only shown in the app; "called or not" still comes from the logs)

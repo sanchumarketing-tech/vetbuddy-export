@@ -53,7 +53,8 @@ const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-IN", { day: "numeric", 
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }) : "");
 const rs = (n) => (n == null ? "" : "Rs " + Number(n).toLocaleString("en-IN"));
 const daysAgo = (d) => (d ? Math.round((Date.now() - new Date(d + "T00:00:00")) / 864e5) : null);
-const title = (s) => (s || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+const clean = (s) => (s || "").replace(/&nbsp;?/gi, " ").replace(/\s*\(\d+\)/g, "").replace(/\s+/g, " ").trim();
+const title = (s) => clean(s).toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 const phoneFmt = (p) => (p && p.length === 10 ? `${p.slice(0, 5)} ${p.slice(5)}` : p);
 const todayISO = () => new Date(Date.now() + 5.5 * 36e5).toISOString().slice(0, 10);
 
@@ -173,7 +174,7 @@ function Customer({ row, onSaved, onNext }) {
         <h3>Purpose of calling</h3>
         <ul className="reasons">
           {reasons.map((r, i) => (
-            <li key={i}><ReasonChip r={r} /> <span>{r.label}{r.pet ? <strong> · {r.pet}</strong> : null}</span></li>
+            <li key={i}><ReasonChip r={r} /> <span>{clean(r.label)}{clean(r.pet) ? <strong> · {clean(r.pet)}</strong> : null}</span></li>
           ))}
         </ul>
       </section>
@@ -380,7 +381,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
                 <div className="row-main">
                   <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
-                  <div className="row-sub"><span className="muted">{(reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label}</span></div>
+                  <div className="row-sub"><span className="muted">{clean((reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label)}</span></div>
                   <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}</div>
                 </div>
               </div>
