@@ -188,3 +188,5 @@ table.mini td.num, table.mini th.num { text-align: right; white-space: nowrap; }
 .row.cbdue { background: var(--violet-bg); box-shadow: inset 3px 0 0 var(--violet); }
 
 .tryline { margin-top: 8px; padding: 8px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 13px; }
+
+.warntext { color: var(--warn); font-weight: 600; }

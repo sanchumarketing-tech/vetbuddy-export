@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { rpc } from "./supabase.js";
+import { rpc, login, logout, SignedOut } from "./supabase.js";
 
 // ------------------------------------------------------------------ labels
 export const TYPES = {
@@ -460,28 +460,28 @@ function Team({ day, setDay, openAgent }) {
 const UNITS = ["ADYAR", "ANNA NAGAR", "NEELANGARAI", "VELACHERY", "VALASARAVAKKAM", "CH VET ON WHEELS", "COIMBATORE", "CBE VET ON WHEELS", "MADURAI", "MADURAI VET ON WHEELS", "TRICHY"];
 
 function Agents({ me, agents, reload }) {
-  const blank = { email: "", name: "", role: "agent", units: [], target: 200, active: true };
+  const blank = { email: "", name: "", role: "agent", units: [], target: 200, active: true, pin: "" };
   const [f, setF] = useState(blank);
   const [msg, setMsg] = useState("");
   const save = async (e) => {
     e.preventDefault(); setMsg("");
     try {
-      await rpc("cd_agent_save", { p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active });
-      setMsg(`Saved ${f.name}. They can sign in with ${f.email.toLowerCase()}.`); setF(blank); reload();
+      await rpc("cd_agent_save", { p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null });
+      setMsg(`Saved ${f.name}.` + (f.pin ? ` New PIN set - they sign in with "${f.name}" or ${f.email.toLowerCase()} and that PIN.` : "")); setF(blank); reload();
     } catch (e2) { setMsg(e2.message); }
   };
   return (
     <div className="page">
       <h2>Agents</h2>
-      <p className="muted small">Each agent signs in with the email below. Agents with units get those units' customers first; "Any" takes the rest. New lists use these settings from the next morning (or rebuild today's list from GitHub).</p>
+      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. New lists use these settings from the next morning (or rebuild today's list from GitHub).</p>
       <table className="grid">
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Units</th><th>Daily target</th><th>Active</th><th /></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
         <tbody>
           {agents.map((a) => (
             <tr key={a.id}>
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
-              <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td>
-              <td><button className="link" onClick={() => setF({ email: a.email, name: a.name, role: a.role, units: a.units || [], target: a.target, active: a.active })}>Edit</button></td>
+              <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
+              <td><button className="link" onClick={() => setF({ email: a.email, name: a.name, role: a.role, units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
             </tr>
           ))}
         </tbody>
@@ -493,6 +493,8 @@ function Agents({ me, agents, reload }) {
           <label>Email<input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
           <label>Role<select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="agent">Agent</option><option value="lead">Team lead</option></select></label>
           <label>Daily target<input type="number" min={0} max={1000} value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></label>
+          <label>{agents.some((a) => a.email === f.email) ? "New PIN (leave empty to keep)" : "PIN (4 to 8 digits)"}<input inputMode="numeric" pattern="[0-9]*" maxLength={8} value={f.pin}
+            onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={!agents.some((a) => a.email === f.email)} /></label>
           <label className="check"><input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</label>
         </div>
         <div className="units">
@@ -539,24 +541,61 @@ function Kpis() {
 }
 
 // ------------------------------------------------------------------ app
-export default function App() {
-  // No sign-in: the Call Desk opens straight away; each agent picks their own name on the Lists tab.
-  const saved = (() => { try { return Number(localStorage.getItem("cd_agent") ?? -1); } catch { return -1; } })();
-  const [me, setMe] = useState(undefined);
-  const [tab, setTab] = useState(saved > 0 ? "list" : "team");
-  const [day, setDay] = useState(todayISO());
-  const [agentId, setAgentIdRaw] = useState(saved);
-  const [agents, setAgents] = useState([]);
-  const setAgentId = (id) => { setAgentIdRaw(id); try { localStorage.setItem("cd_agent", String(id)); } catch { /* ignore */ } };
+function Login({ onDone }) {
+  const [user, setUser] = useState(() => { try { return localStorage.getItem("cd_user") || ""; } catch { return ""; } });
+  const [pin, setPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setMsg("");
+    try {
+      await login(user.trim(), pin.trim());
+      try { localStorage.setItem("cd_user", user.trim()); } catch { /* ignore */ }
+      setPin(""); onDone();
+    } catch (err) { setMsg(err.message); }
+    setBusy(false);
+  };
+  return (
+    <div className="login">
+      <div className="login-card">
+        <div className="brand"><span className="logo" /> Sanchu Call Desk</div>
+        <p className="muted">Sign in with your name or email and your PIN.</p>
+        <form onSubmit={submit}>
+          <label>Name or email<input autoFocus={!user} required value={user} onChange={(e) => setUser(e.target.value)} autoComplete="username" /></label>
+          <label>PIN<input autoFocus={!!user} required type="password" inputMode="numeric" pattern="[0-9]*" maxLength={8} value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} autoComplete="current-password" /></label>
+          <button className="primary" disabled={busy || pin.length < 4}>{busy ? "Signing in…" : "Sign in"}</button>
+        </form>
+        {msg && <p className="note warn">{msg}</p>}
+        <p className="muted small">Team lead: the first time you sign in, the PIN you type becomes your PIN. Agents get their PIN from the team lead.</p>
+      </div>
+    </div>
+  );
+}
 
-  useEffect(() => { rpc("cd_me").then(setMe).catch(() => setMe(null)); }, []);
+export default function App() {
+  const [me, setMe] = useState(undefined);       // undefined = checking, null = signed out
+  const [tab, setTab] = useState("list");
+  const [day, setDay] = useState(todayISO());
+  const [agentId, setAgentId] = useState(-1);
+  const [agents, setAgents] = useState([]);
+  const [err, setErr] = useState("");
+
+  const check = useCallback(() => {
+    setErr("");
+    rpc("cd_me").then((m) => { setMe(m || null); if (m?.role === "lead") setTab("team"); else setTab("list"); })
+      .catch((e) => { if (e instanceof SignedOut) setMe(null); else { setErr(e.message); setMe(null); } });
+  }, []);
+  useEffect(() => { check(); }, [check]);
+  useEffect(() => { const f = () => setMe(null); window.addEventListener("cd-signed-out", f); return () => window.removeEventListener("cd-signed-out", f); }, []);
   const loadAgents = useCallback(() => {
     rpc("cd_team", { p_day: todayISO() }).then((t) => setAgents(t.agents)).catch(() => {});
   }, []);
-  useEffect(() => { if (me) loadAgents(); }, [me, loadAgents]);
+  useEffect(() => { if (me?.role === "lead") loadAgents(); }, [me, loadAgents]);
+  const out = async () => { await logout(); setMe(null); };
 
   if (me === undefined) return <div className="center muted">Loading…</div>;
-  if (!me) return <div className="center muted">The Call Desk could not reach the database. Check the internet connection and refresh.</div>;
+  if (!me) return (<>{err && <p className="note warn pad">{err}</p>}<Login onDone={check} /></>);
 
   const isLead = me.role === "lead";
   const openAgent = (id) => { setAgentId(id); setTab("list"); };
@@ -571,6 +610,7 @@ export default function App() {
             ))}
           </nav>
         )}
+        <div className="who"><span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
         {isLead && tab === "list" && (
           <select className="agentpick" title="Whose list" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
             <option value={-1}>Everyone</option>

@@ -1,14 +1,32 @@
-import { createClient } from "@supabase/supabase-js";
-
-// Public values (the anon key only allows the cd_* functions, which check who is signed in).
-const url = import.meta.env.VITE_SUPABASE_URL || "https://ykmgbuooksizjqsyfhut.supabase.co";
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlrbWdidW9va3Npempxc3lmaHV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3Nzk0MzcsImV4cCI6MjEwOTM1NTQzN30.-mfbJPEfIUIjgTboxviFqqMCHX7ex2Lh95ql-bTcDuQ";
-
-export const supabase = createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true } });
+// All data goes through the Python functions on Vercel (/api/*): they keep the login cookie and
+// pass the session to Supabase. The page never holds a key or a token.
+export class SignedOut extends Error {}
 
 export async function rpc(name, args = {}) {
-  const { data, error } = await supabase.rpc(name, args);
-  if (error) throw new Error(error.message);
+  const r = await fetch("/api/rpc", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fn: name, args }),
+  });
+  if (r.status === 401) { window.dispatchEvent(new Event("cd-signed-out")); throw new SignedOut("Signed out"); }
+  const text = await r.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (!r.ok) throw new Error((data && (data.message || data.msg)) || `Error ${r.status}`);
   return data;
+}
+
+export async function login(user, pin) {
+  const r = await fetch("/api/login", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user, pin }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.ok) throw new Error(data.msg || "Login failed");
+  return data;
+}
+
+export async function logout() {
+  await fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
 }
