@@ -186,7 +186,11 @@ def short_clinic(c):
 
 
 def norm_phone(v):
+    if isinstance(v, float) and v == int(v):
+        v = int(v)
     s = str(v or "").strip()
+    if re.fullmatch(r"\d+(\.\d+)?[eE]\+?\d+", s):          # Excel scientific notation, e.g. 9.87654321E9
+        s = str(int(float(s)))
     if re.fullmatch(r"\d+\.0", s):
         s = s[:-2]
     d = re.sub(r"\D", "", s)
@@ -323,7 +327,7 @@ def check(items, phones, calls, calls_upto: dt.date, today: dt.date):
         db_name, db_phone = phones.get(it["patient_id"], ("", ""))
         phone = name_phone or db_phone
         client = " ".join(x for x in (it["first"], it["last"]) if x and x not in ("-", ".")) if not name_phone else ""
-        client = client or db_name or it["first"]
+        client = client or db_name or "(name not in VetBuddy)"
         win_from = it["due"] - dt.timedelta(days=DAYS_BEFORE)
         hits = sorted([c for c in calls.get(phone, []) if win_from <= c.day <= it["due"]], key=lambda c: c.when) if phone else []
         best = ([c for c in hits if c.answered] or hits)[-1] if hits else None
@@ -398,7 +402,7 @@ def update_master(sp, checked, d_from, d_to):
             if hdr[:len(MASTER_COLS)] != MASTER_COLS:
                 raise RuntimeError(f"Master headers changed ({hdr[:5]}...) - master NOT changed")
             keep = [list(r) for r in ws.iter_rows(min_row=2, values_only=True)
-                    if r and r[0] and not (d_from <= cf.as_date(r[0]) <= d_to)]
+                    if r and cf.as_date(r[0]) and not (d_from <= cf.as_date(r[0]) <= d_to)]
         except cf.RunError as e:
             if "404" not in str(e):
                 raise

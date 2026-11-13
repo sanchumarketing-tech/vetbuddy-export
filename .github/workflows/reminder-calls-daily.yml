@@ -1,0 +1,76 @@
+name: Reminder calls check
+
+# VetBuddy Compliance -> Reminders Management (due yesterday .. tomorrow) checked against the Corefactor and Runo
+# call logs. Writes:
+#   - the raw export to SharePoint "Reminder management dump" (Sales Reports Sanchu library)
+#   - the master "Sanchu Reports/Reminder Management.xlsx" (rows of the checked due dates replaced)
+#   - "Sanchu Reports/Reminder Calls Pending.xlsx" (who still has to be called, with phone and purpose)
+# Runs after the Corefactor (06:53) and Runo (07:13) call-log jobs. Only reads their files.
+
+on:
+  schedule:
+    # Times are UTC (IST = UTC + 5:30)
+    - cron: "17 2 * * *"    # 07:47 AM IST
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "First due date YYYY-MM-DD (empty = yesterday)"
+        required: false
+      to:
+        description: "Last due date YYYY-MM-DD (empty = tomorrow)"
+        required: false
+
+concurrency:
+  group: reminder-calls
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Check reminder calls
+        env:
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          # Sales Reports Sanchu library: Corefactor "Call Log Archive" + the "Reminder management dump" folder
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_CALLLOG_ARCHIVE_FOLDER: ${{ vars.SP_CALLLOG_ARCHIVE_FOLDER || 'Call Log Archive' }}
+          SP_REMINDER_DUMP_FOLDER: ${{ vars.SP_REMINDER_DUMP_FOLDER || 'Reminder management dump' }}
+          # Runo master (read only)
+          SP_RUNO_SITE_URL: ${{ vars.SP_RUNO_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_RUNO_LIBRARY: ${{ vars.SP_RUNO_LIBRARY || 'Documents' }}
+          SP_RUNO_MASTER_PATH: ${{ vars.SP_RUNO_MASTER_PATH || 'Sanchu Reports/Runo CallLog.xlsx' }}
+          # Master + pending list (sanchureports OneDrive, "Sanchu Reports")
+          SP_REMINDER_SITE_URL: ${{ vars.SP_REMINDER_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_REMINDER_LIBRARY: ${{ vars.SP_REMINDER_LIBRARY || 'Documents' }}
+          SP_REMINDER_MASTER_PATH: ${{ vars.SP_REMINDER_MASTER_PATH || 'Sanchu Reports/Reminder Management.xlsx' }}
+          SP_REMINDER_PENDING_PATH: ${{ vars.SP_REMINDER_PENDING_PATH || 'Sanchu Reports/Reminder Calls Pending.xlsx' }}
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+        run: |
+          args=""
+          if [ -n "$IN_FROM" ]; then args="$args --from $IN_FROM"; fi
+          if [ -n "$IN_TO" ]; then args="$args --to $IN_TO"; fi
+          python reminder_calls_check.py $args
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reminder-calls-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reports
+            login_debug.html
+          if-no-files-found: ignore
+          retention-days: 14
