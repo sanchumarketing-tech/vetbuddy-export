@@ -471,10 +471,14 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- the web app's functions
+-- No sign-in (decided 13 Nov 2026): everyone opening the Call Desk acts as the team lead;
+-- a signed-in email (if sign-in is added back) still maps to its own row.
 create or replace function calldesk.me() returns calldesk.agents
 language sql stable security definer set search_path = calldesk, public as $$
   select a from calldesk.agents a
-  where a.active and a.email = lower(coalesce(auth.jwt() ->> 'email', ''))
+  where a.active and (a.email = lower(coalesce(auth.jwt() ->> 'email', '')) or a.role = 'lead')
+  order by (a.email = lower(coalesce(auth.jwt() ->> 'email', ''))) desc, a.id
+  limit 1
 $$;
 
 create or replace function public.cd_me() returns jsonb
@@ -648,7 +652,7 @@ revoke execute on function public.cd_me(), public.cd_list(date, int), public.cd_
 grant execute on function public.cd_me(), public.cd_list(date, int), public.cd_calls(text), public.cd_dial(bigint),
   public.cd_save(bigint, text, text, timestamptz), public.cd_team(date),
   public.cd_agent_save(text, text, text, text[], int, boolean), public.cd_assign(bigint[], int),
-  public.cd_kpi(date, date) to authenticated;
+  public.cd_kpi(date, date) to authenticated, anon;   -- anon: no sign-in (see calldesk.me)
 
 -- the daily loader (vb_loader): fill the source tables and build the list
 grant usage on schema calldesk to vb_loader;

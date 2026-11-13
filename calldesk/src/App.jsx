@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { supabase, rpc } from "./supabase.js";
+import { rpc } from "./supabase.js";
 
 // ------------------------------------------------------------------ labels
 export const TYPES = {
@@ -57,53 +57,6 @@ function ReasonChip({ r }) {
 }
 function rowDone(r) {
   return !!r.outcome && r.outcome !== "callback";
-}
-
-// ------------------------------------------------------------------ login
-function Login() {
-  const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [step, setStep] = useState("email");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  const send = async (e) => {
-    e.preventDefault();
-    setBusy(true); setMsg("");
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim().toLowerCase(), options: { shouldCreateUser: true, emailRedirectTo: window.location.origin } });
-    setBusy(false);
-    if (error) setMsg(error.message);
-    else { setStep("code"); setMsg(`Check ${email.trim()}: type the 6-digit code here, or open the sign-in link in the email on this computer.`); }
-  };
-  const verify = async (e) => {
-    e.preventDefault();
-    setBusy(true); setMsg("");
-    const { error } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token: code.trim(), type: "email" });
-    setBusy(false);
-    if (error) setMsg(error.message === "Token has expired or is invalid" ? "That code is wrong or has expired. Try again or send a new one." : error.message);
-  };
-
-  return (
-    <div className="login">
-      <div className="login-card">
-        <div className="brand"><span className="logo" /> Sanchu Call Desk</div>
-        <p className="muted">Sign in with your work email. We'll email you a 6-digit code.</p>
-        {step === "email" ? (
-          <form onSubmit={send}>
-            <label>Work email<input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@sanchu.co.in" /></label>
-            <button className="primary" disabled={busy}>{busy ? "Sending…" : "Send code"}</button>
-          </form>
-        ) : (
-          <form onSubmit={verify}>
-            <label>6-digit code<input inputMode="numeric" autoComplete="one-time-code" required autoFocus maxLength={8} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="123456" /></label>
-            <button className="primary" disabled={busy || code.length < 6}>{busy ? "Checking…" : "Sign in"}</button>
-            <button type="button" className="link" onClick={() => { setStep("email"); setCode(""); setMsg(""); }}>Use a different email</button>
-          </form>
-        )}
-        {msg && <p className="note">{msg}</p>}
-      </div>
-    </div>
-  );
 }
 
 // ------------------------------------------------------------------ customer panel
@@ -501,41 +454,23 @@ function Kpis() {
 
 // ------------------------------------------------------------------ app
 export default function App() {
-  const [session, setSession] = useState(undefined);
+  // No sign-in: the Call Desk opens straight away; each agent picks their own name on the Lists tab.
+  const saved = (() => { try { return Number(localStorage.getItem("cd_agent") ?? -1); } catch { return -1; } })();
   const [me, setMe] = useState(undefined);
-  const [tab, setTab] = useState("list");
+  const [tab, setTab] = useState(saved > 0 ? "list" : "team");
   const [day, setDay] = useState(todayISO());
-  const [agentId, setAgentId] = useState(-1);
+  const [agentId, setAgentIdRaw] = useState(saved);
   const [agents, setAgents] = useState([]);
+  const setAgentId = (id) => { setAgentIdRaw(id); try { localStorage.setItem("cd_agent", String(id)); } catch { /* ignore */ } };
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-  useEffect(() => {
-    if (!session) { setMe(undefined); return; }
-    rpc("cd_me").then((m) => { setMe(m); if (m?.role === "lead") setTab("team"); }).catch(() => setMe(null));
-  }, [session?.user?.id]);
+  useEffect(() => { rpc("cd_me").then(setMe).catch(() => setMe(null)); }, []);
   const loadAgents = useCallback(() => {
     rpc("cd_team", { p_day: todayISO() }).then((t) => setAgents(t.agents)).catch(() => {});
   }, []);
-  useEffect(() => { if (me?.role === "lead") loadAgents(); }, [me?.role, loadAgents]);
+  useEffect(() => { if (me) loadAgents(); }, [me, loadAgents]);
 
-  if (session === undefined) return <div className="center muted">Loading…</div>;
-  if (!session) return <Login />;
-  const out = () => supabase.auth.signOut();
   if (me === undefined) return <div className="center muted">Loading…</div>;
-  if (!me) return (
-    <div className="center">
-      <div className="login-card">
-        <div className="brand"><span className="logo" /> Sanchu Call Desk</div>
-        <p>{session.user.email} is not set up on the Call Desk yet.</p>
-        <p className="muted">Ask your team lead to add you under Agents, then sign in again.</p>
-        <button className="ghost" onClick={out}>Sign out</button>
-      </div>
-    </div>
-  );
+  if (!me) return <div className="center muted">The Call Desk could not reach the database. Check the internet connection and refresh.</div>;
 
   const isLead = me.role === "lead";
   const openAgent = (id) => { setAgentId(id); setTab("list"); };
@@ -551,13 +486,13 @@ export default function App() {
           </nav>
         )}
         {isLead && tab === "list" && (
-          <select className="agentpick" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
+          <select className="agentpick" title="Whose list" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
             <option value={-1}>Everyone</option>
             <option value={0}>Not assigned</option>
             {agents.filter((a) => a.role === "agent").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
-        <div className="who"><span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
+
       </header>
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
