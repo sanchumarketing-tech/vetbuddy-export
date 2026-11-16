@@ -56,7 +56,9 @@ def main() -> int:
     log.info("Database now: %s .. %s (%d rows). Old rows are loaded only before %s.", first_new, last_new, n_new, cutoff)
 
     it = vs.iter_master_rows(local)
-    header = next(it)
+    header = list(next(it))
+    # the old file has a second "Date" column at the end - use column B (date and time), not that one
+    header = [h if i < 2 or str(h or "").strip().lower() != "date" else f"{h} (copy)" for i, h in enumerate(header)]
     log.info("Old master columns (%d): %s", len([x for x in header if x]), ", ".join(str(x) for x in header if x))
     if str(header[1]).strip().lower() != "date" or str(header[0]).strip().lower() != "sr no.":
         log.error("Header looks different from the current master: %s - nothing loaded", header[:4])
