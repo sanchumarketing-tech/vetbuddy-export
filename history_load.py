@@ -99,18 +99,39 @@ def main() -> int:
             log.info("  %s  %7d rows", m, months[m])
         return 0
 
-    with vs.connect() as conn:                       # one transaction: all or nothing
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM vetbuddy.sales WHERE sale_date < %s", (cutoff,))
-            deleted = cur.rowcount
-            inserted = vs._insert(cur, records())
-            cur.execute("INSERT INTO vetbuddy.load_log (date_from, date_to, rows_deleted, rows_inserted, kind) "
-                        "VALUES (%s, %s, %s, %s, 'history')", (span[0], span[1], deleted, inserted))
+    # batches of 50,000 rows, each its own transaction (one big COPY hits the database time limit).
+    # Re-running is safe: the old rows (before the cutoff) are removed first.
+    import psycopg
+    def conn():
+        return psycopg.connect(vs.DB_URL, connect_timeout=60, autocommit=False, options="-c statement_timeout=0")
+    with conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM vetbuddy.sales WHERE sale_date < %s", (cutoff,))
+        deleted = cur.rowcount
+    log.info("Removed %d earlier history rows (re-run)", deleted)
+    inserted, batch = 0, []
+
+    def flush():
+        nonlocal inserted, batch
+        if not batch:
+            return
+        with conn() as c, c.cursor() as cur:
+            inserted += vs._insert(cur, batch)
+        log.info("  loaded %d rows (up to %s)", inserted, batch[-1]["sale_date"])
+        batch = []
+
+    for rec in records():
+        batch.append(rec)
+        if len(batch) >= 50000:
+            flush()
+    flush()
+    with conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO vetbuddy.load_log (date_from, date_to, rows_deleted, rows_inserted, kind) "
+                    "VALUES (%s, %s, %s, %s, 'history')", (span[0], span[1], deleted, inserted))
     log.info("History loaded: %d rows (%s .. %s), %d old rows replaced, %d VOW invoices",
              inserted, span[0], span[1], deleted, len(vow_inv))
     for k, v in stats.items():
         log.info("  %-45s %d", k, v)
-    with vs.connect() as conn, conn.cursor() as cur:
+    with conn() as c, c.cursor() as cur:
         cur.execute("select vetbuddy.refresh_pbi()")
         log.info("Summary views: %s", cur.fetchone()[0])
     local.unlink(missing_ok=True)
