@@ -211,7 +211,7 @@ begin
   perform calldesk.refresh_status(d - 14);
 
   if p_rebuild then        -- only rows nobody has touched yet are removed
-    delete from calldesk.queue where list_date = d and dialed_at is null and outcome is null and note is null;
+    delete from calldesk.queue where list_date = d and dialed_at is null and called_at is null and outcome is null and note is null;
     update calldesk.queue set superseded = false
      where list_date between d - 7 and d - 1 and superseded
        and not exists (select 1 from calldesk.queue x where x.list_date = d and x.phone = queue.phone);
