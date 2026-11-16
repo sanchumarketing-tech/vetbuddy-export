@@ -86,7 +86,12 @@ def main():
 
     sp = cf.SharePoint.from_env("SP_REMINDER_SITE_URL", "SP_REMINDER_LIBRARY")
     path = rc.env("SP_CALLDESK_LOG_PATH", "Sanchu Reports/Call Desk Log.xlsx")
-    sp.upload(path, buf.getvalue())
+    try:
+        sp.upload(path, buf.getvalue())
+    except cf.FileLocked:
+        # someone has the file open in Excel / the browser: skip this hour, the next run writes it
+        log.warning("%s is open (locked) - not updated this hour; the next run will update it", path)
+        return 0
     t = [r for r in rows if r[0] == today]
     log.info("Uploaded %s - today: %d rows, %d called, %d rescheduled, %d not called", path, len(t),
              sum(r[6] == "Called" for r in t), sum(r[6] == "Rescheduled" for r in t), sum(r[6] == "Not called" for r in t))
