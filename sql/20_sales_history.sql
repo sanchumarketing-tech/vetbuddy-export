@@ -1,19 +1,17 @@
 -- =====================================================================
--- 20  Old VetBuddy bills, compact (16 Nov 2026)
---   Source: Sanchu Reports/Vetbuddy Master Data.xlsx (30 Jul 2019 - 19 Dec 2025, 1,047,650 bill lines),
---   loaded with history_load.py, then compacted to ONE ROW PER PET PER VISIT DAY (297,185 rows, Rs 34,10,07,740 -
---   same total as the full lines) and the full lines removed from vetbuddy.sales: the Free plan's 500 MB database
---   limit put the project in read-only mode with them. vetbuddy.sales keeps full lines from 20 Dec 2025.
+-- 20  Old VetBuddy bills (16 Nov 2026): one summary row per phone number
+--   Source: Sanchu Reports/Vetbuddy Master Data.xlsx on SharePoint (30 Jul 2019 - 19 Dec 2025, 1,047,650 bill lines).
+--   Loaded once with history_load.py, summarised per phone, and the full lines removed again: the Free plan's
+--   500 MB limit put the project in read-only mode with them. The full detail stays in the SharePoint file.
+--   54,174 phone numbers, about 8 MB. Used by the Call Desk: Churned (1 yr+) and the "Before 20 Dec 2025" summary line.
 -- =====================================================================
-create table if not exists vetbuddy.sales_history (
-  pet_id text, phone text, client_name text, pet_name text, species text, breed text, unit text,
-  sale_date date not null, invoices int, amount numeric(12,2), categories text[], subcategories text[],
-  primary key (pet_id, sale_date, phone));
--- filled per year with:
---   insert into vetbuddy.sales_history
---   select coalesce(substring(client_id from '\(([^)]*)\)'), ''), coalesce(calldesk.norm_phone(client_phone), ''), max(client_name),
---          max(patient_name), max(species), max(breed), max(sales_unit), sale_date, count(distinct invoice_no), sum(amount),
---          array_agg(distinct plan_category) filter (where plan_category is not null),
---          array_agg(distinct plan_subcategory) filter (where plan_subcategory is not null)
---     from vetbuddy.sales where sale_date >= <year start> and sale_date < <year end> group by 1, 2, sale_date;
-grant select on vetbuddy.sales_history to vb_loader;
+create table if not exists vetbuddy.sales_old_summary (
+  phone text primary key, client_name text, first_date date, last_date date, last_unit text, last_pet text,
+  last_services text, pets smallint, visit_days int, spend int);
+-- built from a per-pet-per-day table (since dropped):
+--   select phone, left((array_agg(client_name order by sale_date desc))[1], 60), min(sale_date), max(sale_date),
+--          (array_agg(unit order by sale_date desc))[1], left((array_agg(pet_name order by sale_date desc))[1], 40),
+--          left((array_agg(array_to_string(subcategories, ', ') order by sale_date desc))[1], 60),
+--          count(distinct pet_id), count(distinct sale_date), round(sum(amount))
+--     from <per pet per visit day> where phone ~ '^[6-9]\d{9}$' group by phone;
+grant select on vetbuddy.sales_old_summary to vb_loader;

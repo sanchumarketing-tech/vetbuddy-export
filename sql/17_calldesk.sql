@@ -484,14 +484,17 @@ begin
          ', ' || c.days || case when c.days = 1 then ' visit day' else ' visit days' end ||
          case when c.spend > 0 then ', spent Rs ' || to_char(round(c.spend), 'FM99,99,999') else '' end || ' - follow up, invite back',
          c.last, c.spend
-  from (select calldesk.norm_phone(client_phone) phone, (array_agg(client_name order by sale_date desc))[1] client,
-               (array_agg(sales_unit order by sale_date desc))[1] unit, (array_agg(patient_name order by sale_date desc))[1] pet,
-               (array_agg(item_name order by sale_date desc))[1] item, max(sale_date) last, count(distinct sale_date) days, sum(amount) spend
-          from (select client_phone, client_name, sales_unit, patient_name, item_name, sale_date, amount
-                  from vetbuddy.sales where client_id is not null and sale_date >= d - 730 and sale_date < d
-                union all   -- old bills before 20 Dec 2025, one row per pet per visit day (vetbuddy.sales_history)
-                select phone, client_name, unit, pet_name, array_to_string(subcategories, ', '), sale_date, amount
-                  from vetbuddy.sales_history where sale_date >= d - 730 and sale_date < d) h group by 1) c
+  from (select u.phone, (array_agg(u.client order by u.last desc))[1] client, (array_agg(u.unit order by u.last desc))[1] unit,
+               (array_agg(u.pet order by u.last desc))[1] pet, (array_agg(u.item order by u.last desc))[1] item,
+               max(u.last) last, sum(u.days)::int days, sum(u.spend) spend
+          from (select calldesk.norm_phone(client_phone) phone, max(client_name) client, (array_agg(sales_unit order by sale_date desc))[1] unit,
+                       (array_agg(patient_name order by sale_date desc))[1] pet, (array_agg(item_name order by sale_date desc))[1] item,
+                       max(sale_date) last, count(distinct sale_date) days, sum(amount) spend
+                  from vetbuddy.sales where client_id is not null and sale_date < d group by 1
+                union all   -- before 20 Dec 2025: one summary row per phone (vetbuddy.sales_old_summary)
+                select phone, client_name, last_unit, last_pet, last_services, last_date, visit_days, spend
+                  from vetbuddy.sales_old_summary where last_date < d) u
+         group by u.phone) c
   where c.phone is not null and c.last between d - 730 and d - 366;
   -- key customer / churned check-ins: not again within 90 days of being reached or closed
   delete from t_cand c where c.type in ('multi_pet', 'churned') and exists (
@@ -711,13 +714,12 @@ end $$;
 
 -- VetBuddy summary: the latest bill lines of the pets on a number that is on a list
 create index if not exists ix_sales_phone_cd on vetbuddy.sales (calldesk.norm_phone(client_phone), sale_date);
-create index if not exists ix_sales_history_phone on vetbuddy.sales_history (phone, sale_date);
 create or replace function public.cd_bills(p_phone text) returns jsonb
 language plpgsql stable security definer set search_path = calldesk, public as $$
 declare m calldesk.agents := calldesk.me();
 begin
   if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
-  -- read straight from VetBuddy data (vetbuddy.sales line items + vetbuddy.sales_history before 20 Dec 2025)
+  -- read straight from VetBuddy data: vetbuddy.sales line items + one summary line for bills before 20 Dec 2025
   return coalesce((select jsonb_agg(x order by x.sale_date desc, x.invoice_no) from (
     (select s.sale_date, s.invoice_no, s.sales_unit unit, s.patient_name pet, s.item_name item, s.plan_category,
             s.plan_subcategory, s.doctor, round(s.amount) amount
@@ -725,11 +727,10 @@ begin
       where calldesk.norm_phone(s.client_phone) = p_phone and s.sale_date >= calldesk.today() - 400
       order by s.sale_date desc, s.invoice_no limit 40)
     union all
-    (select h.sale_date, 'old-' || h.sale_date || '-' || h.pet_id, h.unit, h.pet_name,
-            coalesce(array_to_string(h.subcategories, ', '), 'Visit'), array_to_string(h.categories, ', '), null, null, round(h.amount)
-       from vetbuddy.sales_history h
-      where h.phone = p_phone and h.sale_date >= calldesk.today() - 400
-      order by h.sale_date desc limit 10)) x), '[]');
+    select o.last_date, 'before-dec-2025', o.last_unit, o.last_pet,
+           'Before 20 Dec 2025: ' || o.visit_days || ' visit days since ' || to_char(o.first_date, 'Mon YYYY') ||
+           coalesce(', last: ' || nullif(o.last_services, ''), ''), 'History', null, null, o.spend
+      from vetbuddy.sales_old_summary o where o.phone = p_phone) x), '[]');
 end $$;
 -- calldesk.bills (the old copy) is no longer filled - truncated 16 Nov 2026
 
