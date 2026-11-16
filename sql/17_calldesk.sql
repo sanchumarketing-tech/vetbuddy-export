@@ -351,28 +351,41 @@ begin
          (array_agg(z.item_name order by z.sale_date desc) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%'))[1] as last_vac_item,
          max(z.sale_date) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%') as last_vac,
          count(distinct z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_n,
-         max(z.sale_date) filter (where z.plan_subcategory ilike 'holiday boarding') as last_board
+         max(z.sale_date) filter (where z.plan_subcategory ilike 'holiday boarding') as last_board,
+         min(z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_first
   from (select substring(client_id from '\(([^)]*)\)') as pet_id, patient_dob_text, sale_date, item_name, plan_category, plan_subcategory
           from vetbuddy.sales where client_id is not null and sale_date >= d - 460 and sale_date < d) z
   group by z.pet_id;
   create index on t_ext (pet_id);
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'rabies_course', 4,
-         'Anti-rabies (post bite) course: ' || e.pb_n || ' of 5 doses given, last on ' || to_char(e.last_vac, 'DD Mon') || ' - next dose is due',
-         e.last_vac, d - e.last_vac
+         -- post-bite doses on day 0, 3, 7, 14, 28 from the first dose: call from the day before the next dose to a week after
+         'Anti-rabies (post bite) course: dose ' || (e.pb_n + 1) || ' of 5 due on ' || to_char(e.pb_first + (array[3,7,14,28])[e.pb_n], 'DD Mon') ||
+         ' (course started ' || to_char(e.pb_first, 'DD Mon') || ', ' || e.pb_n || case when e.pb_n = 1 then ' dose' else ' doses' end || ' given)',
+         e.pb_first + (array[3,7,14,28])[e.pb_n], d - (e.pb_first + (array[3,7,14,28])[e.pb_n])
   from t_pet p join t_ext e using (pet_id)
-  where e.last_vac_item ~* 'post bite' and d - e.last_vac between 7 and 28 and e.pb_n < 5;
+  where e.pb_n between 1 and 4
+    and d between e.pb_first + (array[3,7,14,28])[e.pb_n] - 1 and e.pb_first + (array[3,7,14,28])[e.pb_n] + 7;
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_course', 5,
          'Vaccine course not finished: ' || regexp_replace(e.last_vac_item, '^Vaccination & Physical Examination - ', '') || ' given on ' || to_char(e.last_vac, 'DD Mon') || ' - next dose is due',
          e.last_vac + 21, d - e.last_vac
   from t_pet p join t_ext e using (pet_id)
-  where e.last_vac_item ~* 'primary|1st booster|2nd booster' and e.last_vac_item !~* 'annual' and d - e.last_vac between 21 and 60;
+  -- Primary / 1st booster / (UV) first dose -> next dose due; 2nd booster -> 3rd booster only if the pet was under 16 weeks
+  where e.last_vac_item !~* 'annual|post bite' and d - e.last_vac between 21 and 60
+    and (e.last_vac_item ~* '\((primary|1st booster|uv)\)'
+         or (e.last_vac_item ~* '2nd booster' and e.dob is not null and e.last_vac - e.dob < 112));
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'deworm_due', 6,
-         'Deworming due - last done on ' || to_char(e.last_deworm, 'DD Mon') || ' (every 3 months)', e.last_deworm + 90, d - e.last_deworm
+         'Deworming due - last done on ' || to_char(e.last_deworm, 'DD Mon') || ' (' || iv.txt || ')', e.last_deworm + iv.days, d - (e.last_deworm + iv.days)
   from t_pet p join t_ext e using (pet_id)
-  where d - e.last_deworm between 85 and 120;
+  -- every 3 weeks under 3 months old, monthly to 6 months, then every 3 months (age at the last deworming)
+  cross join lateral (select case when e.dob is not null and e.last_deworm - e.dob < 90 then 21
+                                  when e.dob is not null and e.last_deworm - e.dob < 180 then 30 else 90 end as days,
+                             case when e.dob is not null and e.last_deworm - e.dob < 90 then 'every 3 weeks under 3 months old'
+                                  when e.dob is not null and e.last_deworm - e.dob < 180 then 'monthly up to 6 months old'
+                                  else 'every 3 months' end as txt) iv
+  where d between e.last_deworm + iv.days - 3 and e.last_deworm + iv.days + 30;
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'tick_recheck', 6,
          'Tick fever test on ' || to_char(e.last_tick, 'DD Mon') || ', no visit since - ask how the pet is, offer review / re-test', e.last_tick, d - e.last_tick
@@ -380,12 +393,12 @@ begin
   where d - e.last_tick between 10 and 30 and p.last_visit <= e.last_tick;
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'sibling_vaccine', 9,
-         'Vaccination check: no vaccine with us in the last year, but ' || sb.pet_name || ' (same owner) was vaccinated on ' || to_char(sb.last_vaccination_visit, 'DD Mon'),
+         'Vaccination check: no vaccine with us since ' || to_char(greatest(d - 365, date '2025-12-20'), 'Mon YYYY') || ', but ' || sb.pet_name || ' (same owner) was vaccinated on ' || to_char(sb.last_vaccination_visit, 'DD Mon'),
          sb.last_vaccination_visit, coalesce(p.total_client_revenue, 0)
   from t_pet p
   join lateral (select o.pet_name, o.last_vaccination_visit from t_pet o where o.phone = p.phone and o.pet_id <> p.pet_id
                  and o.last_vaccination_visit >= d - 90 order by o.last_vaccination_visit desc limit 1) sb on true
-  where p.last_vaccination_visit is null and p.last_visit >= d - 180;
+  where p.last_vaccination_visit is null and p.last_visit >= d - 180 and p.species ~* 'canine|feline|dog|cat';
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'birthday', 10,
          'Birthday on ' || to_char(e.dob, 'DD Mon') || ' (turning ' || (extract(year from d)::int - extract(year from e.dob)::int) || ') - wish them, offer a birthday groom / health check',
@@ -395,16 +408,27 @@ begin
     and to_char(e.dob, 'MMDD') between to_char(d, 'MMDD') and to_char(d + 3, 'MMDD');
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'senior_check', 11,
-         'Senior pet (' || ((d - e.dob) / 365) || ' yrs): ' || case when e.last_lab is null then 'no health check or lab test in the last year' else 'last health check / lab on ' || to_char(e.last_lab, 'DD Mon') end || ' - offer a senior check-up',
+         'Senior ' || sr.kind || ' (' || ((d - e.dob) / 365) || ' yrs, senior from ' || sr.yrs || '): ' ||
+         case when e.last_lab is null then 'no health check or lab test with us in the last 6 months' else 'last health check / lab on ' || to_char(e.last_lab, 'DD Mon') end || ' - offer a senior check-up',
          d, coalesce(p.total_client_revenue, 0)
   from t_pet p join t_ext e using (pet_id)
-  where e.dob <= d - 2555 and p.last_visit between d - 365 and d - 30 and (e.last_lab is null or e.last_lab < d - 180);
+  -- dogs by breed size (ref_breed_obase.obase_weight = the breed's overweight line: Lab 45, Beagle 18, Pug 12, Shih Tzu 8):
+  -- giant 48+ from 5 yrs, large 30+ from 6, small under 13 from 8, others / unknown breed 7; cats from 10; other species not called
+  left join lateral (select nullif(regexp_replace(b.obase_weight::text, '[^0-9.]', '', 'g'), '')::numeric w
+                       from vetbuddy.ref_breed_obase b where lower(trim(b.breed)) = lower(trim(p.breed)) limit 1) bw on true
+  cross join lateral (select case when p.species ~* 'feline|cat' then 10
+                                  when p.species ~* 'canine|dog' then case when bw.w >= 48 then 5 when bw.w >= 30 then 6 when bw.w < 13 then 8 else 7 end end as yrs,
+                             case when p.species ~* 'feline|cat' then 'cat'
+                                  when bw.w >= 48 then 'giant-breed dog' when bw.w >= 30 then 'large-breed dog' when bw.w < 13 then 'small-breed dog' else 'dog' end as kind) sr
+  where sr.yrs is not null and e.dob is not null and d - e.dob >= sr.yrs * 365
+    and p.last_visit between d - 365 and d - 30 and (e.last_lab is null or e.last_lab < d - 180);
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_never', 11,
-         'Grooming regular (' || p.bathing_visit_count || ' baths), no vaccination with us in the last year - check vaccine and deworming status',
+         'Grooming regular (' || p.bathing_visit_count || ' baths), no vaccination with us since ' || to_char(greatest(d - 365, date '2025-12-20'), 'Mon YYYY') || ' - check vaccine and deworming status',
          d, coalesce(p.total_client_revenue, 0)
   from t_pet p
-  where coalesce(p.bathing_visit_count, 0) >= 2 and p.last_bathing_visit >= d - 120 and p.last_vaccination_visit is null;
+  where coalesce(p.bathing_visit_count, 0) >= 2 and p.last_bathing_visit >= d - 120 and p.last_vaccination_visit is null
+    and p.species ~* 'canine|feline|dog|cat';
   -- past holiday boarders, 21 to 7 days before each holiday in calldesk.holidays
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'boarding_holiday', 10,
