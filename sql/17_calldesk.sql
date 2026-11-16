@@ -458,6 +458,7 @@ begin
   delete from t_cand a using t_cand b
    where a.phone = b.phone and a.type = b.type and a.ctid > b.ctid
      and lower(coalesce(a.pet_id, a.pet, '')) in (lower(coalesce(b.pet_id, b.pet, '')), lower(coalesce(b.pet, '')));
+  delete from t_cand where type in ('lead', 'report_ready', 'birthday');   -- not called (decided 16 Nov 2026)
   delete from t_cand c where c.phone is null or c.phone !~ '^[6-9]\d{9}$'
      or exists (select 1 from calldesk.exclusions x where x.phone = c.phone);
   -- non-urgent reasons: skip numbers that were in touch (any call, in or out) in the last 3 days
