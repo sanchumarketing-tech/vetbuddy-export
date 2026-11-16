@@ -666,9 +666,18 @@ begin
        select 1 from calldesk.queue q where q.phone = p_phone and q.agent_id = m.id and q.list_date >= calldesk.today() - 30))
   then raise exception 'not allowed' using errcode = '42501'; end if;
   return coalesce((select jsonb_agg(x order by x.call_at desc) from (
-    select k.call_at, k.source, k.direction, k.status, k.answered, k.duration_s, k.talk_s, k.agent,
+    (select k.call_at, k.source, k.direction, k.status, k.answered, k.duration_s, k.talk_s, k.agent,
            k.disposition, k.notes, k.dtmf, k.campaign, k.recording
-      from calldesk.calls k where k.phone = p_phone order by k.call_at desc limit 15) x), '[]');
+      from calldesk.calls k where k.phone = p_phone order by k.call_at desc limit 15)
+    union all
+    -- the agent's comment is kept in the Corefactor Lead Box (CRM), not in the call log
+    (select l.created_at, 'Lead Box', 'note', nullif(concat_ws(' / ', l.raw->>'Call Status', l.raw->>'Sub Status'), ''), null, null, null,
+           l.raw->>'Lead Owner',
+           nullif(concat_ws(' · ', nullif(l.raw->>'Purpose of Calling', ''),
+                  'Appointment: ' || nullif(l.raw->>'Appointment Status', ''),
+                  'Lead: ' || nullif(l.raw->>'Lead Status', '')), ''),
+           nullif(l.raw->>'Comments', ''), null, null, null
+      from calldesk.leads l where l.phone = p_phone order by l.created_at desc limit 10)) x), '[]');
 end $$;
 
 -- VetBuddy summary: the latest bill lines of the pets on a number that is on a list

@@ -266,8 +266,8 @@ function Customer({ row, onSaved, onNext, onSkip }) {
                 <tr key={i}>
                   <td>{fmtDT(c.call_at)}</td>
                   <td>{c.source}</td>
-                  <td>{c.direction === "in" ? "Incoming" : c.direction === "out" ? "Outgoing" : ""}</td>
-                  <td>{c.answered ? <Chip tone="good">Answered</Chip> : <Chip tone="warn">{c.status || "Not answered"}</Chip>}
+                  <td>{c.direction === "in" ? "Incoming" : c.direction === "out" ? "Outgoing" : c.direction === "note" ? "Agent note" : ""}</td>
+                  <td>{c.source === "Lead Box" ? <Chip>{c.status || "Note"}</Chip> : c.answered ? <Chip tone="good">Answered</Chip> : <Chip tone="warn">{c.status || "Not answered"}</Chip>}
                     {c.talk_s != null ? <span className="muted small"> {c.talk_s}s talk</span> : c.duration_s != null ? <span className="muted small"> {c.duration_s}s</span> : null}</td>
                   <td className="muted">{c.agent}</td>
                   <td>{[c.disposition, c.notes].filter(Boolean).filter((v, j, a) => a.indexOf(v) === j).join(" · ") || <span className="muted small">no note</span>}
