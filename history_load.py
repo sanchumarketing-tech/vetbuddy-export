@@ -38,7 +38,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger("history")
 
 
+def trim() -> int:
+    """Remove the full old line items (before 20 Dec 2025) from vetbuddy.sales - the compact copy stays in
+    vetbuddy.sales_history (one row per pet per visit day). Year by year; checks the totals match first."""
+    import psycopg
+    cutoff = dt.date(2025, 12, 20)
+    def conn():
+        return psycopg.connect(vs.DB_URL, connect_timeout=60, autocommit=True, options="-c statement_timeout=0")
+    with conn() as c, c.cursor() as cur:
+        cur.execute("select coalesce(round(sum(amount)), 0), count(*) from vetbuddy.sales where sale_date < %s", (cutoff,))
+        full_amt, full_n = cur.fetchone()
+        try:
+            cur.execute("select coalesce(round(sum(amount)), 0), count(*) from vetbuddy.sales_history where sale_date < %s", (cutoff,))
+            hist_amt, hist_n = cur.fetchone()
+        except Exception as e:  # noqa: BLE001
+            log.error("Cannot read vetbuddy.sales_history (%s) - nothing removed", e)
+            return 1
+        log.info("Before %s: vetbuddy.sales %d rows, Rs %s | sales_history %d rows, Rs %s", cutoff, full_n, full_amt, hist_n, hist_amt)
+        if full_n and full_amt != hist_amt:
+            log.error("Totals differ - nothing removed")
+            return 1
+        for y in range(2019, 2026):
+            cur.execute("delete from vetbuddy.sales where sale_date >= %s and sale_date < %s",
+                        (dt.date(y, 1, 1), min(dt.date(y + 1, 1, 1), cutoff)))
+            log.info("  %d: removed %d rows", y, cur.rowcount)
+        cur.execute("select min(sale_date), max(sale_date), count(*) from vetbuddy.sales")
+        log.info("vetbuddy.sales now: %s .. %s, %d rows", *cur.fetchone())
+        try:
+            cur.execute("vacuum (analyze) vetbuddy.sales")
+            log.info("Vacuumed vetbuddy.sales")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Vacuum not allowed for this login (%s) - the database cleans up by itself", e)
+        cur.execute("select pg_size_pretty(pg_total_relation_size('vetbuddy.sales')), pg_size_pretty(pg_database_size(current_database()))")
+        log.info("Size: sales %s, database %s", *cur.fetchone())
+    return 0
+
+
 def main() -> int:
+    if "--trim" in sys.argv:
+        return trim()
     load = "--load" in sys.argv
     if not (vx.SP_ENABLED and vs.ENABLED):
         log.error("Needs the SharePoint settings and SUPABASE_DB_URL")

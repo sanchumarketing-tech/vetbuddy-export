@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "check = read and report only, load = load into the database"
+        description: "check = report only, load = load into the database, trim = remove the full old rows (compact copy stays in sales_history)"
         type: choice
-        options: [check, load]
+        options: [check, load, trim]
         default: check
       path:
         description: "Old master path (empty = same folder as the current master, 'Vetbuddy Master Data.xlsx')"
