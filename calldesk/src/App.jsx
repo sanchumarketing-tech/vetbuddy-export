@@ -126,6 +126,20 @@ function ReasonChip({ r }) {
   return <Chip tone={t.tone}>{t.name}</Chip>;
 }
 const slotNow = (now) => { const h = new Date(now).getHours(); return h < 12 ? "morning" : h < 16 ? "afternoon" : "evening"; };
+const SLOT_ORDER = { morning: 0, afternoon: 1, evening: 2 };
+const topRank = (r) => Math.min(...(r.reasons || []).map((x) => x.rank ?? 99), 99);
+// recommended order: 0 call-back due, 1 urgent (appointments, post-surgery, rabies, Club ending), 2 best time is now,
+// 3 no best time known / its best time already passed today, 4 best time is later today (call then)
+const recGroup = (r, now) => {
+  if (cbDue(r, now)) return 0;
+  const cur = SLOT_ORDER[slotNow(now)], best = r.try_slot ? SLOT_ORDER[r.try_slot] : null;
+  const later = best != null && best > cur;
+  if (topRank(r) <= 4 && !later) return 1;
+  if (best != null && best === cur) return 2;
+  if (!later) return 3;
+  return 4;
+};
+const REC_TAG = { 1: ["Urgent", "red"], 2: ["Best time now", "good"], 4: ["Best later", "neutral"] };
 const SLOT_TIME = { morning: "before 12", afternoon: "12 to 4 pm", evening: "after 4 pm" };
 const isCb = (r) => r.outcome === "callback" && !!r.callback_at;
 const cbDue = (r, now) => isCb(r) && new Date(r.callback_at).getTime() <= now;
@@ -406,9 +420,14 @@ function CallList({ me, agentId, agents, day, setDay }) {
       const da = cbDue(a[0], now), db = cbDue(b[0], now);
       if (da !== db) return da ? -1 : 1;
       if (da && db) return new Date(a[0].callback_at) - new Date(b[0].callback_at);
-      // best time of day: numbers that suit this part of the day first, numbers that suit another part last
-      const cur = slotNow(now), tier = (r) => (!r.try_slot ? 1 : r.try_slot === cur ? 0 : 2);
-      if (filter === "todo" && tier(a[0]) !== tier(b[0])) return tier(a[0]) - tier(b[0]);
+      // recommended: urgent first, then numbers whose best time is now, then the rest, numbers best called later today last;
+      // inside each group the most urgent reason (priority) first, then the list's own fair-mix order
+      if (filter === "todo" || filter === "all") {
+        const ga = recGroup(a[0], now), gb = recGroup(b[0], now);
+        if (ga !== gb) return ga - gb;
+        const ra = topRank(a[0]), rb = topRank(b[0]);
+        if (ra !== rb) return ra - rb;
+      }
       return a[1] - b[1];
     }).map((x) => x[0]);
   }, [rows, filter, q, now, reason]);
@@ -470,17 +489,19 @@ function CallList({ me, agentId, agents, day, setDay }) {
           {rows === null && <p className="muted pad">Loading the list…</p>}
           {err && <p className="note warn pad">{err}</p>}
           {rows && rows.length === 0 && !err && <p className="muted pad">No list for this day yet. Lists are built every morning at 8:05.</p>}
-          {shown.map((r) => {
+          {filter === "todo" && shown.length > 0 && <p className="muted small pad rec-hint">Recommended order: call-backs due · urgent · best time now ({slotNow(now)}) · others · best later today. "Called - next customer" follows it.</p>}
+          {shown.map((r, idx) => {
             const top = r.reasons[0] && [...r.reasons].sort((a, b) => a.rank - b.rank)[0];
+            const g = recGroup(r, now), firstOpen = filter === "todo" && idx === 0 && !cbDue(r, now);
             const [sl, st] = STATUS[r.status] || ["", "neutral"];
             return (
               <div key={r.id} className={`row ${sel === r.id ? "sel" : ""} ${rowDone(r) ? "done" : ""} ${cbDue(r, now) ? "cbdue" : ""}`} onClick={() => setSel(r.id)}>
                 {isLead && <input type="checkbox" checked={picked.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(picked); e.target.checked ? s.add(r.id) : s.delete(r.id); setPicked(s); }} />}
                 <div className="row-main">
-                  <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : r.called_at ? <Chip tone="good">Called {fmtTime(r.called_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
+                  <div className="row-top"><span className="row-name">{firstOpen && <span className="rec-star" title="Recommended next call">★ </span>}{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : r.called_at ? <Chip tone="good">Called {fmtTime(r.called_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{clean((reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label)}</span></div>
-                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}</div>
+                  <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}{filter === "todo" && REC_TAG[g] ? <> · <span className={`rec-tag ${REC_TAG[g][1]}`}>{REC_TAG[g][0]}{g === 4 ? ` (${r.try_slot})` : ""}</span></> : null}</div>
                 </div>
               </div>
             );

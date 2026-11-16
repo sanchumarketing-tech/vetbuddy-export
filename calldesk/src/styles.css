@@ -202,3 +202,11 @@ table.mini td.num, table.mini th.num { text-align: right; white-space: nowrap; }
 table.grid tr.dim td { opacity: .5; }
 .skip-called { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
 .skip-called.on button { background: var(--good, #1f8a5b); border-color: transparent; color: #fff; }
+
+/* recommended order */
+.rec-hint { margin: 2px 0 6px; }
+.rec-star { color: #d08a00; }
+.rec-tag { font-weight: 600; }
+.rec-tag.red { color: #c0392b; }
+.rec-tag.good { color: #1f8a5b; }
+.rec-tag.neutral { color: #7a8686; }
