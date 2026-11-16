@@ -285,6 +285,26 @@ function Customer({ row, onSaved, onNext, onSkip }) {
         </ul>
       </section>
 
+      {pets.length > 0 && (
+        <section>
+          <h3>Pets</h3>
+          <div className="pets">
+            {pets.map((p) => (
+              <div className="pet" key={p.pet_id}>
+                <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
+                <dl>
+                  <dt>Last visit</dt><dd>{fmtDate(p.last_visit)}{p.last_service ? ` (${p.last_service})` : ""}</dd>
+                  {p.last_vaccination && (<><dt>Vaccination</dt><dd>{fmtDate(p.last_vaccination)}</dd></>)}
+                  {p.last_consultation && (<><dt>Consultation</dt><dd>{fmtDate(p.last_consultation)}</dd></>)}
+                  {p.last_bath && (<><dt>Bath</dt><dd>{fmtDate(p.last_bath)}</dd></>)}
+                  {p.last_haircut && (<><dt>Haircut</dt><dd>{fmtDate(p.last_haircut)}</dd></>)}
+                </dl>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section>
         <h3>VetBuddy summary</h3>
         <div className="summary">
@@ -310,26 +330,6 @@ function Customer({ row, onSaved, onNext, onSkip }) {
           </table>
         )}
       </section>
-
-      {pets.length > 0 && (
-        <section>
-          <h3>Pets</h3>
-          <div className="pets">
-            {pets.map((p) => (
-              <div className="pet" key={p.pet_id}>
-                <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
-                <dl>
-                  <dt>Last visit</dt><dd>{fmtDate(p.last_visit)}{p.last_service ? ` (${p.last_service})` : ""}</dd>
-                  {p.last_vaccination && (<><dt>Vaccination</dt><dd>{fmtDate(p.last_vaccination)}</dd></>)}
-                  {p.last_consultation && (<><dt>Consultation</dt><dd>{fmtDate(p.last_consultation)}</dd></>)}
-                  {p.last_bath && (<><dt>Bath</dt><dd>{fmtDate(p.last_bath)}</dd></>)}
-                  {p.last_haircut && (<><dt>Haircut</dt><dd>{fmtDate(p.last_haircut)}</dd></>)}
-                </dl>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       <section>
         <h3>Call history</h3>
