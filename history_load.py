@@ -131,9 +131,12 @@ def main() -> int:
              inserted, span[0], span[1], deleted, len(vow_inv))
     for k, v in stats.items():
         log.info("  %-45s %d", k, v)
-    with conn() as c, c.cursor() as cur:
-        cur.execute("select vetbuddy.refresh_pbi()")
-        log.info("Summary views: %s", cur.fetchone()[0])
+    try:   # the loader may not be allowed to refresh them; the database admin can run select vetbuddy.refresh_pbi()
+        with conn() as c, c.cursor() as cur:
+            cur.execute("select vetbuddy.refresh_pbi()")
+            log.info("Summary views: %s", cur.fetchone()[0])
+    except Exception as e:  # noqa: BLE001
+        log.warning("Summary views not refreshed (%s) - run: select vetbuddy.refresh_pbi();", e)
     local.unlink(missing_ok=True)
     return 0
 
