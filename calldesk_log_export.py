@@ -28,13 +28,13 @@ WIDTH = [11, 16, 24, 12, 14, 70, 12, 19, 19, 16, 30, 10, 10, 42]
 
 SQL = """
 select q.list_date, coalesce(a.name, '(not assigned)'), q.client, q.phone, q.unit,
-       (select string_agg(e->>'label', ' | ' order by (e->>'rank')::int) from jsonb_array_elements(q.reasons) e),
+       (select string_agg(e->>'label', ' | ' order by (e->>'rank')::int) from jsonb_array_elements(calldesk.strip_off(q.reasons)) e),
        case when q.outcome = 'callback' and q.callback_at is not null then 'Rescheduled'
             when q.called_at is not null then 'Called' else 'Not called' end,
        q.callback_at at time zone 'Asia/Kolkata', q.called_at at time zone 'Asia/Kolkata', q.called_by, q.note,
        q.attempted_at is not null, q.connected_at is not null, q.last_call
 from calldesk.queue q left join calldesk.agents a on a.id = q.agent_id
-where q.list_date >= %s and not q.superseded
+where q.list_date >= %s and not q.superseded and calldesk.row_visible(q)   -- same rows the agents see (reasons switched off / omitted numbers hidden)
 order by q.list_date desc, 2, q.rank, q.id
 """
 
