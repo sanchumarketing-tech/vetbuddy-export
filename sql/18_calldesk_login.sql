@@ -232,26 +232,31 @@ end $do$;
 
 
 -- =====================================================================
--- 21  Team lead switch: keep customers called in the last 7 days off the lists (16 Nov 2026)
---   calldesk.settings 'skip_called' {"on": bool, "days": 7}. When on: a number with an outgoing call
---   (Corefactor or Runo log) in the 7 days before the list day is hidden from the lists, the Excel log and
---   the Team counts, is not added by the daily build and is not carried over. Promised call-backs always show.
+-- 21  Team lead switch: omit customers in the Corefactor call log from 9 Nov to 16 Nov 2026 (16 Nov 2026)
+--   calldesk.settings 'skip_called' {"on", "from", "to", "source"}. When on: a number that is in the Corefactor
+--   call log (any call, in or out) between "from" and "to" is hidden from the lists, the Excel log and the Team
+--   counts, is not added by the daily build and is not carried over. Calls before "from" do not count.
+--   Promised call-backs always show. Team page button: Omit Corefactor calls 9 Nov to 16 Nov.
 -- =====================================================================
 create table if not exists calldesk.settings (key text primary key, value jsonb not null, set_by text, set_at timestamptz not null default now());
 revoke all on calldesk.settings from public, anon, authenticated;
-insert into calldesk.settings (key, value, set_by) values ('skip_called', '{"on": false, "days": 7}', 'setup') on conflict (key) do nothing;
+insert into calldesk.settings (key, value, set_by)
+values ('skip_called', '{"on": false, "from": "2026-11-09", "to": "2026-11-16", "source": "Corefactor"}', 'setup')
+on conflict (key) do nothing;
 
-create or replace function calldesk.skip_days() returns int
+create or replace function calldesk.omitted(p_phone text) returns boolean
 language sql stable security definer set search_path = calldesk, public as $$
-  select case when (value->>'on')::boolean then coalesce((value->>'days')::int, 7) else 0 end from calldesk.settings where key = 'skip_called'
+  select exists (select 1 from calldesk.settings s
+                  where s.key = 'skip_called' and (s.value->>'on')::boolean
+                    and exists (select 1 from calldesk.calls k
+                                 where k.phone = p_phone and k.source = coalesce(s.value->>'source', 'Corefactor')
+                                   and k.call_at >= (s.value->>'from')::date::timestamp
+                                   and k.call_at < ((s.value->>'to')::date + 1)::timestamp))
 $$;
 
 create or replace function calldesk.row_visible(q calldesk.queue) returns boolean
 language sql stable security definer set search_path = calldesk, public as $$
-  select jsonb_array_length(calldesk.strip_off(q.reasons)) > 0
-     and (q.outcome = 'callback' or coalesce(calldesk.skip_days(), 0) = 0 or not exists (
-          select 1 from calldesk.calls k where k.phone = q.phone and k.direction = 'out'
-             and k.call_at >= (q.list_date - calldesk.skip_days())::timestamp and k.call_at < q.list_date::timestamp))
+  select jsonb_array_length(calldesk.strip_off(q.reasons)) > 0 and (q.outcome = 'callback' or not calldesk.omitted(q.phone))
 $$;
 
 create or replace function public.cd_skip_called(p_on boolean) returns jsonb
@@ -268,10 +273,5 @@ grant execute on function public.cd_skip_called(boolean) to anon, authenticated;
 -- applied in place (16 Nov 2026):
 --   cd_list, cd_log:  "jsonb_array_length(calldesk.strip_off(q.reasons)) > 0"  ->  "calldesk.row_visible(q)"
 --   cd_team:          agent counts, by_reason and unassigned count only visible rows; returns skip_called and hidden_called
---   build_list:       after the reason_off delete -
---       delete from t_cand c where coalesce(calldesk.skip_days(), 0) > 0 and exists (select 1 from calldesk.calls k where k.phone = c.phone
---          and k.direction = 'out' and k.call_at >= (d - calldesk.skip_days())::timestamp and k.call_at < d::timestamp);
---                     and before the carry-over insert -
---       delete from t_carry c where coalesce(calldesk.skip_days(), 0) > 0 and c.outcome is distinct from 'callback' and exists (
---          select 1 from calldesk.calls k where k.phone = c.phone and k.direction = 'out'
---             and k.call_at >= (d - calldesk.skip_days())::timestamp and k.call_at < d::timestamp);
+--   build_list:       after the reason_off delete:   delete from t_cand c where calldesk.omitted(c.phone);
+--                     before the carry-over insert:  delete from t_carry c where c.outcome is distinct from 'callback' and calldesk.omitted(c.phone);

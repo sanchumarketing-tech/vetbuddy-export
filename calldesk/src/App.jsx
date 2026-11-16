@@ -62,13 +62,15 @@ function ReasonSwitch({ off, onChange }) {
   );
 }
 
-// team lead switch: numbers already called (Corefactor / Runo, outgoing) in the last 7 days are kept off the lists
+// team lead switch: customers in the Corefactor call log between two dates are kept off the lists
+const dShort = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "");
 function SkipCalled({ s, hidden, onChange }) {
   const [busy, setBusy] = useState(false);
   if (!s) return null;
   const on = !!s.on;
+  const range = `${dShort(s.from)} to ${dShort(s.to)}`;
   const flip = async () => {
-    if (!on && !confirm(`Keep customers called in the last ${s.days || 7} days off the lists?`)) return;
+    if (!on && !confirm(`Hide every customer in the ${s.source || "Corefactor"} call log from ${range}?`)) return;
     setBusy(true);
     try { await rpc("cd_skip_called", { p_on: !on }); await onChange(); } catch (e) { alert(e.message); }
     setBusy(false);
@@ -76,11 +78,11 @@ function SkipCalled({ s, hidden, onChange }) {
   return (
     <div className={"skip-called" + (on ? " on" : "")}>
       <button className={on ? "" : "ghost"} disabled={busy} onClick={flip}>
-        {on ? `ON - customers called in the last ${s.days || 7} days are not shown` : `Skip customers called in the last ${s.days || 7} days`}
+        {on ? `ON - ${s.source || "Corefactor"} calls ${range} omitted` : `Omit ${s.source || "Corefactor"} calls ${range}`}
       </button>
       <span className="muted small">
-        {on ? `${hidden || 0} customers on today's lists are hidden because they were called in the ${s.days || 7} days before today (Corefactor / Runo). Promised call-backs still show.${s.by ? " Switched on by " + s.by + "." : ""}`
-            : "Off: customers already called recently by the team can still appear on the lists."}
+        {on ? `${hidden || 0} customers on today's lists are hidden because they are in the ${s.source || "Corefactor"} call log from ${range}. Calls before ${dShort(s.from)} are not affected; promised call-backs still show.${s.by && s.by !== "setup" ? " Switched on by " + s.by + "." : ""}`
+            : `Off: customers already called by the team from ${range} can still appear on the lists.`}
       </span>
     </div>
   );
