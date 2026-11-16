@@ -491,6 +491,16 @@ begin
   from (select distinct on (phone) * from t_carry order by phone, list_date desc) c
   on conflict (list_date, phone) do nothing;
   update calldesk.queue q set superseded = true from t_carry c where q.id = c.id;
+  -- carried rows lose reasons that are no longer called; a row with nothing left is dropped
+  update calldesk.queue q
+     set reasons = x.r, rank = coalesce(x.mr, q.rank)
+    from (select q2.id, coalesce(jsonb_agg(e) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday')), '[]'::jsonb) r,
+                 min((e->>'rank')::int) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday')) mr
+            from calldesk.queue q2, jsonb_array_elements(q2.reasons) e
+           where q2.list_date = d and q2.reasons::text ~ '"(lead|report_ready|birthday)"'
+           group by q2.id) x
+   where q.id = x.id;
+  delete from calldesk.queue q where q.list_date = d and q.reasons = '[]'::jsonb and q.dialed_at is null and q.outcome is null and q.note is null;
   delete from t_cand c where exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = c.phone);
 
   -- ---- one row per phone number, every reason on it, ranked
