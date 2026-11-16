@@ -6,7 +6,7 @@ Every morning (GitHub Actions, 08:05 IST - after the Corefactor, Lead Box, Runo 
   1. Call logs   Corefactor daily files in "Call Log Archive" (last few days) and the Runo master
                  "Runo CallLog.xlsx" -> calldesk.calls. Re-loading a day is harmless (rows are keyed).
   2. Reminders   VetBuddy Reminders Management, due yesterday .. +3 days -> calldesk.reminders
-  3. Appointments VetBuddy Appointment Status for 2 days back .. tomorrow -> calldesk.appointments
+  3. Appointments VetBuddy Appointment Status for 2 days back .. 14 days ahead -> calldesk.appointments
   4. Leads       Corefactor Lead Box daily files in "Lead Box Archive" (last 3 days) -> calldesk.leads
   5. Builds today's lists: select calldesk.build_list(today)   (see sql/17_calldesk.sql)
 
