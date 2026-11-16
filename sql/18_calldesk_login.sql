@@ -157,3 +157,75 @@ end $$;
 revoke execute on function public.cd_mark_called(bigint), public.cd_log(date, date, int) from public;
 grant execute on function public.cd_mark_called(bigint), public.cd_log(date, date, int) to anon, authenticated;
 -- cd_list also returns called_at / called_by; cd_team returns marked_called / rescheduled per agent (applied in place)
+
+
+-- =====================================================================
+-- 20  Team lead can switch call reasons off for a while (16 Nov 2026)
+--   Switched-off reasons are hidden from the lists and the Excel log at once, and the next list
+--   build does not add them. Switching back on shows them again (rows still on today's list come back).
+-- =====================================================================
+create table if not exists calldesk.reason_off (
+  type    text primary key,
+  off_by  text,
+  off_at  timestamptz not null default now()
+);
+revoke all on calldesk.reason_off from public, anon, authenticated;
+
+-- the reasons of a row without the switched-off ones (a promised call-back is never hidden)
+create or replace function calldesk.strip_off(p jsonb) returns jsonb
+language sql stable security definer set search_path = calldesk, public as $$
+  select coalesce(jsonb_agg(e), '[]'::jsonb) from jsonb_array_elements(coalesce(p, '[]'::jsonb)) e
+   where e->>'type' = 'callback' or not exists (select 1 from calldesk.reason_off o where o.type = e->>'type')
+$$;
+
+create or replace function public.cd_reason_set(p_type text, p_on boolean) returns jsonb
+language plpgsql security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me();
+begin
+  if m.role is distinct from 'lead' then raise exception 'not allowed' using errcode = '42501'; end if;
+  if p_type is null or p_type = 'callback' then raise exception 'this reason cannot be switched off'; end if;
+  if p_on then delete from calldesk.reason_off where type = p_type;
+  else insert into calldesk.reason_off (type, off_by) values (p_type, m.name) on conflict (type) do nothing; end if;
+  return coalesce((select jsonb_agg(type order by type) from calldesk.reason_off), '[]');
+end $$;
+revoke execute on function public.cd_reason_set(text, boolean) from public;
+grant execute on function public.cd_reason_set(text, boolean) to anon, authenticated;
+
+do $do$ declare s text; begin
+  -- the list: switched-off reasons removed, rows with nothing left hidden
+  s := pg_get_functiondef('public.cd_list(date,int)'::regprocedure);
+  if position('strip_off' in s) = 0 then
+    if position($a$'reasons', q.reasons$a$ in s) = 0 or position('where q.list_date = coalesce(p_day, calldesk.today())' in s) = 0 then raise exception 'cd_list anchor'; end if;
+    s := replace(s, $a$'reasons', q.reasons$a$, $a$'reasons', calldesk.strip_off(q.reasons)$a$);
+    s := replace(s, 'where q.list_date = coalesce(p_day, calldesk.today())',
+                    'where q.list_date = coalesce(p_day, calldesk.today()) and jsonb_array_length(calldesk.strip_off(q.reasons)) > 0');
+    execute s;
+  end if;
+  -- the Excel log: the same rows the agents see
+  s := pg_get_functiondef('public.cd_log(date,date,int)'::regprocedure);
+  if position('strip_off' in s) = 0 then
+    if position('where q.list_date between p_from and p_to and not q.superseded' in s) = 0 then raise exception 'cd_log anchor'; end if;
+    s := replace(s, 'where q.list_date between p_from and p_to and not q.superseded',
+                    'where q.list_date between p_from and p_to and not q.superseded and jsonb_array_length(calldesk.strip_off(q.reasons)) > 0');
+    s := replace(s, 'from jsonb_array_elements(q.reasons) e) reasons', 'from jsonb_array_elements(calldesk.strip_off(q.reasons)) e) reasons');
+    execute s;
+  end if;
+  -- the Team page: which reasons are off
+  s := pg_get_functiondef('public.cd_team(date)'::regprocedure);
+  if position('reasons_off' in s) = 0 then
+    if position($a$'last_call_loaded',$a$ in s) = 0 then raise exception 'cd_team anchor'; end if;
+    s := replace(s, $a$'last_call_loaded',$a$,
+                 $a$'reasons_off', (select coalesce(jsonb_agg(jsonb_build_object('type', type, 'by', off_by, 'at', off_at) order by type), '[]') from calldesk.reason_off),
+    'last_call_loaded',$a$);
+    execute s;
+  end if;
+  -- the daily build: switched-off reasons are not added
+  s := pg_get_functiondef('calldesk.build_list(date,boolean)'::regprocedure);
+  if position('calldesk.reason_off' in s) = 0 then
+    if position($a$delete from t_cand where type in ('lead', 'report_ready', 'birthday');$a$ in s) = 0 then raise exception 'build_list anchor'; end if;
+    s := replace(s, $a$delete from t_cand where type in ('lead', 'report_ready', 'birthday');$a$,
+                 $a$delete from t_cand where type in ('lead', 'report_ready', 'birthday');
+  delete from t_cand where type in (select type from calldesk.reason_off);   -- switched off by the team lead$a$);
+    execute s;
+  end if;
+end $do$;

@@ -32,6 +32,36 @@ export const TYPES = {
   lead: { name: "Enquiry", tone: "blue" },
   churned: { name: "Win back", tone: "grey" },
 };
+// reasons the team lead can switch on / off (the ones the list builds today)
+const SWITCHABLE = ["appt_tomorrow", "appt_missed", "post_surgery", "rabies_course", "sub_expiring", "vaccine_due", "vaccine_course",
+  "review_due", "deworm_due", "tick_recheck", "sub_due", "bath_due", "haircut_due", "sub_renew", "consult_followup",
+  "sibling_vaccine", "boarding_holiday", "senior_check", "vaccine_never"];
+
+function ReasonSwitch({ off, onChange }) {
+  const [busy, setBusy] = useState("");
+  const offSet = new Set(off.map((o) => o.type));
+  const flip = async (type) => {
+    setBusy(type);
+    try { await rpc("cd_reason_set", { p_type: type, p_on: offSet.has(type) }); await onChange(); }
+    catch (e) { alert(e.message); }
+    setBusy("");
+  };
+  return (
+    <div className="reason-switch">
+      <p className="muted small">Untick a reason to stop calling it for now. Its customers disappear from the agents' lists and the Excel log straight away, and tomorrow's list fills up with the other reasons instead. Tick it again to bring it back.</p>
+      <div className="reason-grid">
+        {SWITCHABLE.map((type) => (
+          <label key={type} className={offSet.has(type) ? "off" : ""}>
+            <input type="checkbox" checked={!offSet.has(type)} disabled={busy === type} onChange={() => flip(type)} />
+            <ReasonChip r={{ type }} />
+            {offSet.has(type) && <span className="muted small"> off{off.find((o) => o.type === type)?.by ? " - " + off.find((o) => o.type === type).by : ""}</span>}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const OUTCOMES = [
   ["booked", "Appointment booked"],
   ["will_visit", "Will visit"],
@@ -450,7 +480,9 @@ function CallList({ me, agentId, agents, day, setDay }) {
 function Team({ day, setDay, openAgent }) {
   const [t, setT] = useState(null);
   const [err, setErr] = useState("");
-  useEffect(() => { setT(null); rpc("cd_team", { p_day: day }).then(setT).catch((e) => setErr(e.message)); }, [day]);
+  const [showReasons, setShowReasons] = useState(false);
+  const load = useCallback(() => rpc("cd_team", { p_day: day }).then(setT).catch((e) => setErr(e.message)), [day]);
+  useEffect(() => { setT(null); load(); }, [load]);
   if (err) return <p className="note warn pad">{err}</p>;
   if (!t) return <p className="muted pad">Loading…</p>;
   const sum = (k) => t.agents.reduce((s, a) => s + Number(a[k] || 0), 0);
@@ -458,9 +490,13 @@ function Team({ day, setDay, openAgent }) {
     <div className="page">
       <div className="page-head">
         <h2>Team today</h2>
+        <button className={showReasons ? "" : "ghost"} onClick={() => setShowReasons((v) => !v)}>
+          Choose reasons{t.reasons_off?.length ? ` (${t.reasons_off.length} off)` : ""}
+        </button>
         <button className="ghost" onClick={() => downloadLog(day, day).catch((e) => alert(e.message))}>Download Excel call log</button>
         <input type="date" value={day} onChange={(e) => setDay(e.target.value)} />
       </div>
+      {showReasons && <ReasonSwitch off={t.reasons_off || []} onChange={load} />}
       <div className="kpis">
         <div><span>{sum("assigned") + t.unassigned}</span>on the lists</div>
         <div><span>{sum("marked_called")}</span>marked called</div>
@@ -489,7 +525,7 @@ function Team({ day, setDay, openAgent }) {
         <thead><tr><th>Reason</th><th>On lists</th><th>Called</th><th>Answered</th><th>Answer rate</th></tr></thead>
         <tbody>
           {t.by_reason.map((r) => (
-            <tr key={r.type}><td><ReasonChip r={r} /></td><td>{r.due}</td><td>{r.attempted}</td><td>{r.connected}</td><td>{r.attempted ? Math.round((r.connected / r.attempted) * 100) + "%" : "–"}</td></tr>
+            <tr key={r.type} className={(t.reasons_off || []).some((o) => o.type === r.type) ? "dim" : ""}><td><ReasonChip r={r} />{(t.reasons_off || []).some((o) => o.type === r.type) && <span className="muted small"> switched off - not shown</span>}</td><td>{r.due}</td><td>{r.attempted}</td><td>{r.connected}</td><td>{r.attempted ? Math.round((r.connected / r.attempted) * 100) + "%" : "–"}</td></tr>
           ))}
         </tbody>
       </table>
