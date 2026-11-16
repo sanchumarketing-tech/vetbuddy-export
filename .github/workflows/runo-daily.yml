@@ -75,6 +75,25 @@ jobs:
           python runo_calllogs_export.py $args
 
       # File + log on GitHub for 14 days (also on failure, for diagnosis)
+      # Call Desk: write this job's data into the database too (16 Nov 2026). It cannot fail the job.
+      - name: Save the Runo calls to the database (Call Desk)
+        if: success()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          OUTPUT_DIR: ${{ runner.temp }}/calldesk
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_RUNO_SITE_URL: ${{ vars.SP_RUNO_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_RUNO_LIBRARY: ${{ vars.SP_RUNO_LIBRARY || 'Documents' }}
+          SP_RUNO_MASTER_PATH: ${{ vars.SP_RUNO_MASTER_PATH || 'Sanchu Reports/Runo CallLog.xlsx' }}
+        run: |
+          pip install -q "psycopg[binary]" xlrd openpyxl requests
+          python calldesk_load.py --only calls --source runo --days 3 --no-build
+
       - if: always()
         uses: actions/upload-artifact@v4
         with:

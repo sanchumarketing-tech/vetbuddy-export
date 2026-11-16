@@ -2,7 +2,10 @@
 """
 Call Desk daily load -> Supabase (calldesk schema) -> today's call lists.
 
-Every morning (GitHub Actions, 08:05 IST - after the Corefactor, Lead Box, Runo and reminder jobs):
+Since 16 Nov 2026 each source job writes its own data into the database as its last step
+(Corefactor 06:53 -> calls, Lead Box 07:03 -> leads, Runo 07:13 -> calls, appointments 07:23 + 01:01 PM,
+reminders 07:47) by running this script with --only <step> --no-build; the 08:05 Call Desk job runs
+only "--only build" and reads nothing but the database. The steps:
   1. Call logs   Corefactor daily files in "Call Log Archive" (last few days) and the Runo master
                  "Runo CallLog.xlsx" -> calldesk.calls. Re-loading a day is harmless (rows are keyed).
   2. Reminders   VetBuddy Reminders Management, due yesterday .. +3 days -> calldesk.reminders
@@ -169,17 +172,19 @@ def runo_rows(first, last, seen):
     return out
 
 
-def load_calls(cur, today, days):
+def load_calls(cur, today, days, source=None):
     first, last = today - dt.timedelta(days=days), today - dt.timedelta(days=1)
     seen, rows = Counter(), []
-    try:
-        rows += corefactor_rows(cf.SharePoint.from_env(), first, last, seen)
-    except Exception as e:  # noqa: BLE001
-        log.error("Corefactor call logs not loaded: %s", e)
-    try:
-        rows += runo_rows(first, last, seen)
-    except Exception as e:  # noqa: BLE001
-        log.error("Runo call logs not loaded: %s", e)
+    if source in (None, "corefactor"):
+        try:
+            rows += corefactor_rows(cf.SharePoint.from_env(), first, last, seen)
+        except Exception as e:  # noqa: BLE001
+            log.error("Corefactor call logs not loaded: %s", e)
+    if source in (None, "runo"):
+        try:
+            rows += runo_rows(first, last, seen)
+        except Exception as e:  # noqa: BLE001
+            log.error("Runo call logs not loaded: %s", e)
     for (src, kind, status), n in seen.most_common(25):
         log.info("  %-10s type=%-22s status=%-28s %6d -> %s", src, kind[:22], status[:28], n, direction(kind, status))
     if not rows:
@@ -324,6 +329,7 @@ def main(argv=None) -> int:
     p.add_argument("--days", type=int, default=3, help="days of call logs to (re)load (default 3)")
     p.add_argument("--only", choices=["calls", "reminders", "appointments", "leads", "build"], action="append",
                    help="run only these steps (repeatable)")
+    p.add_argument("--source", choices=["corefactor", "runo"], help="calls step: only this source (default both)")
     p.add_argument("--rebuild", action="store_true", help="rebuild the day's list (rows nobody touched yet)")
     p.add_argument("--no-build", action="store_true", help="load only, do not build the list")
     a = p.parse_args(argv)
@@ -331,7 +337,7 @@ def main(argv=None) -> int:
     if not vetbuddy_sql.ENABLED:
         log.error("SUPABASE_DB_URL missing")
         return 1
-    steps = [("calls", lambda cur: load_calls(cur, today, a.days)),
+    steps = [("calls", lambda cur: load_calls(cur, today, a.days, a.source)),
              ("reminders", lambda cur: load_reminders(cur, today)),
              ("appointments", lambda cur: load_appointments(cur, today)),
              ("leads", lambda cur: load_leads(cur, today))]

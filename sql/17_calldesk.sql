@@ -616,11 +616,7 @@ begin
 
   -- best time of day to call each number, from the last 30 days of call logs:
   -- the part of the day it answered before, else a part of the day not tried yet
-  delete from calldesk.bills;
-  insert into calldesk.bills
-  select x.phone, x.sale_date, x.invoice_no, x.sales_unit, x.patient_name, x.item_name, x.plan_category, x.plan_subcategory, x.doctor, round(x.amount)
-  from (select calldesk.norm_phone(s2.client_phone) as phone, s2.* from vetbuddy.sales s2 where s2.sale_date >= d - 400) x
-  where x.phone in (select q3.phone from calldesk.queue q3 where q3.list_date >= d - 1);
+  -- (16 Nov 2026) no copy of the bills any more: cd_bills reads vetbuddy.sales directly
   update calldesk.queue q set try_slot = h.slot, try_note = h.note
   from (select x.phone,
                coalesce(x.ans_slot, case when not x.f_m then 'morning' when not x.f_e then 'evening' when not x.f_a then 'afternoon' else 'evening' end) as slot,
@@ -714,15 +710,28 @@ begin
 end $$;
 
 -- VetBuddy summary: the latest bill lines of the pets on a number that is on a list
+create index if not exists ix_sales_phone_cd on vetbuddy.sales (calldesk.norm_phone(client_phone), sale_date);
+create index if not exists ix_sales_history_phone on vetbuddy.sales_history (phone, sale_date);
 create or replace function public.cd_bills(p_phone text) returns jsonb
 language plpgsql stable security definer set search_path = calldesk, public as $$
 declare m calldesk.agents := calldesk.me();
 begin
   if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  -- read straight from VetBuddy data (vetbuddy.sales line items + vetbuddy.sales_history before 20 Dec 2025)
   return coalesce((select jsonb_agg(x order by x.sale_date desc, x.invoice_no) from (
-    select b.sale_date, b.invoice_no, b.unit, b.pet, b.item, b.plan_category, b.plan_subcategory, b.doctor, b.amount
-      from calldesk.bills b where b.phone = p_phone order by b.sale_date desc, b.invoice_no limit 40) x), '[]');
+    (select s.sale_date, s.invoice_no, s.sales_unit unit, s.patient_name pet, s.item_name item, s.plan_category,
+            s.plan_subcategory, s.doctor, round(s.amount) amount
+       from vetbuddy.sales s
+      where calldesk.norm_phone(s.client_phone) = p_phone and s.sale_date >= calldesk.today() - 400
+      order by s.sale_date desc, s.invoice_no limit 40)
+    union all
+    (select h.sale_date, 'old-' || h.sale_date || '-' || h.pet_id, h.unit, h.pet_name,
+            coalesce(array_to_string(h.subcategories, ', '), 'Visit'), array_to_string(h.categories, ', '), null, null, round(h.amount)
+       from vetbuddy.sales_history h
+      where h.phone = p_phone and h.sale_date >= calldesk.today() - 400
+      order by h.sale_date desc limit 10)) x), '[]');
 end $$;
+-- calldesk.bills (the old copy) is no longer filled - truncated 16 Nov 2026
 
 -- the agent clicked "Call" (only shown in the app; "called or not" still comes from the logs)
 create or replace function public.cd_dial(p_id bigint) returns void

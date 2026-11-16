@@ -65,6 +65,24 @@ jobs:
           if [ -n "$IN_TO" ]; then args="$args --to $IN_TO"; fi
           python reminder_calls_check.py $args
 
+      # Call Desk: write this job's data into the database too (16 Nov 2026). It cannot fail the job.
+      - name: Save the reminders to the database (Call Desk)
+        if: success()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          OUTPUT_DIR: ${{ runner.temp }}/calldesk
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+        run: |
+          pip install -q "psycopg[binary]" xlrd openpyxl requests
+          python calldesk_load.py --only reminders --no-build
+
       - if: always()
         uses: actions/upload-artifact@v4
         with:

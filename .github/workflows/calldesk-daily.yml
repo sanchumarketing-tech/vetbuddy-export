@@ -1,9 +1,9 @@
 name: Call Desk daily list
 
-# Loads the Corefactor + Runo call logs, VetBuddy reminders, appointments and Lead Box into Supabase
-# (schema calldesk) and builds today's call lists (200 per agent) for the Call Desk web app.
-# Runs after the call-log (06:53, 07:13), Lead Box (07:03), appointment (07:23) and reminder (07:47) jobs.
-# Only reads their files and VetBuddy; it changes nothing of theirs.
+# Builds today's call lists for the Call Desk web app from the database only.
+# The data is written by the source jobs themselves (16 Nov 2026): Corefactor call logs 06:53, Lead Box 07:03,
+# Runo 07:13, appointments 07:23 (+ 01:01 PM), reminders 07:47 - each runs calldesk_load.py --only <step> --no-build.
+# A step can still be re-run from here by hand (input "only").
 
 on:
   schedule:
@@ -25,8 +25,8 @@ on:
       only:
         description: "Run only one step"
         type: choice
-        options: [all, calls, reminders, appointments, leads, build]
-        default: all
+        options: [build, all, calls, reminders, appointments, leads]
+        default: build
 
 concurrency:
   group: calldesk-daily
@@ -66,7 +66,8 @@ jobs:
           args="--days ${IN_DAYS:-3}"
           if [ -n "$IN_DAY" ]; then args="$args --day $IN_DAY"; fi
           if [ "$IN_REBUILD" = "true" ]; then args="$args --rebuild"; fi
-          if [ -n "$IN_ONLY" ] && [ "$IN_ONLY" != "all" ]; then args="$args --only $IN_ONLY"; fi
+          if [ -z "$IN_ONLY" ]; then IN_ONLY=build; fi    # scheduled run: build only, from the database
+          if [ "$IN_ONLY" != "all" ]; then args="$args --only $IN_ONLY"; fi
           python calldesk_load.py $args
 
       - if: always()
