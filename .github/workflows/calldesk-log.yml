@@ -1,0 +1,33 @@
+name: Call Desk log to Excel
+
+# Every hour 9 AM - 10 PM IST: writes "Sanchu Reports/Call Desk Log.xlsx" (sanchureports OneDrive) from the
+# Call Desk database - who was called, not called or rescheduled (with the new date and time). Read only.
+
+on:
+  schedule:
+    - cron: "41 3-16 * * *"   # 09:11 AM .. 10:11 PM IST, every hour
+  workflow_dispatch:
+
+concurrency:
+  group: calldesk-log
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Write the Excel log
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_REMINDER_SITE_URL: ${{ vars.SP_REMINDER_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_REMINDER_LIBRARY: ${{ vars.SP_REMINDER_LIBRARY || 'Documents' }}
+        run: python calldesk_log_export.py

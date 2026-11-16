@@ -494,10 +494,10 @@ begin
   -- carried rows lose reasons that are no longer called; a row with nothing left is dropped
   update calldesk.queue q
      set reasons = x.r, rank = coalesce(x.mr, q.rank)
-    from (select q2.id, coalesce(jsonb_agg(e) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday')), '[]'::jsonb) r,
-                 min((e->>'rank')::int) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday')) mr
+    from (select q2.id, coalesce(jsonb_agg(e) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday', 'appt_tomorrow', 'missed_call')), '[]'::jsonb) r,
+                 min((e->>'rank')::int) filter (where e->>'type' not in ('lead', 'report_ready', 'birthday', 'appt_tomorrow', 'missed_call')) mr
             from calldesk.queue q2, jsonb_array_elements(q2.reasons) e
-           where q2.list_date = d and q2.reasons::text ~ '"(lead|report_ready|birthday)"'
+           where q2.list_date = d and q2.reasons::text ~ '"(lead|report_ready|birthday|appt_tomorrow|missed_call)"'   -- also date-bound reasons
            group by q2.id) x
    where q.id = x.id;
   delete from calldesk.queue q where q.list_date = d and q.reasons = '[]'::jsonb and q.dialed_at is null and q.outcome is null and q.note is null;
@@ -644,7 +644,7 @@ begin
              'rank', q.rank, 'reasons', q.reasons, 'pets', q.pets, 'tries', q.tries, 'carried_from', q.carried_from,
              'calls', q.call_count, 'attempted_at', q.attempted_at, 'connected_at', q.connected_at, 'last_call', q.last_call,
              'dialed_at', q.dialed_at, 'outcome', q.outcome, 'note', q.note, 'callback_at', q.callback_at,
-             'status', calldesk.status_of(q), 'try_slot', q.try_slot, 'try_note', q.try_note)
+             'status', calldesk.status_of(q), 'called_at', q.called_at, 'called_by', q.called_by, 'try_slot', q.try_slot, 'try_note', q.try_note)
            order by q.rank, q.score desc, q.id)
     from calldesk.queue q
     where q.list_date = coalesce(p_day, calldesk.today())

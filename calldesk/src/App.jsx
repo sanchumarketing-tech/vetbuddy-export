@@ -73,12 +73,40 @@ const SLOT_TIME = { morning: "before 12", afternoon: "12 to 4 pm", evening: "aft
 const isCb = (r) => r.outcome === "callback" && !!r.callback_at;
 const cbDue = (r, now) => isCb(r) && new Date(r.callback_at).getTime() <= now;
 const cbWaiting = (r, now) => isCb(r) && new Date(r.callback_at).getTime() > now;
+// Excel call log: date, agent, customer, phone, reason, Called / Not called / Rescheduled (+ date and time)
+export async function downloadLog(from, to, agent = -1, label = "") {
+  const rows = await rpc("cd_log", { p_from: from, p_to: to, p_agent: agent });
+  const XLSX = await import("xlsx");
+  const dt = (x) => (x ? new Date(x).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+  const data = rows.map((r) => ({
+    Date: r.list_date.split("-").reverse().join("-"), Agent: r.agent, Customer: clean(r.client), Phone: r.phone, Unit: title(r.unit),
+    Reason: clean(r.reasons), Status: r.status, "Rescheduled to": r.status === "Rescheduled" ? dt(r.callback_at) : "",
+    "Marked called at": dt(r.called_at), "Marked by": r.called_by || "", Note: r.note || "",
+    "Call log: called": r.logged_called ? "Yes" : "No", "Call log: answered": r.logged_answered ? "Yes" : "No", "Last logged call": r.last_call || "",
+  }));
+  const ws = XLSX.utils.json_to_sheet(data.length ? data : [{ Date: "", Agent: "No rows for this selection" }]);
+  ws["!cols"] = [10, 16, 22, 12, 14, 60, 12, 20, 20, 16, 30, 12, 12, 40].map((w) => ({ wch: w }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Call log");
+  const d = (x) => x.split("-").reverse().join("-");
+  XLSX.writeFile(wb, `Call Desk Log ${label ? label + " " : ""}${from === to ? d(from) : d(from) + " to " + d(to)}.xlsx`);
+}
 function rowDone(r) {
   return !!r.outcome && r.outcome !== "callback";
 }
 
 // ------------------------------------------------------------------ customer panel
-function Customer({ row, onSaved, onNext }) {
+function Customer({ row, onSaved, onNext, onSkip }) {
+  const [marking, setMarking] = useState(false);
+  const markNext = async () => {
+    setMarking(true);
+    try {
+      const r = await rpc("cd_mark_called", { p_id: row.id });
+      onSaved({ ...row, called_at: r.called_at, outcome: r.outcome, callback_at: r.outcome === "callback" ? r.callback_at : row.callback_at });
+      onNext();
+    } catch (e) { alert(e.message); }
+    setMarking(false);
+  };
   const [cbOpen, setCbOpen] = useState(false);
   const [cbAt, setCbAt] = useState("");
   const [cbNote, setCbNote] = useState(row.note || "");
@@ -92,7 +120,7 @@ function Customer({ row, onSaved, onNext }) {
       await rpc("cd_save", { p_id: row.id, p_outcome: "callback", p_note: cbNote || null, p_callback: at });
       onSaved({ ...row, outcome: "callback", note: cbNote || null, callback_at: at, status: row.connected_at ? row.status : "callback" });
       setCbOpen(false);
-      if (next) onNext();
+      if (next) { const r = await rpc("cd_mark_called", { p_id: row.id }); onSaved({ ...row, outcome: "callback", note: cbNote || null, callback_at: at, called_at: r.called_at }); onNext(); }
     } catch (e) { setCbErr(e.message); }
   };
   const clearCb = async () => {
@@ -150,7 +178,8 @@ function Customer({ row, onSaved, onNext }) {
         <div className="phone">{phoneFmt(row.phone)}</div>
         <button className="primary" onClick={copy}>{copied ? "Copied" : "Copy number"}</button>
         <button className="ghost" onClick={openCb}>{isCb(row) ? "Change call-back time" : "Call back later"}</button>
-        <button className="ghost" onClick={onNext}>Next customer</button>
+        <button className="primary" disabled={marking} onClick={markNext} title="Marks this customer as called and opens the next one">{marking ? "Saving…" : "Called - next customer"}</button>
+        <button className="link" onClick={onSkip} title="Move on without marking as called">Skip</button>
       </div>
       {row.try_note && <div className="tryline">Best time to call: <strong>{row.try_slot} ({SLOT_TIME[row.try_slot]})</strong> · {row.try_note}</div>}
       {isCb(row) && !cbOpen && (
@@ -288,7 +317,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
   }, [rows]);
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 20000); return () => clearInterval(t); }, []);
-  const answered = (r) => (rowDone(r) || r.status === "connected") && !isCb(r);
+  const answered = (r) => (rowDone(r) || r.status === "connected" || !!r.called_at) && !isCb(r);
   const counts = useMemo(() => {
     const c = { todo: 0, done: 0, all: rows?.length || 0, callback: 0, due: 0 };
     (rows || []).forEach((r) => {
@@ -323,7 +352,8 @@ function CallList({ me, agentId, agents, day, setDay }) {
   const current = rows?.find((r) => r.id === sel) || null;
   const next = () => {
     const i = shown.findIndex((r) => r.id === sel);
-    const n = shown.slice(i + 1).find((r) => !rowDone(r)) || shown.find((r) => !rowDone(r) && r.id !== sel);
+    const open = (r) => !answered(r) && !cbWaiting(r, now) && r.id !== sel;
+    const n = shown.slice(i + 1).find(open) || shown.find(open);
     setSel(n ? n.id : null);
   };
   const onSaved = (u, goNext) => {
@@ -331,7 +361,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
     if (goNext) next();
   };
 
-  const attempted = (rows || []).filter((r) => r.attempted_at || r.dialed_at).length;
+  const attempted = (rows || []).filter((r) => r.called_at || r.attempted_at).length;
   const total = rows?.length || 0;
   const target = isLead ? total : me.target;
 
@@ -347,12 +377,13 @@ function CallList({ me, agentId, agents, day, setDay }) {
         <div className="progress">
           <div className="progress-top">
             <strong>{attempted}</strong> of {total} called{!isLead && total < target ? <span className="muted"> · target {target}</span> : null}
+            <button className="link xl" title="Download this list as an Excel call log" onClick={() => downloadLog(day, day, isLead ? agentId : me.id, isLead && agentId > 0 ? (agents.find((a) => a.id === agentId)?.name || "") : isLead ? "" : me.name).catch((e) => alert(e.message))}>Excel</button>
             <input type="date" value={day} onChange={(e) => setDay(e.target.value)} />
           </div>
           <div className="bar"><span style={{ width: `${total ? Math.min(100, (attempted / total) * 100) : 0}%` }} /></div>
         </div>
         <div className="filters">
-          {[["todo", "To call"], ["callback", "Call-backs"], ["done", "Answered"], ["all", "All"]].map(([k, v]) => (
+          {[["todo", "To call"], ["callback", "Call-backs"], ["done", "Called"], ["all", "All"]].map(([k, v]) => (
             <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{v} <span>{counts[k]}</span></button>
           ))}
         </div>
@@ -382,7 +413,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
               <div key={r.id} className={`row ${sel === r.id ? "sel" : ""} ${rowDone(r) ? "done" : ""} ${cbDue(r, now) ? "cbdue" : ""}`} onClick={() => setSel(r.id)}>
                 {isLead && <input type="checkbox" checked={picked.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(picked); e.target.checked ? s.add(r.id) : s.delete(r.id); setPicked(s); }} />}
                 <div className="row-main">
-                  <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
+                  <div className="row-top"><span className="row-name">{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : r.called_at ? <Chip tone="good">Called {fmtTime(r.called_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{clean((reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label)}</span></div>
                   <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}</div>
@@ -397,7 +428,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
         {current ? (
           <>
             <button className="link back" onClick={() => setSel(null)}>← Back to list</button>
-            <Customer key={current.id} row={current} onSaved={(u) => onSaved(u, false)} onNext={next} />
+            <Customer key={current.id} row={current} onSaved={(u) => onSaved(u, false)} onNext={next} onSkip={next} />
           </>
         ) : (
           <div className="empty">
@@ -423,28 +454,30 @@ function Team({ day, setDay, openAgent }) {
     <div className="page">
       <div className="page-head">
         <h2>Team today</h2>
+        <button className="ghost" onClick={() => downloadLog(day, day).catch((e) => alert(e.message))}>Download Excel call log</button>
         <input type="date" value={day} onChange={(e) => setDay(e.target.value)} />
       </div>
       <div className="kpis">
         <div><span>{sum("assigned") + t.unassigned}</span>on the lists</div>
-        <div><span>{sum("dialed")}</span>numbers copied</div>
+        <div><span>{sum("marked_called")}</span>marked called</div>
+        <div><span>{sum("rescheduled")}</span>rescheduled</div>
         <div><span>{sum("attempted")}</span>called (logs)</div>
         <div><span>{sum("connected")}</span>answered (logs)</div>
         
       </div>
       <p className="muted small">"Called" and "answered" come from the Corefactor and Runo logs, loaded each morning (latest call loaded: {fmtDT(t.last_call_loaded) || "none yet"}).</p>
       <table className="grid">
-        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Copied</th><th>Called</th><th>Answered</th><th>Done %</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Marked called</th><th>Rescheduled</th><th>Called (logs)</th><th>Answered (logs)</th><th>Done %</th></tr></thead>
         <tbody>
           {t.agents.filter((a) => a.role === "agent").map((a) => (
             <tr key={a.id} className="click" onClick={() => openAgent(a.id)}>
               <td>{a.name}{!a.active && <span className="muted"> (off)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td>
-              <td>{a.assigned}</td><td>{a.must_call}</td><td>{a.dialed}</td><td>{a.attempted}</td><td>{a.connected}</td>
-              <td>{a.assigned ? Math.round((Math.max(a.attempted, a.dialed) / a.assigned) * 100) : 0}%</td>
+              <td>{a.assigned}</td><td>{a.must_call}</td><td>{a.marked_called}</td><td>{a.rescheduled}</td><td>{a.attempted}</td><td>{a.connected}</td>
+              <td>{a.assigned ? Math.round((Math.max(a.attempted, a.marked_called) / a.assigned) * 100) : 0}%</td>
             </tr>
           ))}
-          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={5} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
+          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={7} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
         </tbody>
       </table>
       <h3>By reason</h3>

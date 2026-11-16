@@ -115,3 +115,45 @@ revoke execute on function public.cd_login(text, text), public.cd_logout(),
   public.cd_agent_save(text, text, text, text[], int, boolean, text) from public;
 grant execute on function public.cd_login(text, text), public.cd_logout(),
   public.cd_agent_save(text, text, text, text[], int, boolean, text) to anon, authenticated;
+
+
+-- =====================================================================
+-- 19  "Called - next customer" marks the row as called (who / when) + Excel call log (16 Nov 2026)
+-- =====================================================================
+alter table calldesk.queue add column if not exists called_at timestamptz;
+alter table calldesk.queue add column if not exists called_by text;
+
+create or replace function public.cd_mark_called(p_id bigint) returns jsonb
+language plpgsql security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me(); q calldesk.queue;
+begin
+  if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  update calldesk.queue
+     set called_at = now(), called_by = m.name, updated_at = now(),
+         outcome = case when outcome = 'callback' and callback_at <= now() then null else outcome end   -- a due call-back is done
+   where id = p_id and (agent_id = m.id or m.role = 'lead')
+  returning * into q;
+  if q.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  return jsonb_build_object('called_at', q.called_at, 'outcome', q.outcome, 'callback_at', q.callback_at);
+end $$;
+
+-- rows for the Excel call log (agent: own rows; lead: everyone or one agent)
+create or replace function public.cd_log(p_from date, p_to date, p_agent int default -1) returns jsonb
+language plpgsql stable security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me();
+begin
+  if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  return coalesce((select jsonb_agg(x order by x.list_date, x.agent, x.id) from (
+    select q.id, q.list_date, coalesce(a.name, '(not assigned)') agent, q.client, q.phone, q.unit,
+           (select string_agg(e->>'label', ' | ' order by (e->>'rank')::int) from jsonb_array_elements(q.reasons) e) reasons,
+           case when q.outcome = 'callback' and q.callback_at is not null then 'Rescheduled'
+                when q.called_at is not null then 'Called' else 'Not called' end status,
+           q.callback_at, q.called_at, q.called_by, q.note,
+           q.attempted_at is not null logged_called, q.connected_at is not null logged_answered, q.last_call
+      from calldesk.queue q left join calldesk.agents a on a.id = q.agent_id
+     where q.list_date between p_from and p_to and not q.superseded
+       and (m.role = 'lead' and (p_agent = -1 or q.agent_id = p_agent) or q.agent_id = m.id)) x), '[]');
+end $$;
+revoke execute on function public.cd_mark_called(bigint), public.cd_log(date, date, int) from public;
+grant execute on function public.cd_mark_called(bigint), public.cd_log(date, date, int) to anon, authenticated;
+-- cd_list also returns called_at / called_by; cd_team returns marked_called / rescheduled per agent (applied in place)
