@@ -213,10 +213,13 @@ function Customer({ row, onSaved, onNext, onSkip }) {
     return [...m.values()].slice(0, 10);
   }, [bills]);
   const pets = row.pets || [];
-  const spend = pets.reduce((mx, p) => Math.max(mx, Number(p.revenue || 0)), 0);
+  // the whole number (all pets together): spend and visit days add up across pets, not the biggest single pet
+  const billSpend = (bills || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+  const spend = Math.max(pets.reduce((s, p) => s + Number(p.revenue || 0), 0), billSpend);
   const firstVisit = pets.map((p) => p.first_visit).filter(Boolean).sort()[0];
   const lastVisit = pets.map((p) => p.last_visit).filter(Boolean).sort().reverse()[0];
-  const visitDays = pets.reduce((mx, p) => Math.max(mx, Number(p.visits || 0)), 0);
+  const billDays = new Set((bills || []).map((b) => b.sale_date)).size;
+  const visitDays = Math.max(billDays, pets.reduce((mx, p) => Math.max(mx, Number(p.visits || 0)), 0));
   const reasons = [...row.reasons].sort((a, b) => a.rank - b.rank);
   const [sLabel, sTone] = STATUS[row.status] || ["", "neutral"];
 
