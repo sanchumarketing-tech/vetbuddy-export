@@ -46,6 +46,8 @@ def trim() -> int:
     def conn():
         return psycopg.connect(vs.DB_URL, connect_timeout=60, autocommit=True, options="-c statement_timeout=0")
     with conn() as c, c.cursor() as cur:
+        # the database goes read-only when the disk is full; this session may still free space (Supabase's documented fix)
+        cur.execute("set session characteristics as transaction read write")
         cur.execute("select coalesce(round(sum(amount)), 0), count(*) from vetbuddy.sales where sale_date < %s", (cutoff,))
         full_amt, full_n = cur.fetchone()
         full_amt = int(full_amt)
