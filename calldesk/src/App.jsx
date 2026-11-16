@@ -30,12 +30,13 @@ export const TYPES = {
   sub_renew: { name: "Grooming Club - renew", tone: "violet" },
   new_pet: { name: "New pet", tone: "green" },
   lead: { name: "Enquiry", tone: "blue" },
-  churned: { name: "Win back", tone: "grey" },
+  churned: { name: "Churned (1 yr+)", tone: "grey" },
+  multi_pet: { name: "Key customer (multi-pet)", tone: "violet" },
 };
 // reasons the team lead can switch on / off (the ones the list builds today)
 const SWITCHABLE = ["appt_tomorrow", "appt_missed", "post_surgery", "rabies_course", "sub_expiring", "vaccine_due", "vaccine_course",
   "review_due", "deworm_due", "tick_recheck", "sub_due", "bath_due", "haircut_due", "sub_renew", "consult_followup",
-  "sibling_vaccine", "boarding_holiday", "senior_check", "vaccine_never"];
+  "sibling_vaccine", "boarding_holiday", "senior_check", "vaccine_never", "multi_pet", "churned"];
 
 function ReasonSwitch({ off, onChange }) {
   const [busy, setBusy] = useState("");

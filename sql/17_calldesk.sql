@@ -465,6 +465,35 @@ begin
    where a.phone = b.phone and a.type = b.type and a.ctid > b.ctid
      and lower(coalesce(a.pet_id, a.pet, '')) in (lower(coalesce(b.pet_id, b.pet, '')), lower(coalesce(b.pet, '')));
   delete from t_cand where type in ('lead', 'report_ready', 'birthday');   -- not called (decided 16 Nov 2026)
+  -- (applied in place) team-lead switch: delete from t_cand where type in (select type from calldesk.reason_off);
+  -- key customers (16 Nov 2026): 2+ pets on the number, no visit (any pet) for 45 days to a year - priority 8, share 15
+  insert into t_cand
+  select g.phone, g.client, g.unit, null, g.names, 'multi_pet', 8,
+         'Key customer - ' || g.n || ' pets (' || g.names || ') - last visit ' || to_char(g.last, 'DD Mon') || ' (' || (d - g.last) || ' days ago)' ||
+         case when g.spend > 0 then ', spent Rs ' || to_char(round(g.spend), 'FM99,99,999') else '' end || ' - check in, book for all pets',
+         g.last, g.spend
+  from (select phone, (array_agg(client_name order by last_visit desc))[1] client, (array_agg(unit order by last_visit desc))[1] unit,
+               count(*) n, left(string_agg(initcap(regexp_replace(pet_name, '\s*\(\d+\).*$', '')), ', ' order by last_visit desc), 80) names,
+               max(last_visit) last, sum(coalesce(total_client_revenue, 0)) spend
+          from t_pet group by phone having count(*) >= 2) g
+  where g.last between d - 365 and d - 45;
+  -- churned (16 Nov 2026): the number has not been billed for more than a year (up to 2 years) - priority 12, share 10
+  insert into t_cand
+  select c.phone, c.client, c.unit, null, c.pet, 'churned', 12,
+         'Not visited for over a year - last visit ' || to_char(c.last, 'DD Mon YYYY') || coalesce(' (' || c.item || ')', '') ||
+         ', ' || c.days || case when c.days = 1 then ' visit day' else ' visit days' end ||
+         case when c.spend > 0 then ', spent Rs ' || to_char(round(c.spend), 'FM99,99,999') else '' end || ' - follow up, invite back',
+         c.last, c.spend
+  from (select calldesk.norm_phone(client_phone) phone, (array_agg(client_name order by sale_date desc))[1] client,
+               (array_agg(sales_unit order by sale_date desc))[1] unit, (array_agg(patient_name order by sale_date desc))[1] pet,
+               (array_agg(item_name order by sale_date desc))[1] item, max(sale_date) last, count(distinct sale_date) days, sum(amount) spend
+          from vetbuddy.sales where client_id is not null and sale_date >= d - 730 and sale_date < d group by 1) c
+  where c.phone is not null and c.last between d - 730 and d - 366;
+  -- key customer / churned check-ins: not again within 90 days of being reached or closed
+  delete from t_cand c where c.type in ('multi_pet', 'churned') and exists (
+     select 1 from calldesk.queue q where q.phone = c.phone and q.list_date between d - 90 and d - 1
+        and q.reasons @> jsonb_build_array(jsonb_build_object('type', c.type))
+        and (q.connected_at is not null or q.outcome is not null or q.called_at is not null));
   delete from t_cand c where c.phone is null or c.phone !~ '^[6-9]\d{9}$'
      or exists (select 1 from calldesk.exclusions x where x.phone = c.phone);
   -- non-urgent reasons: skip numbers that were in touch (any call, in or out) in the last 3 days
@@ -549,7 +578,7 @@ begin
                                       when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
                                       when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
                                       when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
-                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'sub_due' then 15 when 'sub_expiring' then 15 when 'sub_renew' then 10 when 'lead' then 10 else 1 end,
+                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'sub_due' then 15 when 'sub_expiring' then 15 when 'sub_renew' then 10 when 'multi_pet' then 15 when 'churned' then 10 when 'lead' then 10 else 1 end,
                     t.rank, t.phone loop
     a := null;
     if capacity > 0 then
