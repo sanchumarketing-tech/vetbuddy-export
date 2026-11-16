@@ -1,0 +1,47 @@
+name: VetBuddy history load (old master, before 20 Dec 2025)
+
+# One time / on demand: loads "Vetbuddy Master Data.xlsx" (the old master) into vetbuddy.sales,
+# only rows before the first date already in the database. "check" changes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check = read and report only, load = load into the database"
+        type: choice
+        options: [check, load]
+        default: check
+      path:
+        description: "Old master path (empty = same folder as the current master, 'Vetbuddy Master Data.xlsx')"
+        required: false
+        default: ""
+
+concurrency:
+  group: history-load
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests openpyxl xlrd "psycopg[binary]"
+      - name: History load
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+          SP_MASTER_SITE_URL: ${{ vars.SP_MASTER_SITE_URL }}
+          SP_MASTER_LIBRARY: ${{ vars.SP_MASTER_LIBRARY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          HISTORY_PATH: ${{ inputs.path }}
+          IN_MODE: ${{ inputs.mode }}
+        run: python history_load.py --$IN_MODE
