@@ -39,7 +39,14 @@ jobs:
           mkdir -p "../$PROJECT" && cp -r dist/. "../$PROJECT/" && cp vercel.json "../$PROJECT/" && cp -r api "../$PROJECT/"
           cd "../$PROJECT"
           scope=""; if [ -n "$VERCEL_SCOPE" ]; then scope="--scope $VERCEL_SCOPE"; fi
-          url=$(npx --yes vercel@65.2.0 deploy --prod --yes --token "$VERCEL_TOKEN" $scope)
+          # Vercel sometimes hangs: give each try 4 minutes, try up to 3 times
+          npx --yes vercel@65.2.0 --version >/dev/null
+          url=""
+          for try in 1 2 3; do
+            url=$(timeout 240 npx --yes vercel@65.2.0 deploy --prod --yes --token "$VERCEL_TOKEN" $scope) && break
+            echo "Vercel try $try did not finish - trying again"; url=""
+          done
+          [ -n "$url" ] || { echo "Vercel did not publish after 3 tries"; exit 1; }
           echo "Published: $url"
           echo "### Call Desk published" >> "$GITHUB_STEP_SUMMARY"
           echo "$url" >> "$GITHUB_STEP_SUMMARY"
