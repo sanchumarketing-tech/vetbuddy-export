@@ -267,8 +267,12 @@ function Customer({ row, onSaved, onNext, onSkip }) {
                   <td>{fmtDT(c.call_at)}</td>
                   <td>{c.source}</td>
                   <td>{c.direction === "in" ? "Incoming" : c.direction === "out" ? "Outgoing" : ""}</td>
-                  <td>{c.answered ? <Chip tone="good">Answered</Chip> : <Chip tone="warn">{c.status || "Not answered"}</Chip>}</td>
+                  <td>{c.answered ? <Chip tone="good">Answered</Chip> : <Chip tone="warn">{c.status || "Not answered"}</Chip>}
+                    {c.talk_s != null ? <span className="muted small"> {c.talk_s}s talk</span> : c.duration_s != null ? <span className="muted small"> {c.duration_s}s</span> : null}</td>
                   <td className="muted">{c.agent}</td>
+                  <td>{[c.disposition, c.notes].filter(Boolean).filter((v, j, a) => a.indexOf(v) === j).join(" · ") || <span className="muted small">no note</span>}
+                    {c.dtmf ? <span className="muted small"> · pressed {c.dtmf}</span> : null}
+                    {c.recording && /^https?:\/\//.test(c.recording) ? <> · <a href={c.recording} target="_blank" rel="noreferrer">Recording</a></> : null}</td>
                 </tr>
               ))}
             </tbody>

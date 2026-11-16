@@ -112,6 +112,7 @@ def corefactor_rows(sp, first, last, seen):
                 kind = str(rc.pick(r, "Call Type") or "")
                 status = str(rc.pick(r, "Call Status") or "")
                 dur = seconds(rc.pick(r, "Total Time", "Duration", "Talk Time"))
+                talk = seconds(rc.pick(r, "Talk Time"))          # the conversation itself (Total Time includes ringing)
                 agent = str(rc.pick(r, "Agent Name") or "")
                 seen[("Corefactor", kind, status)] += 1
                 txt = lambda *names: (str(rc.pick(r, *names) or "").strip()[:200] or None)   # noqa: E731
@@ -119,8 +120,10 @@ def corefactor_rows(sp, first, last, seen):
                 if line and re.fullmatch(r"\d+\.0", line):
                     line = line[:-2]
                 out.append(("Corefactor", key(when, ph, kind, status, agent, dur), when, ph, direction(kind, status),
-                            kind, status, answered(status, dur), dur, agent,
-                            txt("Customer Name"), line, txt("DTMF", "IVR Input", "Dtmf"), txt("Notes", "Remarks")))
+                            kind, status, answered(status, talk if talk is not None else dur), dur, agent,
+                            txt("Customer Name"), line, txt("DTMF", "IVR Input", "Dtmf"), txt("Notes", "Remarks"),
+                            txt("Call Disposition", "Disposition"), txt("Campaign Name", "Campaign"), talk,
+                            txt("Recording", "Recording URL")))
                 n += 1
             log.info("Corefactor %s: %d calls", d, n)
             break
@@ -160,7 +163,8 @@ def runo_rows(first, last, seen):
         seen[("Runo", kind, tag or status)] += 1
         out.append(("Runo", str(g("callid") or g("id") or key(when, ph, kind, agent, dur)), when, ph,
                     direction(kind, tag), kind, tag or status, answered(tag or status, dur), dur, agent,
-                    str(g("name") or "")[:120] or None, agent or None, None, str(g("notes") or "")[:200] or None))
+                    str(g("name") or "")[:120] or None, agent or None, None, str(g("notes") or "")[:200] or None,
+                    tag or None, None, None, None))
     log.info("Runo %s .. %s: %d calls", first, last, len(out))
     return out
 
@@ -182,17 +186,20 @@ def load_calls(cur, today, days):
         return 0
     cur.execute("create temp table t_calls (like calldesk.calls including defaults) on commit drop")
     with cur.copy("copy t_calls (source, call_key, call_at, phone, direction, call_type, status, answered, duration_s, agent,"
-                  " customer_name, line, dtmf, notes) from stdin") as cp:
+                  " customer_name, line, dtmf, notes, disposition, campaign, talk_s, recording) from stdin") as cp:
         for r in rows:
             cp.write_row(r)
     cur.execute("""insert into calldesk.calls (source, call_key, call_at, phone, direction, call_type, status, answered,
-                                               duration_s, agent, customer_name, line, dtmf, notes)
+                                               duration_s, agent, customer_name, line, dtmf, notes, disposition, campaign,
+                                               talk_s, recording)
                    select distinct on (source, call_key) source, call_key, call_at, phone, direction, call_type, status,
-                          answered, duration_s, agent, customer_name, line, dtmf, notes from t_calls
+                          answered, duration_s, agent, customer_name, line, dtmf, notes, disposition, campaign, talk_s,
+                          recording from t_calls
                    on conflict (source, call_key) do update set direction = excluded.direction,
                           status = excluded.status, answered = excluded.answered, duration_s = excluded.duration_s,
                           customer_name = excluded.customer_name, line = excluded.line, dtmf = excluded.dtmf,
-                          notes = excluded.notes""")
+                          notes = excluded.notes, disposition = excluded.disposition, campaign = excluded.campaign,
+                          talk_s = excluded.talk_s, recording = excluded.recording""")
     log.info("Call logs: %d rows loaded (%s .. %s)", cur.rowcount, first, last)
     return cur.rowcount
 

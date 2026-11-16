@@ -50,6 +50,10 @@ alter table calldesk.calls add column if not exists customer_name text;   -- nam
 alter table calldesk.calls add column if not exists line text;            -- number / CRM the customer rang
 alter table calldesk.calls add column if not exists dtmf text;            -- IVR option pressed
 alter table calldesk.calls add column if not exists notes text;
+alter table calldesk.calls add column if not exists disposition text;    -- Corefactor "Call Disposition" (agent's outcome) / Runo tag
+alter table calldesk.calls add column if not exists campaign text;       -- Corefactor "Campaign Name"
+alter table calldesk.calls add column if not exists talk_s int;          -- Corefactor "Talk Time" (seconds actually talking)
+alter table calldesk.calls add column if not exists recording text;      -- Corefactor recording link
 create index if not exists calls_phone_at on calldesk.calls (phone, call_at);
 create index if not exists calls_at on calldesk.calls (call_at);
 
@@ -662,7 +666,8 @@ begin
        select 1 from calldesk.queue q where q.phone = p_phone and q.agent_id = m.id and q.list_date >= calldesk.today() - 30))
   then raise exception 'not allowed' using errcode = '42501'; end if;
   return coalesce((select jsonb_agg(x order by x.call_at desc) from (
-    select k.call_at, k.source, k.direction, k.status, k.answered, k.duration_s, k.agent
+    select k.call_at, k.source, k.direction, k.status, k.answered, k.duration_s, k.talk_s, k.agent,
+           k.disposition, k.notes, k.dtmf, k.campaign, k.recording
       from calldesk.calls k where k.phone = p_phone order by k.call_at desc limit 15) x), '[]');
 end $$;
 
