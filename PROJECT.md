@@ -14,7 +14,7 @@ Supabase secrets and Apps Script properties (see "Where the secrets are").
 
 ## Data files (SharePoint)
 - Master: `sanchureports` OneDrive → Sanchu Reports → **Vetbuddy Master Data 2.xlsx** (Dec 2025 →, updated by the job)
-- Older history: Sanchu Reports → Vetbuddy Master Data.xlsx - loaded into Supabase 16 Nov 2026 (30 Jul 2019 → 19 Dec 2025, 1,047,650 rows; history_load.py)
+- Older history: Sanchu Reports → Vetbuddy Master Data.xlsx - in Supabase since 16 Nov 2026 as vetbuddy.sales_history, compact: one row per pet per visit day (30 Jul 2019 → 19 Dec 2025, 297,185 rows). Full lines are NOT kept (Free plan 500 MB limit) - see sql/20_sales_history.sql
 - Call log: Backend Call Log Report.xlsx (table `vetbuddy.call_log`, not yet loaded)
 
 ## Database files

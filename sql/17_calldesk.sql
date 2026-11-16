@@ -487,7 +487,11 @@ begin
   from (select calldesk.norm_phone(client_phone) phone, (array_agg(client_name order by sale_date desc))[1] client,
                (array_agg(sales_unit order by sale_date desc))[1] unit, (array_agg(patient_name order by sale_date desc))[1] pet,
                (array_agg(item_name order by sale_date desc))[1] item, max(sale_date) last, count(distinct sale_date) days, sum(amount) spend
-          from vetbuddy.sales where client_id is not null and sale_date >= d - 730 and sale_date < d group by 1) c
+          from (select client_phone, client_name, sales_unit, patient_name, item_name, sale_date, amount
+                  from vetbuddy.sales where client_id is not null and sale_date >= d - 730 and sale_date < d
+                union all   -- old bills before 20 Dec 2025, one row per pet per visit day (vetbuddy.sales_history)
+                select phone, client_name, unit, pet_name, array_to_string(subcategories, ', '), sale_date, amount
+                  from vetbuddy.sales_history where sale_date >= d - 730 and sale_date < d) h group by 1) c
   where c.phone is not null and c.last between d - 730 and d - 366;
   -- key customer / churned check-ins: not again within 90 days of being reached or closed
   delete from t_cand c where c.type in ('multi_pet', 'churned') and exists (
