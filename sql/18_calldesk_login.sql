@@ -229,3 +229,49 @@ do $do$ declare s text; begin
     execute s;
   end if;
 end $do$;
+
+
+-- =====================================================================
+-- 21  Team lead switch: keep customers called in the last 7 days off the lists (16 Nov 2026)
+--   calldesk.settings 'skip_called' {"on": bool, "days": 7}. When on: a number with an outgoing call
+--   (Corefactor or Runo log) in the 7 days before the list day is hidden from the lists, the Excel log and
+--   the Team counts, is not added by the daily build and is not carried over. Promised call-backs always show.
+-- =====================================================================
+create table if not exists calldesk.settings (key text primary key, value jsonb not null, set_by text, set_at timestamptz not null default now());
+revoke all on calldesk.settings from public, anon, authenticated;
+insert into calldesk.settings (key, value, set_by) values ('skip_called', '{"on": false, "days": 7}', 'setup') on conflict (key) do nothing;
+
+create or replace function calldesk.skip_days() returns int
+language sql stable security definer set search_path = calldesk, public as $$
+  select case when (value->>'on')::boolean then coalesce((value->>'days')::int, 7) else 0 end from calldesk.settings where key = 'skip_called'
+$$;
+
+create or replace function calldesk.row_visible(q calldesk.queue) returns boolean
+language sql stable security definer set search_path = calldesk, public as $$
+  select jsonb_array_length(calldesk.strip_off(q.reasons)) > 0
+     and (q.outcome = 'callback' or coalesce(calldesk.skip_days(), 0) = 0 or not exists (
+          select 1 from calldesk.calls k where k.phone = q.phone and k.direction = 'out'
+             and k.call_at >= (q.list_date - calldesk.skip_days())::timestamp and k.call_at < q.list_date::timestamp))
+$$;
+
+create or replace function public.cd_skip_called(p_on boolean) returns jsonb
+language plpgsql security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me();
+begin
+  if m.role is distinct from 'lead' then raise exception 'not allowed' using errcode = '42501'; end if;
+  update calldesk.settings set value = jsonb_set(value, '{on}', to_jsonb(p_on)), set_by = m.name, set_at = now() where key = 'skip_called';
+  return (select value || jsonb_build_object('by', set_by, 'at', set_at) from calldesk.settings where key = 'skip_called');
+end $$;
+revoke execute on function public.cd_skip_called(boolean) from public;
+grant execute on function public.cd_skip_called(boolean) to anon, authenticated;
+
+-- applied in place (16 Nov 2026):
+--   cd_list, cd_log:  "jsonb_array_length(calldesk.strip_off(q.reasons)) > 0"  ->  "calldesk.row_visible(q)"
+--   cd_team:          agent counts, by_reason and unassigned count only visible rows; returns skip_called and hidden_called
+--   build_list:       after the reason_off delete -
+--       delete from t_cand c where coalesce(calldesk.skip_days(), 0) > 0 and exists (select 1 from calldesk.calls k where k.phone = c.phone
+--          and k.direction = 'out' and k.call_at >= (d - calldesk.skip_days())::timestamp and k.call_at < d::timestamp);
+--                     and before the carry-over insert -
+--       delete from t_carry c where coalesce(calldesk.skip_days(), 0) > 0 and c.outcome is distinct from 'callback' and exists (
+--          select 1 from calldesk.calls k where k.phone = c.phone and k.direction = 'out'
+--             and k.call_at >= (d - calldesk.skip_days())::timestamp and k.call_at < d::timestamp);

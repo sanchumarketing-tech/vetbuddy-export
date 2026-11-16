@@ -200,3 +200,5 @@ table.mini td.num, table.mini th.num { text-align: right; white-space: nowrap; }
 .reason-grid label { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 0; }
 .reason-grid label.off .chip { opacity: .45; text-decoration: line-through; }
 table.grid tr.dim td { opacity: .5; }
+.skip-called { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
+.skip-called.on button { background: var(--good, #1f8a5b); border-color: transparent; color: #fff; }

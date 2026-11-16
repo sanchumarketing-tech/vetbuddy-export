@@ -62,6 +62,30 @@ function ReasonSwitch({ off, onChange }) {
   );
 }
 
+// team lead switch: numbers already called (Corefactor / Runo, outgoing) in the last 7 days are kept off the lists
+function SkipCalled({ s, hidden, onChange }) {
+  const [busy, setBusy] = useState(false);
+  if (!s) return null;
+  const on = !!s.on;
+  const flip = async () => {
+    if (!on && !confirm(`Keep customers called in the last ${s.days || 7} days off the lists?`)) return;
+    setBusy(true);
+    try { await rpc("cd_skip_called", { p_on: !on }); await onChange(); } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  return (
+    <div className={"skip-called" + (on ? " on" : "")}>
+      <button className={on ? "" : "ghost"} disabled={busy} onClick={flip}>
+        {on ? `ON - customers called in the last ${s.days || 7} days are not shown` : `Skip customers called in the last ${s.days || 7} days`}
+      </button>
+      <span className="muted small">
+        {on ? `${hidden || 0} customers on today's lists are hidden because they were called in the ${s.days || 7} days before today (Corefactor / Runo). Promised call-backs still show.${s.by ? " Switched on by " + s.by + "." : ""}`
+            : "Off: customers already called recently by the team can still appear on the lists."}
+      </span>
+    </div>
+  );
+}
+
 const OUTCOMES = [
   ["booked", "Appointment booked"],
   ["will_visit", "Will visit"],
@@ -497,6 +521,7 @@ function Team({ day, setDay, openAgent }) {
         <input type="date" value={day} onChange={(e) => setDay(e.target.value)} />
       </div>
       {showReasons && <ReasonSwitch off={t.reasons_off || []} onChange={load} />}
+      <SkipCalled s={t.skip_called} hidden={t.hidden_called} onChange={load} />
       <div className="kpis">
         <div><span>{sum("assigned") + t.unassigned}</span>on the lists</div>
         <div><span>{sum("marked_called")}</span>marked called</div>
