@@ -257,6 +257,8 @@ begin
     and not exists (select 1 from calldesk.appointments b where calldesk.norm_phone(b.phone) = calldesk.norm_phone(ap.phone)
                      and b.appt_date >= ap.appt_date and b.appt_id <> ap.appt_id and coalesce(b.status, '') !~* 'cancel|no.?show')
     and not exists (select 1 from t_pet p where p.phone = calldesk.norm_phone(ap.phone) and p.last_visit >= ap.appt_date);
+    -- spoken to after the no-show (a real conversation, 15+ seconds): not called again for it
+    and not exists (select 1 from calldesk.calls k where k.phone = calldesk.norm_phone(ap.phone) and k.answered and k.call_at >= ap.appt_date::timestamp);
 
   -- 4 post-surgery review: day 2, and day 7 if no visit since
   insert into t_cand

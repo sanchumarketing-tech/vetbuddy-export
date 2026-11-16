@@ -78,6 +78,9 @@ def direction(kind, status=""):
 
 
 def answered(status, dur):
+    """A real conversation: answered and at least 15 seconds (a 6-second 'answered' is a hang-up)."""
+    if dur is not None and dur < 15:
+        return False
     r = str(status or "").lower()
     if re.search(r"not.?answer|unanswer|no.?answer|missed|busy|fail|cancel|reject|abandon|not.?connect", r):
         return False
@@ -224,7 +227,8 @@ def xl_dt(v):
 
 
 def load_appointments(cur, today):
-    days = [today - dt.timedelta(days=2), today - dt.timedelta(days=1), today, today + dt.timedelta(days=1)]
+    # 2 days back (cancellations / no-shows) .. 14 days ahead (so a rebooked appointment is seen)
+    days = [today + dt.timedelta(days=k) for k in range(-2, 15)]
     s = requests.Session()
     s.headers["User-Agent"] = "Mozilla/5.0 (VetBuddy call desk)"
     vb.login(s)
