@@ -238,9 +238,11 @@ def xl_dt(v):
     return cf.parse_dt(v) if v else None
 
 
-def load_appointments(cur, today):
-    # 2 days back (cancellations / no-shows) .. 14 days ahead (so a rebooked appointment is seen)
-    days = [today + dt.timedelta(days=k) for k in range(-2, 15)]
+def load_appointments(cur, today, start=None):
+    # 2 days back (cancellations / no-shows) .. 14 days ahead (so a rebooked appointment is seen);
+    # --appt-from loads every day from that date instead (history for incentives)
+    first = start or today - dt.timedelta(days=2)
+    days = [first + dt.timedelta(days=k) for k in range((today + dt.timedelta(days=14) - first).days + 1)]
     s = requests.Session()
     s.headers["User-Agent"] = "Mozilla/5.0 (VetBuddy call desk)"
     vb.login(s)
@@ -330,6 +332,7 @@ def main(argv=None) -> int:
     p.add_argument("--only", choices=["calls", "reminders", "appointments", "leads", "build"], action="append",
                    help="run only these steps (repeatable)")
     p.add_argument("--source", choices=["corefactor", "runo"], help="calls step: only this source (default both)")
+    p.add_argument("--appt-from", type=dt.date.fromisoformat, help="appointments step: load every day from this date")
     p.add_argument("--rebuild", action="store_true", help="rebuild the day's list (rows nobody touched yet)")
     p.add_argument("--no-build", action="store_true", help="load only, do not build the list")
     a = p.parse_args(argv)
@@ -339,7 +342,7 @@ def main(argv=None) -> int:
         return 1
     steps = [("calls", lambda cur: load_calls(cur, today, a.days, a.source)),
              ("reminders", lambda cur: load_reminders(cur, today)),
-             ("appointments", lambda cur: load_appointments(cur, today)),
+             ("appointments", lambda cur: load_appointments(cur, today, a.appt_from)),
              ("leads", lambda cur: load_leads(cur, today))]
     failed = []
     with vetbuddy_sql.connect() as conn:

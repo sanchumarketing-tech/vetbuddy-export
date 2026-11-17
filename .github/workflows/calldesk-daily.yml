@@ -18,6 +18,10 @@ on:
         description: "Rebuild the day's list (rows nobody has touched yet)"
         type: boolean
         default: false
+      appt_from:
+        description: "Appointments step: load every day from this date (YYYY-MM-DD, history for incentives)"
+        required: false
+        default: ""
       days:
         description: "Days of call logs to (re)load"
         required: false
@@ -61,11 +65,13 @@ jobs:
           IN_DAY: ${{ inputs.day }}
           IN_REBUILD: ${{ inputs.rebuild }}
           IN_DAYS: ${{ inputs.days }}
+          IN_APPT_FROM: ${{ inputs.appt_from }}
           IN_ONLY: ${{ inputs.only }}
         run: |
           args="--days ${IN_DAYS:-3}"
           if [ -n "$IN_DAY" ]; then args="$args --day $IN_DAY"; fi
           if [ "$IN_REBUILD" = "true" ]; then args="$args --rebuild"; fi
+          if [ -n "$IN_APPT_FROM" ]; then args="$args --appt-from $IN_APPT_FROM"; fi
           if [ -z "$IN_ONLY" ]; then IN_ONLY=build; fi    # scheduled run: build only, from the database
           if [ "$IN_ONLY" != "all" ]; then args="$args --only $IN_ONLY"; fi
           python calldesk_load.py $args
