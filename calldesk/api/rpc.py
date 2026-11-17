@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(__file__))
 from _supabase import call_rpc, read_cookie, read_json, send, session_cookie  # noqa: E402
 
-ALLOWED = {"cd_skip", "cd_pet", "cd_skip_called", "cd_reason_set", "cd_me", "cd_list", "cd_calls", "cd_bills", "cd_dial", "cd_save", "cd_team",
+ALLOWED = {"cd_incentives", "cd_agent_incentive", "cd_skip", "cd_pet", "cd_skip_called", "cd_reason_set", "cd_me", "cd_list", "cd_calls", "cd_bills", "cd_dial", "cd_save", "cd_team",
            "cd_agent_save", "cd_assign", "cd_kpi", "cd_mark_called", "cd_log"}
 
 

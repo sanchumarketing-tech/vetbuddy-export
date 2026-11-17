@@ -733,6 +733,110 @@ function Kpis() {
   );
 }
 
+// ------------------------------------------------------------------ incentives
+const monthISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+function Incentives({ me }) {
+  const isLead = me.role === "lead";
+  const [month, setMonth] = useState(monthISO());
+  const [agent, setAgent] = useState(isLead ? -1 : me.id);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [edit, setEdit] = useState(null);
+  const load = useCallback(() => {
+    setD(null); setErr("");
+    rpc("cd_incentives", { p_month: `${month}-01`, p_agent: isLead ? agent : -1 }).then(setD).catch((e) => setErr(e.message));
+  }, [month, agent, isLead]);
+  useEffect(() => { load(); }, [load]);
+  const one = d && (agent !== -1 || !isLead) ? d.agents[0] : null;
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "–");
+  const saveEdit = async () => {
+    try {
+      await rpc("cd_agent_incentive", { p_id: edit.id, p_logins: edit.logins.split(",").map((x) => x.trim()).filter(Boolean), p_target: edit.target === "" ? null : Number(edit.target) });
+      setEdit(null); load();
+    } catch (e) { alert(e.message); }
+  };
+  return (
+    <div className="page">
+      <div className="page-head">
+        <h2>Incentives{one ? ` - ${one.name}` : ""}</h2>
+        {isLead && agent !== -1 && <button className="ghost" onClick={() => setAgent(-1)}>All agents</button>}
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+      </div>
+      <p className="muted small">
+        <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this month (one per pet).
+        <strong> Visited</strong> = that pet was billed in VetBuddy on the appointment date or up to 3 days after.
+        <strong> Shared</strong> = the same pet was booked by two or more agents this month - it counts for none of them.
+        <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo), <strong>answered</strong> = 15 seconds or more.
+      </p>
+      {err && <p className="note warn">{err}</p>}
+      {!d && !err && <p className="muted">Loading…</p>}
+      {d && one && (
+        <>
+          <div className="summary inc">
+            <div><span>{one.target ?? "–"}</span>target</div>
+            <div><span>{one.called}</span>people called</div>
+            <div><span>{one.answered}</span>answered</div>
+            <div><span>{one.booked}</span>appointments booked</div>
+            <div><span>{one.visited}</span>visited</div>
+            <div><span>{one.shared}</span>shared (not counted)</div>
+            <div className="good"><span>{one.eligible}</span>eligible for incentive</div>
+            <div><span>{one.target ? pct(one.eligible, one.target) : "–"}</span>of target</div>
+          </div>
+          {one.logins?.length === 0 && <p className="note warn">No VetBuddy login is linked to {one.name} yet{isLead ? " - add it below." : " - ask your team lead."}</p>}
+          <table className="grid">
+            <thead><tr><th>Appointment date and time</th><th>Customer</th><th>Pet</th><th>Unit</th><th>Status</th><th>Visited</th><th>Incentive</th></tr></thead>
+            <tbody>
+              {d.rows.length === 0 && <tr><td colSpan={7} className="muted">No appointments this month.</td></tr>}
+              {d.rows.map((r) => (
+                <tr key={r.appt_id}>
+                  <td className="nowrap">{r.appt_time || fmtDate(r.appt_date)}</td>
+                  <td>{title(clean(r.client))}<div className="muted small">{phoneFmt(r.phone)}</div></td><td>{r.pet}</td><td>{title(r.clinic)}</td><td>{r.status}</td>
+                  <td>{r.visit_date ? fmtDate(r.visit_date) : <span className="muted">not yet</span>}</td>
+                  <td>{r.shared ? <Chip tone="warn">Shared{r.shared_with ? ` with ${r.shared_with}` : ""}</Chip> : r.eligible ? <Chip tone="good">Eligible</Chip> : <span className="muted">no visit yet</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+      {d && !one && (
+        <>
+          <table className="grid">
+            <thead><tr><th>Agent</th><th>Target</th><th>Called</th><th>Answered</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
+            <tbody>
+              {d.agents.map((a) => (
+                <tr key={a.id}>
+                  <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
+                  <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.answered}</td><td>{a.booked}</td><td>{a.visited}</td>
+                  <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
+                  <td className="muted small">{a.logins?.length ? a.logins.join(", ") : <span className="warntext">none</span>}</td>
+                  <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
+                </tr>
+              ))}
+              <tr className="total"><td>Total</td><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
+                {["called", "answered", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td /><td /><td /></tr>
+            </tbody>
+          </table>
+          {edit && (
+            <div className="agentform">
+              <h3>{edit.name}: incentive settings</h3>
+              <div className="formgrid">
+                <label>Monthly target (eligible visits)<input type="number" min={0} value={edit.target} onChange={(e) => setEdit({ ...edit, target: e.target.value })} /></label>
+                <label className="wide">VetBuddy logins (comma separated - exactly as in "Created By")<input value={edit.logins} onChange={(e) => setEdit({ ...edit, logins: e.target.value })} /></label>
+              </div>
+              <div className="actions"><button className="primary" onClick={saveEdit}>Save</button><button className="link" onClick={() => setEdit(null)}>Cancel</button></div>
+            </div>
+          )}
+          {d.unmapped_logins?.length > 0 && (
+            <p className="muted small">VetBuddy logins this month not linked to any agent (clinic staff, or an agent's second login): {d.unmapped_logins.map((u) => `${u.login} (${u.n})`).join(", ")}</p>
+          )}
+          <p className="muted small">Appointments in the database from {fmtDate(d.appts_from)}.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------ app
 function Login({ onDone }) {
   const [user, setUser] = useState(() => { try { return localStorage.getItem("cd_user") || ""; } catch { return ""; } });
@@ -798,7 +902,14 @@ export default function App() {
         <div className="brand"><span className="logo" /> Call Desk</div>
         {isLead && (
           <nav>
-            {[["team", "Team"], ["list", "Lists"], ["kpi", "KPIs"], ["agents", "Agents"]].map(([k, v]) => (
+            {[["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"]].map(([k, v]) => (
+              <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{v}</button>
+            ))}
+          </nav>
+        )}
+        {!isLead && (
+          <nav>
+            {[["list", "My list"], ["incentives", "My incentives"]].map(([k, v]) => (
               <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{v}</button>
             ))}
           </nav>
@@ -817,6 +928,7 @@ export default function App() {
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} reload={loadAgents} />}
       {tab === "kpi" && <Kpis />}
+      {tab === "incentives" && <Incentives me={me} />}
     </div>
   );
 }
