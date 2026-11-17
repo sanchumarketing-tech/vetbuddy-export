@@ -1,0 +1,25 @@
+name: Call Desk dry run (builds a day's list and rolls back - changes nothing)
+
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Day to build (YYYY-MM-DD, empty = tomorrow)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "psycopg[binary]"
+      - env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          TZ: Asia/Kolkata
+          IN_DAY: ${{ inputs.day }}
+        run: python tools/calldesk_dry_run.py "$IN_DAY"
