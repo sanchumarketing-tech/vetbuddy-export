@@ -344,3 +344,10 @@ revoke execute on function public.cd_skip(bigint) from public;
 grant execute on function public.cd_skip(bigint) to anon, authenticated;
 -- cd_list also returns skipped_at (applied in place). One-time backfill on 17 Nov: every number's last row before
 -- 17 Nov that was not on the 17 Nov list went into calldesk.followups by the same rules.
+
+
+-- =====================================================================
+-- 24  Units are strict (17 Nov 2026): an agent with units only gets and only sees customers of those units
+--   build_list: no fallback to other units (applied in place, see 17_calldesk.sql); carried rows of the wrong unit move
+--   to an allowed agent; cd_list adds: and (m.role = 'lead' or m.units = '{}' or q.unit = any (m.units))
+-- =====================================================================

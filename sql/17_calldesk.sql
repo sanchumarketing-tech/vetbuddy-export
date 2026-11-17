@@ -668,9 +668,7 @@ begin
     if capacity > 0 then
       select id into a from t_agent where n < target and (units = '{}' or r.unit = any (units))
        order by (units = '{}'), n::numeric / target, id limit 1;
-      if a is null then
-        select id into a from t_agent where n < target order by n::numeric / target, id limit 1;
-      end if;
+      -- (17 Nov 2026) an agent with units gets ONLY customers of those units; agents with no units can take any unit
       if a is null then
         if r.rank < 12 then dropped := dropped + 1; end if;
         continue;
@@ -689,10 +687,10 @@ begin
   delete from calldesk.followups f where f.due <= d
      and exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = f.phone and q.agent_id is not null);
   for r in select q.id, q.unit from calldesk.queue q
-           where q.list_date = d and (q.agent_id is null or q.agent_id not in (select id from t_agent)) loop
+           where q.list_date = d and (q.agent_id is null or q.agent_id not in (select id from t_agent)
+                  or not exists (select 1 from t_agent ta where ta.id = q.agent_id and (ta.units = '{}' or q.unit = any (ta.units)))) loop
     select id into a from t_agent where (units = '{}' or r.unit = any (units)) order by n::numeric / target, id limit 1;
-    if a is null then select id into a from t_agent order by n::numeric / target, id limit 1; end if;
-    exit when a is null;
+    if a is null then update calldesk.queue set agent_id = null where id = r.id; continue; end if;
     update calldesk.queue set agent_id = a where id = r.id;
     update t_agent set n = n + 1 where id = a;
   end loop;
