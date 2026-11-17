@@ -351,3 +351,14 @@ grant execute on function public.cd_skip(bigint) to anon, authenticated;
 --   build_list: no fallback to other units (applied in place, see 17_calldesk.sql); carried rows of the wrong unit move
 --   to an allowed agent; cd_list adds: and (m.role = 'lead' or m.units = '{}' or q.unit = any (m.units))
 -- =====================================================================
+
+
+-- =====================================================================
+-- 25  Every agent exactly their target (200), within their units (17 Nov 2026)
+--   calldesk.balance_lists(d), called at the end of build_list (before the best-time step):
+--   1. over target: least urgent untouched rows move to an allowed agent with room, else wait as follow-ups
+--   2. under target: unassigned rows of their units first
+--   3. still under: "Check-in" rows (type checkin, priority 12) - customers of their units with a visit 3 weeks to
+--      1 year ago, not on a list for 14 days, no follow-up pending, no call for 7 days, not omitted; highest spend first
+--   The full function is in the database; see the git history of this file for its text (17 Nov 2026).
+-- =====================================================================
