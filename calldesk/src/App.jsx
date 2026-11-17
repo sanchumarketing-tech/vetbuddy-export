@@ -32,11 +32,12 @@ export const TYPES = {
   lead: { name: "Enquiry", tone: "blue" },
   churned: { name: "Churned (1 yr+)", tone: "grey" },
   multi_pet: { name: "Key customer (multi-pet)", tone: "violet" },
+  followup: { name: "Follow-up", tone: "blue" },
 };
 // reasons the team lead can switch on / off (the ones the list builds today)
 const SWITCHABLE = ["appt_tomorrow", "appt_missed", "post_surgery", "rabies_course", "sub_expiring", "vaccine_due", "vaccine_course",
   "review_due", "deworm_due", "tick_recheck", "sub_due", "bath_due", "haircut_due", "sub_renew", "consult_followup",
-  "sibling_vaccine", "boarding_holiday", "senior_check", "vaccine_never", "multi_pet", "churned"];
+  "sibling_vaccine", "boarding_holiday", "senior_check", "vaccine_never", "multi_pet", "churned", "followup"];
 
 function ReasonSwitch({ off, onChange }) {
   const [busy, setBusy] = useState("");
@@ -203,6 +204,10 @@ const SLOT_TIME = { morning: "before 12", afternoon: "12 to 4 pm", evening: "aft
 const isCb = (r) => r.outcome === "callback" && !!r.callback_at;
 const cbDue = (r, now) => isCb(r) && new Date(r.callback_at).getTime() <= now;
 const cbWaiting = (r, now) => isCb(r) && new Date(r.callback_at).getTime() > now;
+// Skip: the number leaves "To call" for an hour, then comes back by itself
+const SKIP_MS = 60 * 60 * 1000;
+const skipWaiting = (r, now) => !!r.skipped_at && !r.called_at && new Date(r.skipped_at).getTime() + SKIP_MS > now;
+const skipBack = (r) => new Date(new Date(r.skipped_at).getTime() + SKIP_MS);
 // Excel call log: date, agent, customer, phone, reason, Called / Not called / Rescheduled (+ date and time)
 export async function downloadLog(from, to, agent = -1, label = "") {
   const rows = await rpc("cd_log", { p_from: from, p_to: to, p_agent: agent });
@@ -313,7 +318,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
         <button className="primary" onClick={copy}>{copied ? "Copied" : "Copy number"}</button>
         <button className="ghost" onClick={openCb}>{isCb(row) ? "Change call-back time" : "Call back later"}</button>
         <button className="primary" disabled={marking} onClick={markNext} title="Marks this customer as called and opens the next one">{marking ? "Saving…" : "Called - next customer"}</button>
-        <button className="link" onClick={onSkip} title="Move on without marking as called">Skip</button>
+        <button className="link" onClick={onSkip} title="Move on without marking as called - this number comes back to your list in 1 hour">Skip (back in 1 hour)</button>
       </div>
       {row.try_note && <div className="tryline">Best time to call: <strong>{row.try_slot} ({SLOT_TIME[row.try_slot]})</strong> · {row.try_note}</div>}
       {isCb(row) && !cbOpen && (
@@ -450,7 +455,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
     (rows || []).forEach((r) => {
       if (isCb(r)) c.callback++;
       if (cbDue(r, now)) c.due++;
-      if (answered(r)) c.done++; else if (!cbWaiting(r, now)) c.todo++;
+      if (answered(r)) c.done++; else if (!cbWaiting(r, now) && !skipWaiting(r, now)) c.todo++;
     });
     return c;
   }, [rows, now]);
@@ -458,7 +463,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
     return (rows || []).filter((r) => {
-      if (filter === "todo" && (answered(r) || cbWaiting(r, now))) return false;
+      if (filter === "todo" && (answered(r) || cbWaiting(r, now) || skipWaiting(r, now))) return false;
       if (filter === "done" && !answered(r)) return false;
       if (filter === "callback" && !isCb(r)) return false;
       if (reason && !r.reasons.some((x) => x.type === reason)) return false;
@@ -484,9 +489,19 @@ function CallList({ me, agentId, agents, day, setDay }) {
   const current = rows?.find((r) => r.id === sel) || null;
   const next = () => {
     const i = shown.findIndex((r) => r.id === sel);
-    const open = (r) => !answered(r) && !cbWaiting(r, now) && r.id !== sel;
+    const open = (r) => !answered(r) && !cbWaiting(r, now) && !skipWaiting(r, now) && r.id !== sel;
     const n = shown.slice(i + 1).find(open) || shown.find(open);
     setSel(n ? n.id : null);
+  };
+  // Skip: saved, hidden for an hour, then back in the list (not lost)
+  const skip = async () => {
+    const r = current;
+    if (r) {
+      const t = new Date().toISOString();
+      setRows((rs) => rs.map((x) => (x.id === r.id ? { ...x, skipped_at: t } : x)));
+      rpc("cd_skip", { p_id: r.id }).catch(() => {});
+    }
+    next();
   };
   const onSaved = (u, goNext) => {
     setRows((rs) => rs.map((r) => (r.id === u.id ? { ...r, ...u } : r)));
@@ -547,7 +562,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
               <div key={r.id} className={`row ${sel === r.id ? "sel" : ""} ${rowDone(r) ? "done" : ""} ${cbDue(r, now) ? "cbdue" : ""}`} onClick={() => setSel(r.id)}>
                 {isLead && <input type="checkbox" checked={picked.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(picked); e.target.checked ? s.add(r.id) : s.delete(r.id); setPicked(s); }} />}
                 <div className="row-main">
-                  <div className="row-top"><span className="row-name">{firstOpen && <span className="rec-star" title="Recommended next call">★ </span>}{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : r.called_at ? <Chip tone="good">Called {fmtTime(r.called_at)}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
+                  <div className="row-top"><span className="row-name">{firstOpen && <span className="rec-star" title="Recommended next call">★ </span>}{title(r.client) || phoneFmt(r.phone)}</span>{cbDue(r, now) ? <Chip tone="red">Call back now</Chip> : isCb(r) ? <Chip tone="violet">Call back {fmtDT(r.callback_at)}</Chip> : r.called_at ? <Chip tone="good">Called {fmtTime(r.called_at)}</Chip> : skipWaiting(r, now) ? <Chip tone="neutral">Skipped - back {fmtTime(skipBack(r).toISOString())}</Chip> : <Chip tone={st}>{r.outcome ? OUTCOME_NAME[r.outcome] : sl}</Chip>}</div>
                   <div className="row-chips">{[...r.reasons].sort((a, b) => a.rank - b.rank).map((x, i) => <ReasonChip key={i} r={x} />)}</div>
                   <div className="row-sub"><span className="muted">{clean((reason && r.reasons.find((x) => x.type === reason)?.label) || top?.label)}</span></div>
                   <div className="row-meta muted">{title(r.unit)}{r.pets?.[0]?.name ? ` · ${r.pets.map((p) => p.name).slice(0, 3).join(", ")}` : ""}{r.dialed_at ? ` · copied ${fmtTime(r.dialed_at)}` : ""}{r.try_slot ? ` · best: ${r.try_slot}` : ""}{filter === "todo" && REC_TAG[g] ? <> · <span className={`rec-tag ${REC_TAG[g][1]}`}>{REC_TAG[g][0]}{g === 4 ? ` (${r.try_slot})` : ""}</span></> : null}</div>
@@ -562,7 +577,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
         {current ? (
           <>
             <button className="link back" onClick={() => setSel(null)}>← Back to list</button>
-            <Customer key={current.id} row={current} onSaved={(u) => onSaved(u, false)} onNext={next} onSkip={next} />
+            <Customer key={current.id} row={current} onSaved={(u) => onSaved(u, false)} onNext={next} onSkip={skip} />
           </>
         ) : (
           <div className="empty">

@@ -314,3 +314,33 @@ begin
 end $$;
 revoke execute on function public.cd_pet(text, text) from public;
 grant execute on function public.cd_pet(text, text) to anon, authenticated;
+
+
+-- =====================================================================
+-- 23  The loop - no number is lost (17 Nov 2026)
+--   Skip: the row is hidden from "To call" for 1 hour (queue.skipped_at), then back; not called by the evening = carried.
+--   Called / answered / closed: back the next day if it had 2+ dues, else in 7 days (calldesk.followups, filled by build_list).
+--   Not reached after 3 tries: back in 7 days. Follow-ups that do not fit a list wait for the next day.
+-- =====================================================================
+alter table calldesk.queue add column if not exists skipped_at timestamptz;
+create table if not exists calldesk.followups (
+  phone     text primary key,
+  due       date not null,
+  reasons   jsonb not null default '[]',
+  why       text not null,            -- called / no answer
+  from_list date,
+  updated_at timestamptz not null default now());
+revoke all on calldesk.followups from public, anon, authenticated;
+create or replace function public.cd_skip(p_id bigint) returns jsonb
+language plpgsql security definer set search_path = calldesk, public as $$
+declare m calldesk.agents := calldesk.me(); t timestamptz;
+begin
+  if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  update calldesk.queue set skipped_at = now() where id = p_id and (agent_id = m.id or m.role = 'lead') returning skipped_at into t;
+  if t is null then raise exception 'not allowed' using errcode = '42501'; end if;
+  return jsonb_build_object('skipped_at', t);
+end $$;
+revoke execute on function public.cd_skip(bigint) from public;
+grant execute on function public.cd_skip(bigint) to anon, authenticated;
+-- cd_list also returns skipped_at (applied in place). One-time backfill on 17 Nov: every number's last row before
+-- 17 Nov that was not on the 17 Nov list went into calldesk.followups by the same rules.

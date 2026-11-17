@@ -538,10 +538,32 @@ begin
         and (q.connected_at is not null or q.outcome is not null or q.tries >= 3));
 
   -- ---- carry over: earlier rows not answered and not closed (up to 3 tries, 7 days) + call-backs due today
+  -- the loop (17 Nov 2026): no number leaves. From the last list day:
+  --   called (marked by the agent, answered in the logs, or closed): back the next day if it had 2+ dues, else in 7 days
+  --   not reached after 3 tries: back in 7 days
+  insert into calldesk.followups (phone, due, reasons, why, from_list)
+  select q.phone,
+         q.list_date + case when (select count(*) from jsonb_array_elements(q.reasons) e where e->>'type' not in ('callback', 'followup')) >= 2 then 1 else 7 end,
+         (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(q.reasons) e where e->>'type' not in ('callback', 'followup')),
+         'called', q.list_date
+  from calldesk.queue q
+  where q.list_date = (select max(list_date) from calldesk.queue where list_date < d) and not q.superseded
+    and (q.called_at is not null or q.connected_at is not null or (q.outcome is not null and q.outcome <> 'callback'))
+    and coalesce(q.outcome, '') <> 'callback'
+  on conflict (phone) do update set due = excluded.due, reasons = excluded.reasons, why = excluded.why, from_list = excluded.from_list, updated_at = now();
+  insert into calldesk.followups (phone, due, reasons, why, from_list)
+  select q.phone, d + 6,
+         (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(q.reasons) e where e->>'type' not in ('callback', 'followup')),
+         'no answer', coalesce(q.carried_from, q.list_date)
+  from calldesk.queue q
+  where q.list_date = (select max(list_date) from calldesk.queue where list_date < d) and not q.superseded
+    and q.called_at is null and q.connected_at is null and q.outcome is null
+    and q.tries + (q.attempted_at is not null)::int >= 3
+  on conflict (phone) do update set due = excluded.due, reasons = excluded.reasons, why = excluded.why, from_list = excluded.from_list, updated_at = now();
   create temp table t_carry on commit drop as
   select q.* from calldesk.queue q
   where q.list_date between d - 7 and d - 1 and not q.superseded
-    and ((q.connected_at is null and q.outcome is null and q.tries + (q.attempted_at is not null)::int < 3)
+    and ((q.connected_at is null and q.called_at is null and q.outcome is null and q.tries + (q.attempted_at is not null)::int < 3)
          or (q.outcome = 'callback' and (q.callback_at at time zone 'Asia/Kolkata')::date <= d))
     and not exists (select 1 from calldesk.exclusions x where x.phone = q.phone);
 
@@ -568,6 +590,19 @@ begin
    where q.id = x.id;
   delete from calldesk.queue q where q.list_date = d and q.reasons = '[]'::jsonb and q.dialed_at is null and q.outcome is null and q.note is null;
   delete from t_cand c where exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = c.phone);
+  -- follow-ups that are due (the loop): one "Follow-up" reason with what was due last time
+  insert into t_cand
+  select f.phone, lq.client, lq.unit, null, null, 'followup',
+         case when f.why = 'called' and jsonb_array_length(f.reasons) >= 2 then 5 else 9 end,
+         'Follow-up - ' || case when f.why = 'called' then 'called on ' else 'no answer 3 times since ' end || to_char(f.from_list, 'DD Mon') ||
+         coalesce(': ' || left((select string_agg(regexp_replace(e->>'label', '\s+-\s+.*$', ''), ' | ' order by (e->>'rank')::int) from jsonb_array_elements(f.reasons) e), 160), ''),
+         f.due, 0
+  from calldesk.followups f
+  left join lateral (select q.client, q.unit from calldesk.queue q where q.phone = f.phone order by q.list_date desc limit 1) lq on true
+  where f.due <= d
+    and not exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = f.phone)
+    and not exists (select 1 from calldesk.exclusions x where x.phone = f.phone)
+    and not exists (select 1 from calldesk.reason_off o where o.type = 'followup');
 
   -- ---- one row per phone number, every reason on it, ranked
   create temp table t_row on commit drop as
@@ -609,7 +644,7 @@ begin
                                       when 'post_surgery' then 15 when 'vaccine_due' then 40 when 'review_due' then 20
                                       when 'report_ready' then 5 when 'reminder' then 5 when 'grooming_due' then 10
                                       when 'bath_due' then 12 when 'haircut_due' then 8 when 'consult_followup' then 15
-                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'sub_due' then 15 when 'sub_expiring' then 15 when 'sub_renew' then 10 when 'multi_pet' then 15 when 'churned' then 10 when 'lead' then 10 else 1 end,
+                                      when 'new_pet' then 10 when 'rabies_course' then 10 when 'vaccine_course' then 30 when 'deworm_due' then 10 when 'tick_recheck' then 8 when 'sibling_vaccine' then 10 when 'birthday' then 10 when 'senior_check' then 10 when 'vaccine_never' then 10 when 'boarding_holiday' then 15 when 'sub_due' then 15 when 'sub_expiring' then 15 when 'sub_renew' then 10 when 'multi_pet' then 15 when 'followup' then 30 when 'churned' then 10 when 'lead' then 10 else 1 end,
                     t.rank, t.phone loop
     a := null;
     if capacity > 0 then
@@ -632,6 +667,9 @@ begin
   end loop;
 
   -- carried rows with no agent (or an agent who is no longer active) get one now
+  -- follow-ups now on a list leave the waiting list (the ones that did not fit wait for the next day)
+  delete from calldesk.followups f where f.due <= d
+     and exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = f.phone and q.agent_id is not null);
   for r in select q.id, q.unit from calldesk.queue q
            where q.list_date = d and (q.agent_id is null or q.agent_id not in (select id from t_agent)) loop
     select id into a from t_agent where (units = '{}' or r.unit = any (units)) order by n::numeric / target, id limit 1;
