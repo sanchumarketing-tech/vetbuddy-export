@@ -89,6 +89,71 @@ function SkipCalled({ s, hidden, onChange }) {
   );
 }
 
+// one pet: parent, location, vaccinations, deworming and visit history (from VetBuddy bills)
+function PetPanel({ phone, pet, onClose }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    setD(null); setErr("");
+    rpc("cd_pet", { p_phone: phone, p_pet_id: pet.pet_id }).then(setD).catch((e) => setErr(e.message));
+  }, [phone, pet.pet_id]);
+  const info = d?.pet || {};
+  const age = info.dob ? (() => { const m = Math.floor((Date.now() - new Date(info.dob)) / 2629800000); return m >= 24 ? `${Math.floor(m / 12)} yrs` : m >= 1 ? `${m} months` : ""; })() : "";
+  const units = (d?.units || []).map((u) => `${title(u.unit)}${u.vow ? " (home visit)" : ""}`);
+  return (
+    <div className="petpanel">
+      <div className="petpanel-head">
+        <div>
+          <div className="cust-name sm">{info.name || pet.name}</div>
+          <div className="muted">{[info.species || pet.species, info.breed || pet.breed, info.sex, age, info.weight ? `${Number(info.weight)} kg` : ""].filter(Boolean).join(" · ")}</div>
+        </div>
+        <button className="link" onClick={onClose}>Close</button>
+      </div>
+      {err && <p className="note warn">{err}</p>}
+      {!d && !err && <p className="muted small">Loading…</p>}
+      {d && (
+        <>
+          <dl className="petfacts">
+            <dt>Pet parent</dt><dd>{title(info.parent) || <span className="muted">not in VetBuddy</span>}</dd>
+            <dt>Location</dt><dd>{units.length ? units.join(", ") : <span className="muted">not in VetBuddy</span>}</dd>
+            {info.dob && (<><dt>Date of birth</dt><dd>{fmtDate(info.dob)}</dd></>)}
+            <dt>With Sanchu</dt><dd>{d.first ? `${fmtDate(d.first)} to ${fmtDate(d.last)} · ${d.visit_days} visit ${d.visit_days === 1 ? "day" : "days"} · ${rs(d.spend || 0)}` : <span className="muted">no bills</span>}</dd>
+          </dl>
+          <h4>Vaccinations at Sanchu</h4>
+          {d.vaccines.length === 0 ? <p className="muted small">No vaccination records found at Sanchu.</p> : (
+            <table className="mini"><tbody>
+              {d.vaccines.map((v, i) => <tr key={i}><td className="nowrap">{fmtDate(v.sale_date)}</td><td><strong>{v.item}</strong></td><td>{title(v.unit)}</td><td className="muted">{v.doctor}</td></tr>)}
+            </tbody></table>
+          )}
+          <h4>Deworming</h4>
+          {d.deworming.length === 0 ? <p className="muted small">No deworming records found at Sanchu.</p> : (
+            <table className="mini"><tbody>
+              {d.deworming.map((v, i) => <tr key={i}><td className="nowrap">{fmtDate(v.sale_date)}</td><td>{v.item}</td><td>{title(v.unit)}</td></tr>)}
+            </tbody></table>
+          )}
+          <h4>Visit history</h4>
+          {d.visits.length === 0 ? <p className="muted small">No visits found.</p> : (
+            <table className="mini">
+              <thead><tr><th>Date</th><th>Unit</th><th>Billed</th><th className="num">Amount</th></tr></thead>
+              <tbody>
+                {d.visits.map((v, i) => (
+                  <tr key={i}>
+                    <td className="nowrap">{fmtDate(v.sale_date)}</td>
+                    <td>{title(v.unit)}</td>
+                    <td>{[...new Set(v.items)].map((x) => x.replace(/^Vaccination & Physical Examination - /, "Vaccination - ")).join(", ")}{v.doctor ? <span className="muted small"> · {v.doctor}</span> : null}</td>
+                    <td className="num">{rs(Math.round(v.amount || 0))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <p className="muted small">From VetBuddy bills since 20 Dec 2025. Vaccines or visits at other clinics are not shown.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 const OUTCOMES = [
   ["booked", "Appointment booked"],
   ["will_visit", "Will visit"],
@@ -201,9 +266,10 @@ function Customer({ row, onSaved, onNext, onSkip }) {
   const [calls, setCalls] = useState(null);
   const [bills, setBills] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [openPet, setOpenPet] = useState(null);
 
   useEffect(() => {
-    setCalls(null); setBills(null);
+    setCalls(null); setBills(null); setOpenPet(null);
     rpc("cd_calls", { p_phone: row.phone }).then(setCalls).catch(() => setCalls([]));
     rpc("cd_bills", { p_phone: row.phone }).then(setBills).catch(() => setBills([]));
   }, [row.id]);
@@ -287,21 +353,23 @@ function Customer({ row, onSaved, onNext, onSkip }) {
 
       {pets.length > 0 && (
         <section>
-          <h3>Pets</h3>
+          <h3>Pets <span className="muted small">- click a pet to see its history</span></h3>
           <div className="pets">
             {pets.map((p) => (
-              <div className="pet" key={p.pet_id}>
+              <button type="button" className={`pet click ${openPet === p.pet_id ? "on" : ""}`} key={p.pet_id}
+                      onClick={() => setOpenPet(openPet === p.pet_id ? null : p.pet_id)}>
                 <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
                 <dl>
                   <dt>Last visit</dt><dd>{fmtDate(p.last_visit)}{p.last_service ? ` (${p.last_service})` : ""}</dd>
-                  {p.last_vaccination && (<><dt>Vaccination</dt><dd>{fmtDate(p.last_vaccination)}</dd></>)}
-                  {p.last_consultation && (<><dt>Consultation</dt><dd>{fmtDate(p.last_consultation)}</dd></>)}
+                  <dt>Vaccination</dt><dd>{p.last_vaccination ? fmtDate(p.last_vaccination) : <span className="muted">no record</span>}</dd>
                   {p.last_bath && (<><dt>Bath</dt><dd>{fmtDate(p.last_bath)}</dd></>)}
                   {p.last_haircut && (<><dt>Haircut</dt><dd>{fmtDate(p.last_haircut)}</dd></>)}
                 </dl>
-              </div>
+                <span className="pet-open">{openPet === p.pet_id ? "Hide history" : "View history"}</span>
+              </button>
             ))}
           </div>
+          {openPet && <PetPanel phone={row.phone} pet={pets.find((p) => p.pet_id === openPet)} onClose={() => setOpenPet(null)} />}
         </section>
       )}
 
@@ -313,22 +381,9 @@ function Customer({ row, onSaved, onNext, onSkip }) {
           <div><span>{visitDays || "–"}</span>visit days</div>
           <div><span>{spend ? rs(spend) : "–"}</span>total spend</div>
         </div>
-        {bills === null ? <p className="muted small">Loading bills…</p> : visits.length === 0 ? <p className="muted small">No bills in the last 13 months.</p> : (
-          <table className="mini">
-            <thead><tr><th>Date</th><th>Unit</th><th>Pet</th><th>Billed</th><th className="num">Amount</th></tr></thead>
-            <tbody>
-              {visits.map((v, i) => (
-                <tr key={i}>
-                  <td className="nowrap">{fmtDate(v.date)}</td>
-                  <td>{title(v.unit)}</td>
-                  <td>{[...v.pets].join(", ")}</td>
-                  <td>{[...new Set(v.items)].slice(0, 6).join(", ")}{v.items.length > 6 ? ` +${v.items.length - 6} more` : ""}</td>
-                  <td className="num">{rs(Math.round(v.amount))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        {bills !== null && bills.filter((b) => b.invoice_no === "before-dec-2025").map((b, i) => (
+          <p key={i} className="muted small oldhist">{b.item} · {rs(Math.round(Number(b.amount || 0)))}{b.pet ? ` · last pet: ${b.pet}` : ""}</p>
+        ))}
       </section>
 
       <section>
