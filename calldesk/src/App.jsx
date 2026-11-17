@@ -735,9 +735,12 @@ function Kpis() {
 
 // ------------------------------------------------------------------ incentives
 const monthISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+// salary month: 21st of the previous month to the 20th; from the 21st we are in next month's cycle
+const salaryMonthISO = (d = new Date()) => monthISO(d.getDate() >= 21 ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : d);
+const monthName = (iso) => new Date(`${iso}-01T00:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 function Incentives({ me }) {
   const isLead = me.role === "lead";
-  const [month, setMonth] = useState(monthISO());
+  const [month, setMonth] = useState(salaryMonthISO());
   const [agent, setAgent] = useState(isLead ? -1 : me.id);
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
@@ -760,12 +763,13 @@ function Incentives({ me }) {
       <div className="page-head">
         <h2>Incentives{one ? ` - ${one.name}` : ""}</h2>
         {isLead && agent !== -1 && <button className="ghost" onClick={() => setAgent(-1)}>All agents</button>}
-        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+        <label className="inline">Salary month <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
       </div>
+      {d && <p className="cycle"><strong>{monthName(month)}</strong> salary month: {fmtDate(d.cycle_from)} to {fmtDate(d.cycle_to)}</p>}
       <p className="muted small">
-        <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this month (one per pet).
+        <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this salary month, 21st to 20th (one per pet).
         <strong> Visited</strong> = that pet was billed in VetBuddy on the appointment date or up to 3 days after.
-        <strong> Shared</strong> = the same pet was booked by two or more agents this month - it counts for none of them.
+        <strong> Shared</strong> = the same pet was booked by two or more agents in the salary month - it counts for none of them.
         <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo), <strong>answered</strong> = 15 seconds or more.
       </p>
       {err && <p className="note warn">{err}</p>}

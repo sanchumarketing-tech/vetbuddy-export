@@ -230,3 +230,5 @@ table.grid tr.dim td { opacity: .5; }
 .summary.inc .good span { color: #1f8a5b; }
 table.grid tr.total td { border-top: 2px solid var(--line); }
 .formgrid label.wide { grid-column: 1 / -1; }
+
+.cycle { margin: 0 0 8px; }

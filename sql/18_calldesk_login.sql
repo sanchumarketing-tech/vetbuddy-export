@@ -384,10 +384,14 @@ create index if not exists appointments_created on calldesk.appointments (create
 create index if not exists appointments_pet on calldesk.appointments (pet_id);
 create or replace function public.cd_incentives(p_month date default null, p_agent int default -1) returns jsonb
 language plpgsql stable security definer set search_path = calldesk, public as $$
-declare m calldesk.agents := calldesk.me(); f date := date_trunc('month', coalesce(p_month, calldesk.today()))::date; t date;
+declare m calldesk.agents := calldesk.me(); f date; t date;
+  pm date := date_trunc('month', coalesce(p_month,
+               case when extract(day from calldesk.today()) >= 21 then (calldesk.today() + interval '1 month')::date else calldesk.today() end))::date;
 begin
   if m.id is null then raise exception 'not allowed' using errcode = '42501'; end if;
-  t := (f + interval '1 month')::date;
+  -- salary month: 21st of the previous month to the 20th of the month (17 Nov 2026)
+  f := (pm - interval '1 month' + interval '20 days')::date;
+  t := (pm + interval '20 days')::date;
   return (
   with lg as (select g.id agent_id, g.name, lower(x) login from calldesk.agents g, unnest(g.vb_logins) x where g.role = 'agent'),
   bk as (select distinct on (lg.agent_id, ap.pet_id) lg.agent_id, lg.name agent_name, ap.pet_id, ap.appt_id, ap.appt_date, ap.appt_time,
@@ -408,7 +412,7 @@ begin
   cl as (select k.agent, count(distinct k.phone) called, count(distinct k.phone) filter (where k.answered) answered
            from calldesk.calls k where k.direction = 'out' and k.call_at >= f and k.call_at < t and k.agent in (select name from ag) group by 1),
   mk as (select q.agent_id, count(*) marked from calldesk.queue q where q.called_at >= f and q.called_at < t group by 1)
-  select jsonb_build_object('month', f, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
+  select jsonb_build_object('month', pm, 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
       select g.id, g.name, g.appt_target target, g.vb_logins logins, g.units,
              coalesce(cl.called, 0) called, coalesce(cl.answered, 0) answered, coalesce(mk.marked, 0) marked_called,
              coalesce(per.booked, 0) booked, coalesce(per.visited, 0) visited, coalesce(per.shared, 0) shared, coalesce(per.eligible, 0) eligible
