@@ -567,6 +567,24 @@ begin
          or (q.outcome = 'callback' and (q.callback_at at time zone 'Asia/Kolkata')::date <= d))
     and not exists (select 1 from calldesk.exclusions x where x.phone = q.phone);
 
+  -- carried rows fill at most 60% of the team's capacity (most urgent first, call-backs always);
+  -- the rest wait in the follow-up list with their priority and come back when there is room - nothing is lost
+  create temp table t_carry_keep on commit drop as
+  select z.id from (
+    select c.id, c.outcome, row_number() over (order by (c.outcome = 'callback') desc, c.rank, c.score desc nulls last, c.id) rn
+      from (select distinct on (phone) * from t_carry order by phone, list_date desc) c) z
+  where z.outcome = 'callback'
+     or z.rn <= (select floor(0.6 * coalesce(sum(daily_target), 0)) from calldesk.agents where active and role = 'agent' and daily_target > 0);
+  insert into calldesk.followups (phone, due, reasons, why, from_list)
+  select c.phone, d,
+         (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(c.reasons) e where e->>'type' not in ('callback', 'followup')),
+         'waiting', coalesce(c.carried_from, c.list_date)
+  from (select distinct on (phone) * from t_carry order by phone, list_date desc) c
+  where c.id not in (select id from t_carry_keep)
+  on conflict (phone) do nothing;
+  update calldesk.queue q set superseded = true
+   where q.id in (select id from t_carry) and q.phone not in (select tc.phone from t_carry tc where tc.id in (select id from t_carry_keep));
+  delete from t_carry where phone not in (select tc.phone from t_carry tc where tc.id in (select id from t_carry_keep));
   insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets, tries, carried_from)
   select d, c.agent_id, c.phone, c.client, c.unit,
          case when c.outcome = 'callback' then 0 else c.rank end, c.score,
@@ -593,9 +611,9 @@ begin
   -- follow-ups that are due (the loop): one "Follow-up" reason with what was due last time
   insert into t_cand
   select f.phone, lq.client, lq.unit, null, null, 'followup',
-         case when f.why = 'called' and jsonb_array_length(f.reasons) >= 2 then 5 else 9 end,
-         'Follow-up - ' || case when f.why = 'called' then 'called on ' else 'no answer 3 times since ' end || to_char(f.from_list, 'DD Mon') ||
-         coalesce(': ' || left((select string_agg(regexp_replace(e->>'label', '\s+-\s+.*$', ''), ' | ' order by (e->>'rank')::int) from jsonb_array_elements(f.reasons) e), 160), ''),
+         case when f.why = 'waiting' then coalesce((select min((e->>'rank')::int) from jsonb_array_elements(f.reasons) e), 9) when f.why = 'called' and jsonb_array_length(f.reasons) >= 2 then 5 else 9 end,
+         'Follow-up - ' || case when f.why = 'called' then 'called on ' when f.why = 'waiting' then 'waiting since ' else 'no answer 3 times since ' end || to_char(f.from_list, 'DD Mon') ||
+         coalesce(': ' || left((select string_agg(x.l, ' | ' order by x.r) from (select regexp_replace(regexp_replace(e->>'label', '\s+-\s+.*$', ''), '\s*\(.*$', '') l, min((e->>'rank')::int) r from jsonb_array_elements(f.reasons) e group by 1) x), 160), ''),
          f.due, 0
   from calldesk.followups f
   left join lateral (select q.client, q.unit from calldesk.queue q where q.phone = f.phone order by q.list_date desc limit 1) lq on true
