@@ -356,6 +356,8 @@ def main(argv=None) -> int:
                 log.error("%s failed: %s", name, e, exc_info=True)
         if not a.no_build and (not a.only or "build" in a.only):
             with conn.cursor() as cur:
+                # the database default is 2 minutes; building and balancing 30 agents' lists can take longer
+                cur.execute("set local statement_timeout = '15min'")
                 cur.execute("select calldesk.build_list(%s, %s)", (today, a.rebuild))
                 stats = cur.fetchone()[0]
             conn.commit()

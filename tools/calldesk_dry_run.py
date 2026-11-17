@@ -6,6 +6,7 @@ import psycopg
 
 day = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else (dt.date.today() + dt.timedelta(days=1)).isoformat()
 with psycopg.connect(os.environ["SUPABASE_DB_URL"], options="-c statement_timeout=0") as c, c.cursor() as cur:
+    cur.execute("set local statement_timeout = '15min'")
     cur.execute("select calldesk.build_list(%s::date, true)", (day,))
     res = cur.fetchone()[0]
     print("Dry run for", day)
@@ -14,7 +15,10 @@ with psycopg.connect(os.environ["SUPABASE_DB_URL"], options="-c statement_timeou
                     where q.list_date = %s::date and e->>'type' = 'followup' order by random() limit 5""", (day,))
     for (l,) in cur.fetchall():
         print("  follow-up:", l)
-    cur.execute("select why, count(*) from calldesk.followups where due <= %s::date group by 1", (day,))
-    print("follow-ups due and not placed:", cur.fetchall())
+    try:
+        cur.execute("select why, count(*) from calldesk.followups where due <= %s::date group by 1", (day,))
+        print("follow-ups due and not placed:", cur.fetchall())
+    except Exception as e:  # noqa: BLE001
+        print("(follow-up count not readable:", type(e).__name__, ")")
     c.rollback()
     print("Rolled back - nothing changed.")
