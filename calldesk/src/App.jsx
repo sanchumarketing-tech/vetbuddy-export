@@ -89,7 +89,7 @@ function SkipCalled({ s, hidden, onChange }) {
   );
 }
 
-// one pet: parent, location, vaccinations, deworming and visit history (from VetBuddy bills)
+// one pet: parent, location, vaccinations and visit history (from VetBuddy bills)
 function PetPanel({ phone, pet, onClose }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
@@ -123,12 +123,6 @@ function PetPanel({ phone, pet, onClose }) {
           {d.vaccines.length === 0 ? <p className="muted small">No vaccination records found at Sanchu.</p> : (
             <table className="mini"><tbody>
               {d.vaccines.map((v, i) => <tr key={i}><td className="nowrap">{fmtDate(v.sale_date)}</td><td><strong>{v.item}</strong></td><td>{title(v.unit)}</td><td className="muted">{v.doctor}</td></tr>)}
-            </tbody></table>
-          )}
-          <h4>Deworming</h4>
-          {d.deworming.length === 0 ? <p className="muted small">No deworming records found at Sanchu.</p> : (
-            <table className="mini"><tbody>
-              {d.deworming.map((v, i) => <tr key={i}><td className="nowrap">{fmtDate(v.sale_date)}</td><td>{v.item}</td><td>{title(v.unit)}</td></tr>)}
             </tbody></table>
           )}
           <h4>Visit history</h4>
