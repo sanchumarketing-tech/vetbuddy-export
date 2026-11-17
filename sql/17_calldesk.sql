@@ -671,6 +671,10 @@ begin
       -- (17 Nov 2026) an agent with units gets ONLY customers of those units; agents with no units can take any unit
       if a is null then
         if r.rank < 12 then dropped := dropped + 1; end if;
+        -- not fitted today (capacity / units): waits as a follow-up with its priority - not lost
+        insert into calldesk.followups (phone, due, reasons, why, from_list)
+        values (r.phone, d + 1, (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(r.reasons) e where e->>'type' not in ('callback', 'followup', 'checkin')), 'waiting', d)
+        on conflict (phone) do nothing;
         continue;
       end if;
       update t_agent set n = n + 1 where id = a;
@@ -697,6 +701,7 @@ begin
 
   -- best time of day to call each number, from the last 30 days of call logs:
   -- the part of the day it answered before, else a part of the day not tried yet
+  perform calldesk.balance_lists(d);   -- every agent exactly their target (200), within their units
   -- (16 Nov 2026) no copy of the bills any more: cd_bills reads vetbuddy.sales directly
   update calldesk.queue q set try_slot = h.slot, try_note = h.note
   from (select x.phone,
