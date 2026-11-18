@@ -1,0 +1,27 @@
+name: Appointment counts by day and unit (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        default: "2026-09-01"
+      to:
+        default: "2026-11-17"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests openpyxl xlrd beautifulsoup4 lxml
+      - env:
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+          OUTPUT_DIR: ${{ runner.temp }}/out
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+        run: python tools/appt_daily_counts.py "$IN_FROM" "$IN_TO"
