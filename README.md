@@ -277,7 +277,7 @@ The client secret expires (24 months) – renew it and update `SP_CLIENT_SECRET`
 or every job stops uploading.
 
 ### C. Supabase (database for the Teams bot)
-1. supabase.com → New project `sanchu-vetbuddy`, region **South Asia (Mumbai)**; save the database password.
+1. supabase.com → New project (live project: `ykmgbuooksizjqsyfhut`, region Northeast Asia (Seoul)); save the database password.
 2. **SQL Editor → New query**: paste `sql/01_schema.sql` → Run.
 3. Edit `sql/02_users.sql`: replace the two passwords (letters + digits only) → paste → Run.
 4. **Connect → Session pooler** → copy the URI, change `postgres.` to `vb_loader.` and put password 1 in →
@@ -290,6 +290,74 @@ The data is in schema `vetbuddy` (not published by Supabase's web API). Login `v
 replace rows; login `vb_bot` can only read views **without** phone, email, GST, client ID or names.
 The bot's views: `v_all_sales` (VetBuddy + pharmacy, matches the Daily Sales Report), `v_sales_bot`,
 `v_pharmacy_bot`, `v_data_freshness` – see `bot_glossary.yaml`.
+
+### D. Supabase usage and inventory (checked 17–18 Nov 2026)
+
+**Project:** `ykmgbuooksizjqsyfhut` ("sanchumarketing-tech's Project") · organization on the **Free plan** ·
+region **Northeast Asia (Seoul), ap-northeast-2** · compute **Nano** · disk 2 GB.
+
+#### Counts
+
+| Item | Count | Details |
+|---|---|---|
+| **Pooling users** (logins through the connection pooler, Supavisor) | **2** | `vb_loader` – all GitHub Actions jobs (session mode, port 5432)<br>`vb_teams` – the Teams bot Edge Function (transaction mode, port 6543) |
+| **Edge Functions** | **1** | `teams-bot` – the "Sanchu Sales" Microsoft Teams bot (`bot/teams-bot/index.ts`), JWT check off (it checks Microsoft's token itself) |
+| **Triggers (ours)** | **1** | `refresh_pbi_after_load` on `vetbuddy.load_log` → `vetbuddy.trg_refresh_pbi()`: refreshes the Power BI summary tables after each VetBuddy load |
+| Event triggers (installed by Supabase) | 7 | `pgrst_ddl_watch`, `pgrst_drop_watch` (API schema reload), `issue_graphql_placeholder`, `issue_pg_graphql_access`, `issue_pg_cron_access`, `issue_pg_net_access`, `ensure_rls` – part of every Supabase project, not ours |
+| Scheduled jobs inside Supabase (pg_cron) | 0 | every schedule is a GitHub Actions job (below) |
+
+Other logins (not through the pooler): `authenticator` – Supabase's web API, used by the Call Desk website (Vercel)
+and the Google Sheet's Apps Script (`sheet_push`); `postgres` – admin / SQL editor; `vb_bot` – older read-only
+bot login, not in use. Pooler settings: pool size 15 per login, max 200 client connections (fixed for Nano).
+Database connections at a quiet moment: 7 of 60.
+
+#### What is in the database (≈ 400 MB)
+
+| Schema | Contents | Size |
+|---|---|---|
+| `vetbuddy` | 27 tables, 13 views, 3 materialized views (Power BI summaries). Largest: `sales` 223 MB (bill lines from 20 Dec 2025), `pharmacy_sales` 35 MB, `sales_old_summary` 8 MB (one row per phone for 2019 – 19 Dec 2025), `mv_pbi_*` 15 MB | ≈ 283 MB |
+| `calldesk` | 13 tables: `queue` (daily lists) 39 MB, `calls` (Corefactor + Runo logs) 31 MB, `leads` (Lead Box) 19 MB, `appointments` 9 MB (from 1 Oct 2026), `followups`, `agents`, `sessions`, `reminders`, `settings`, … | ≈ 101 MB |
+| `auth` | 2 users (from an early email-login test; the Call Desk uses its own name + PIN login) | 1.5 MB |
+| `public`, `storage` | no tables, no storage buckets | 0 |
+
+Database functions: **39** – `public` 22 (20 `cd_*` functions called by the Call Desk website, `sheet_push`,
+`rls_auto_enable`), `calldesk` 10 (list build, balancing, rules), `vetbuddy` 7 (Power BI helpers, refresh).
+Extensions: plpgsql, pg_stat_statements, uuid-ossp, pgcrypto (PIN hashing), supabase_vault, pg_trgm.
+Not used: Storage, Realtime, row-level-security policies (the website only reaches data through the `cd_*`
+functions, which check the signed-in agent themselves), Supabase Auth sign-ins.
+
+#### Who uses the database
+
+| Caller | How | When (IST) |
+|---|---|---|
+| GitHub Actions (`vb_loader`, pooler) | VetBuddy sales 6:47 · Corefactor 6:53 · Lead Box 7:03 · Camp master 7:11 · Runo 7:13 · Appointments 7:23 + 1:01 PM · Reminders 7:47 · Call Desk build 8:05 · Call Desk Excel log hourly 9:11 AM – 10:11 PM · by hand: Call Desk dry run, history load | mornings + hourly |
+| Call Desk website (Vercel) | Supabase web API → `cd_*` functions | office hours |
+| Teams bot (`teams-bot` Edge Function, `vb_teams`) | pooler | when asked |
+| Google Sheet dashboard (Apps Script) | web API → `sheet_push` | after the 9 AM import |
+
+Database queries since the statistics were last reset: `vb_loader` 71,535 · `postgres` 6,043 ·
+`vb_teams` 3,024 · website (`anon` + `authenticator`) ≈ 5,500 · Supabase internal 11,200.
+
+#### Billable items ("consumables") – billing cycle 4 Nov – 4 Dec 2026
+
+| Item | What it is for us | Used | Free plan | Pro plan (per project) | Price above Pro |
+|---|---|---|---|---|---|
+| **Compute** (the Postgres server) | runs everything | Nano, always on | Nano | Micro (1 GB RAM) – **$10/month**; the plan's $10 credit covers one server per organization | Small $15, Medium $60 … |
+| **Database size / disk** | our data | **0.41 GB** (86 % of Free) | 0.5 GB (read-only when full) | 8 GB | $0.125 per GB / month |
+| **Egress** | data sent out (website, bot, job reads) | 0.13 GB | 5 GB | 250 GB | $0.09 per GB |
+| **Edge Function runs** | Teams bot | 135 | 500,000 | 2,000,000 | $2 per million |
+| **Monthly active users** | Supabase Auth | 1 | 50,000 | 100,000 | $0.00325 each |
+| File storage | not used | 0 | 1 GB | 100 GB | $0.021 per GB |
+| Realtime | not used | 0 | 200 connections | 500 | — |
+| API requests, pooler connections, database functions, triggers, logs | — | — | **not billed** | **not billed** | — |
+
+**Cost if this project moves into the company's paid (Pro) organization:** about **+$10 a month** – only the
+project's own Micro server. Every usage item above is far below what Pro includes, so no overage is expected.
+(Pro is $25 per organization and includes $10 of compute credit, which the existing paid project already uses;
+each additional project pays its own server. Prices from supabase.com/pricing, Nov 2026.)
+
+Growth to watch: the Call Desk tables grow ≈ 10–20 MB a day without cleanup; VetBuddy sales ≈ 17–19 MB a month.
+On the Free plan the 0.5 GB limit puts the project in **read-only mode** (it happened once, 16 Nov 2026).
 
 ---
 
