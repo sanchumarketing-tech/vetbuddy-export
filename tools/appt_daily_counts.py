@@ -41,14 +41,14 @@ while day <= last:
         kind = "Vet on Wheels" if typ.lower() == "doctor on wheels" else "Clinic"
         types[typ] += 1
         statuses[st] += 1
-        for k in ("appointments",) + (("completed",) if st.startswith("check out") else ()) + (("no_show",) if st.startswith("no show") else ()):
+        for k in ("appointments",) + (("completed",) if st.startswith("check out") else ()) + (("no_show",) if st.startswith("no show") else ()) + (("cancelled",) if st.startswith("cancel") else ()):
             cnt[(d.isoformat(), kind, unit, k)] += 1
     day += dt.timedelta(days=1)
 print("TYPES", dict(types.most_common()))
 print("STATUSES", dict(statuses.most_common()))
 print("CSV_START")
-print("date,kind,unit,appointments,completed,no_show")
+print("date,kind,unit,appointments,completed,no_show,cancelled")
 keys = sorted({k[:3] for k in cnt})
 for k in keys:
-    print(f"{k[0]},{k[1]},{k[2]},{cnt[k + ('appointments',)]},{cnt[k + ('completed',)]},{cnt[k + ('no_show',)]}")
+    print(f"{k[0]},{k[1]},{k[2]},{cnt[k + ('appointments',)]},{cnt[k + ('completed',)]},{cnt[k + ('no_show',)]},{cnt[k + ('cancelled',)]}")
 print("CSV_END")
