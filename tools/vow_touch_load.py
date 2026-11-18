@@ -2,7 +2,7 @@
 """One-off (VoW attribution, 18 Nov 2026): for the phone numbers in calldesk.vow_attr_phones, copy their
 Corefactor calls, Runo calls and Lead Box entries between FROM and TO into calldesk.vow_touch.
 Only those numbers are kept; nothing else is written. Usage: python tools/vow_touch_load.py 2026-09-01 2026-11-03"""
-import datetime as dt, sys
+import datetime as dt, logging, os, sys
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -10,6 +10,7 @@ import calldesk_load as cl  # noqa: E402
 
 first, last = (dt.date.fromisoformat(x) for x in sys.argv[1:3])
 log = cl.log
+logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
     cur.execute("set statement_timeout = '15min'")
     cur.execute("select phone from calldesk.vow_attr_phones")
@@ -17,45 +18,77 @@ with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
     log.info("%d numbers to look for", len(phones))
     cur.execute("delete from calldesk.vow_touch")
     seen, recs = Counter(), []
+
+    def master_rows(site_var, lib_var, path_var, default_path):
+        """Rows of a SharePoint master workbook (every sheet with a header row) as dicts."""
+        import io, openpyxl
+        sp = cl.cf.SharePoint.from_env(site_var, lib_var)
+        data, _ = sp.download(os.environ.get(path_var) or default_path)
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        for ws in wb.worksheets:
+            it = ws.iter_rows(values_only=True)
+            head = None
+            for vals in it:
+                if head is None:
+                    if vals and sum(1 for v in vals if v not in (None, "")) >= 3:
+                        head = [str(v or "").strip() for v in vals]
+                    continue
+                yield ws.title, dict(zip(head, vals))
+
+    pick, nph = cl.rc.pick, cl.norm_phone
+    lo, hi = dt.datetime.combine(first, dt.time()), dt.datetime.combine(last, dt.time(23, 59, 59))
+    def when(r, *names):
+        for n in names:
+            v = pick(r, n)
+            t = v if isinstance(v, dt.datetime) else cl.cf.parse_dt(v)
+            if t:
+                return t
+        return None
+
+    n = Counter()
     try:
-        for r in cl.corefactor_rows(cl.cf.SharePoint.from_env(), first, last, seen):
-            if r[3] in phones:   # (source, key, when, phone, direction, kind, status, answered, dur, agent, name, line, dtmf, notes, disp, campaign, talk, rec)
-                recs.append(("Corefactor", r[2], r[3], r[4], r[6], r[7], r[16] if r[16] is not None else r[8], r[9], r[15] or r[14] or r[13]))
+        for sheet, r in master_rows("SP_CALLLOG_SITE_URL", "SP_CALLLOG_LIBRARY", "SP_CALLLOG_MASTER_PATH",
+                                    "Sanchu Reports/Backend Call Log Report.xlsx"):
+            n["cf rows"] += 1
+            ph = nph(pick(r, "Customer Number", "Phone", "Caller Number"))
+            if ph not in phones:
+                continue
+            t = when(r, "Start Time", "Call Date", "Date")
+            if not t or not lo <= t <= hi:
+                continue
+            talk = cl.seconds(pick(r, "Talk Time"))
+            recs.append(("Corefactor", t, ph, str(pick(r, "Call Type") or ""), str(pick(r, "Call Status") or ""),
+                         (talk or 0) >= 15, talk, str(pick(r, "Agent Name") or ""),
+                         " | ".join(str(x) for x in (pick(r, "Disposition"), pick(r, "Campaign Name", "Campaign"), pick(r, "Notes", "Remarks")) if x)[:200]))
+            n["Corefactor"] += 1
     except Exception as e:  # noqa: BLE001
-        log.error("Corefactor not read: %s", e)
-    n_cf = len(recs)
+        log.error("Corefactor master not read: %s", e)
     try:
         for r in cl.runo_rows(first, last, seen):
             if r[3] in phones:
                 recs.append(("Runo", r[2], r[3], r[4], r[6], r[7], r[8], r[9], r[13]))
+                n["Runo"] += 1
     except Exception as e:  # noqa: BLE001
         log.error("Runo not read: %s", e)
-    n_runo = len(recs) - n_cf
-    sp = cl.cf.SharePoint.from_env()
-    d, n_lead, missing = first, 0, 0
-    while d <= last:
-        for ext in (".csv", ".xlsx", ".xls"):
-            name = f"Corefactor_LeadBox_{d.isoformat()}{ext}"
-            try:
-                data, _ = sp.download(f"{cl.LEADBOX_FOLDER.strip('/')}/{name}")
-            except Exception:  # noqa: BLE001
+    try:
+        for sheet, r in master_rows("SP_LEADBOX_SITE_URL", "SP_LEADBOX_LIBRARY", "SP_LEADBOX_MASTER_PATH",
+                                    "Sanchu Reports/Backend Leadbox Report.xlsx"):
+            n["lead rows"] += 1
+            if n["lead rows"] == 1:
+                log.info("Lead Box columns: %s", ", ".join(k for k in r if k))
+            ph = nph(pick(r, "Phone", "Mobile", "Phone Number", "Mobile Number", "Contact Number", "Customer Number", "Lead Number"))
+            if ph not in phones:
                 continue
-            for r in cl.rc.read_table(name, data):
-                ph = cl.norm_phone(cl.rc.pick(r, "Phone", "Mobile", "Phone Number", "Mobile Number", "Contact Number",
-                                              "Customer Number", "Lead Number"))
-                if ph not in phones:
-                    continue
-                created = cl.cf.parse_dt(cl.rc.pick(r, "Created Date", "Created On", "Created At", "Date")) or \
-                    dt.datetime.combine(d, dt.time(12))
-                recs.append(("Lead Box", created, ph, "lead", str(cl.rc.pick(r, "Sub Status", "Status") or ""), None, None,
-                             str(cl.rc.pick(r, "Lead Owner", "Owner") or ""),
-                             " | ".join(str(x) for x in (cl.rc.pick(r, "Lead Source", "Source"), cl.rc.pick(r, "Purpose of Calling", "Purpose Of Calling"),
-                                                         cl.rc.pick(r, "Comments")) if x)[:200]))
-                n_lead += 1
-            break
-        else:
-            missing += 1
-        d += dt.timedelta(days=1)
+            t = when(r, "Created Date", "Created On", "Created At", "Date")
+            if not t or not lo <= t <= hi:
+                continue
+            recs.append(("Lead Box", t, ph, "lead", str(pick(r, "Status", "Lead Status", "Stage") or ""), None, None,
+                         str(pick(r, "Lead Owner", "Owner", "Assigned To") or ""),
+                         " | ".join(str(x) for x in (pick(r, "Lead Source", "Source"), pick(r, "Purpose Of Calling", "Purpose of Calling", "Purpose"),
+                                                     pick(r, "Comments", "Remarks")) if x)[:200]))
+            n["Lead Box"] += 1
+    except Exception as e:  # noqa: BLE001
+        log.error("Lead Box master not read: %s", e)
     cur.executemany("insert into calldesk.vow_touch (source, ts, phone, direction, status, answered, talk_s, agent, detail) "
                     "values (%s, %s, %s, %s, %s, %s, %s, %s, %s)", recs)
-    log.info("Saved: Corefactor %d, Runo %d, Lead Box %d (Lead Box files missing for %d days)", n_cf, n_runo, n_lead, missing)
+    log.info("Saved %d touches: %s", len(recs), dict(n))
