@@ -1,0 +1,58 @@
+name: Corefactor from the database (webhook) -> SharePoint masters
+
+# Replaces the session-id jobs (corefactor-daily / leadbox-daily): Corefactor pushes calls and leads to the
+# Call Desk webhooks; this job writes yesterday's pushes into the archive folders and the master workbooks
+# (Backend Call Log Report.xlsx / Backend Leadbox Report.xlsx). Runs after the old jobs: a day the master
+# already has is skipped, so both can run side by side until the old ones are switched off.
+
+on:
+  schedule:
+    - cron: "10 2 * * *"    # 07:40 AM IST
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day (YYYY-MM-DD), empty = yesterday"
+        required: false
+      if_present:
+        type: choice
+        options: [skip, replace]
+        default: skip
+
+concurrency:
+  group: corefactor-db
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        report: [calllogs, leadbox]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Corefactor ${{ matrix.report }} from the database
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_CALLLOG_ARCHIVE_FOLDER: ${{ vars.SP_CALLLOG_ARCHIVE_FOLDER || 'Call Log Archive' }}
+          SP_CALLLOG_SITE_URL: ${{ vars.SP_CALLLOG_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_CALLLOG_LIBRARY: ${{ vars.SP_CALLLOG_LIBRARY || 'Documents' }}
+          SP_CALLLOG_MASTER_PATH: ${{ vars.SP_CALLLOG_MASTER_PATH || 'Sanchu Reports/Backend Call Log Report.xlsx' }}
+          SP_LEADBOX_ARCHIVE_FOLDER: ${{ vars.SP_LEADBOX_ARCHIVE_FOLDER || 'Lead Box Archive' }}
+          SP_LEADBOX_SITE_URL: ${{ vars.SP_LEADBOX_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
+          SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
+          IN_DATE: ${{ inputs.date }}
+          IN_IF: ${{ inputs.if_present || 'skip' }}
+        run: python corefactor_from_db.py --report ${{ matrix.report }} --if-present "$IN_IF" ${IN_DATE:+--date "$IN_DATE"}
