@@ -2,7 +2,7 @@
 """
 Corefactor call logs / Lead Box from the database -> SharePoint master sheet (no Corefactor session needed).
 
-Corefactor pushes every call and lead to the Call Desk webhooks (/api/corefactor-calls, /api/corefactor-leads),
+Corefactor pushes every call and lead to the Supabase Edge Function webhook (functions/v1/corefactor/calls and /leads),
 which keep each push in calldesk.cf_live_raw. Each morning this job takes yesterday's pushes and does what the
 session-based jobs did:
   1. saves the day's file in the archive folder (Corefactor_CallLogs_<day>.csv / Corefactor_LeadBox_<day>.csv),

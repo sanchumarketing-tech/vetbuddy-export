@@ -1,7 +1,7 @@
 name: Corefactor from the database (webhook) -> SharePoint masters
 
 # Replaces the session-id jobs (corefactor-daily / leadbox-daily): Corefactor pushes calls and leads to the
-# Call Desk webhooks; this job writes yesterday's pushes into the archive folders and the master workbooks
+# Supabase webhook (Edge Function "corefactor"); this job writes yesterday's pushes into the archive folders and the master workbooks
 # (Backend Call Log Report.xlsx / Backend Leadbox Report.xlsx). Runs after the old jobs: a day the master
 # already has is skipped, so both can run side by side until the old ones are switched off.
 

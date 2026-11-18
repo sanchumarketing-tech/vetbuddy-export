@@ -301,7 +301,7 @@ region **Northeast Asia (Seoul), ap-northeast-2** · compute **Nano** · disk 2 
 | Item | Count | Details |
 |---|---|---|
 | **Pooling users** (logins through the connection pooler, Supavisor) | **2** | `vb_loader` – all GitHub Actions jobs (session mode, port 5432)<br>`vb_teams` – the Teams bot Edge Function (transaction mode, port 6543) |
-| **Edge Functions** | **1** | `teams-bot` – the "Sanchu Sales" Microsoft Teams bot (`bot/teams-bot/index.ts`), JWT check off (it checks Microsoft's token itself) |
+| **Edge Functions** | **2** | `teams-bot` – the "Sanchu Sales" Microsoft Teams bot (`bot/teams-bot/index.ts`), JWT check off (it checks Microsoft's token itself)<br>`corefactor` – Corefactor's live push of calls and Lead Box leads (`supabase/functions/corefactor/index.ts`, links `functions/v1/corefactor/calls` and `/leads`), JWT check off (it checks the key in the link); added 18 Nov 2026 |
 | **Triggers (ours)** | **1** | `refresh_pbi_after_load` on `vetbuddy.load_log` → `vetbuddy.trg_refresh_pbi()`: refreshes the Power BI summary tables after each VetBuddy load |
 | Event triggers (installed by Supabase) | 7 | `pgrst_ddl_watch`, `pgrst_drop_watch` (API schema reload), `issue_graphql_placeholder`, `issue_pg_graphql_access`, `issue_pg_cron_access`, `issue_pg_net_access`, `ensure_rls` – part of every Supabase project, not ours |
 | Scheduled jobs inside Supabase (pg_cron) | 0 | every schedule is a GitHub Actions job (below) |
@@ -345,7 +345,7 @@ Database queries since the statistics were last reset: `vb_loader` 71,535 · `po
 | **Compute** (the Postgres server) | runs everything | Nano, always on | Nano | Micro (1 GB RAM) – **$10/month**; the plan's $10 credit covers one server per organization | Small $15, Medium $60 … |
 | **Database size / disk** | our data | **0.41 GB** (86 % of Free) | 0.5 GB (read-only when full) | 8 GB | $0.125 per GB / month |
 | **Egress** | data sent out (website, bot, job reads) | 0.13 GB | 5 GB | 250 GB | $0.09 per GB |
-| **Edge Function runs** | Teams bot | 135 | 500,000 | 2,000,000 | $2 per million |
+| **Edge Function runs** | Teams bot; Corefactor push (from 18 Nov 2026, about 1,000–2,000 a day expected) | 135 | 500,000 | 2,000,000 | $2 per million |
 | **Monthly active users** | Supabase Auth | 1 | 50,000 | 100,000 | $0.00325 each |
 | File storage | not used | 0 | 1 GB | 100 GB | $0.021 per GB |
 | Realtime | not used | 0 | 200 connections | 500 | — |

@@ -1,6 +1,6 @@
 -- 28. Corefactor live calls (webhook), 18 Nov 2026.
--- Corefactor pushes every call to https://sanchu-calldesk.vercel.app/api/corefactor-calls?key=<key>
--- The Vercel function passes the body to public.cf_webhook(key, body):
+-- Corefactor pushes every call to https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/calls?key=<key>
+-- The Supabase Edge Function "corefactor" (supabase/functions/corefactor) passes the body to public.cf_webhook(key, body):
 --   * every push is kept as it came in calldesk.cf_live_raw (so nothing is lost while the field names are confirmed)
 --   * when the push has a phone number and a call time it is also saved to calldesk.calls (source 'Corefactor',
 --     the same table the daily call-log job fills), so the Call Desk sees the call straight away.

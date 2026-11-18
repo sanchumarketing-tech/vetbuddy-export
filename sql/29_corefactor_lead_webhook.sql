@@ -1,5 +1,5 @@
 -- 29. Corefactor Lead Box pushed live (webhook), 18 Nov 2026.
--- Corefactor pushes each new / updated lead to https://sanchu-calldesk.vercel.app/api/corefactor-leads?key=<key>
+-- Corefactor pushes each new / updated lead to https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/leads?key=<key>
 -- (same key as the call webhook). public.cf_lead_webhook keeps the raw push in calldesk.cf_live_raw (kind 'lead')
 -- and saves the lead to calldesk.leads (the table the daily Lead Box job fills). A later push for the same
 -- lead id updates its status. When the daily Lead Box file loads the same lead, the live copy is removed.
