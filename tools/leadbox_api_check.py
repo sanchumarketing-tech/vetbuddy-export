@@ -15,11 +15,12 @@ KEY = os.environ["COREFACTOR_LEADBOX_API_KEY"].strip()
 day = sys.argv[1] if len(sys.argv) > 1 else (datetime.now(cf.IST).date() - timedelta(days=1)).isoformat()
 hosts = ["https://tw1.teleduce.corefactors.in", "https://teleduce.corefactors.in"]
 leads, used = [], None
-tries = [(h, m) for h in hosts for m in ("GET-json", "POST-json", "GET-params")]
+tries = [(h, "GET-json") for h in hosts]
+nxt = (datetime.strptime(day, "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
 for host, mode in tries:
     leads, page = [], 1
     while True:
-        q = {"created_at_range": f"{day},{day}", "page": page, "record_size": 100}
+        q = {"created_at_range": f"{day},{nxt}", "page": page, "record_size": 100}
         h = {"API-KEY": KEY, "Content-Type": "application/json"}
         u = f"{host}/lead/retrieval/"
         if mode == "GET-json":
@@ -46,7 +47,8 @@ for host, mode in tries:
     if leads or code == "7008":
         used = f"{host} [{mode}]"
         break
-print(f"\nLeads created on {day}: {len(leads)} (from {used})")
+print(f"\nLeads returned for {day},{nxt}: {len(leads)} (from {used})")
+print("created_at dates:", sorted(Counter(str(l.get("created_at"))[:10] for l in leads).items()))
 if not leads:
     sys.exit(0)
 filled = Counter(k for l in leads for k, v in l.items() if v not in (None, "", []))
