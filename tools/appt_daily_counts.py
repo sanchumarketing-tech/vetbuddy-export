@@ -18,7 +18,7 @@ s.headers["User-Agent"] = "Mozilla/5.0 (VetBuddy counts)"
 vb.login(s)
 col = {c.lower(): i for i, c in enumerate(ap.EXPORT_COLUMNS)}
 g = lambda row, name: row[col[name.lower()]]   # noqa: E731
-cnt, types, statuses = Counter(), Counter(), Counter()
+cnt, types, statuses, other = Counter(), Counter(), Counter(), Counter()
 day = first
 while day <= last:
     got = {}
@@ -40,6 +40,8 @@ while day <= last:
         st = str(g(row, "Status") or "").strip().lower()
         kind = "Vet on Wheels" if typ.lower() == "doctor on wheels" else "Clinic"
         types[typ] += 1
+        if not (st.startswith("check out") or st.startswith("no show") or st.startswith("cancel")):
+            other[(d.isoformat(), kind, unit, st)] += 1
         statuses[st] += 1
         for k in ("appointments",) + (("completed",) if st.startswith("check out") else ()) + (("no_show",) if st.startswith("no show") else ()) + (("cancelled",) if st.startswith("cancel") else ()):
             cnt[(d.isoformat(), kind, unit, k)] += 1
@@ -52,3 +54,7 @@ keys = sorted({k[:3] for k in cnt})
 for k in keys:
     print(f"{k[0]},{k[1]},{k[2]},{cnt[k + ('appointments',)]},{cnt[k + ('completed',)]},{cnt[k + ('no_show',)]},{cnt[k + ('cancelled',)]}")
 print("CSV_END")
+print("OTHER_START")
+for k, v in sorted(other.items()):
+    print(f"{k[0]},{k[1]},{k[2]},{k[3]},{v}")
+print("OTHER_END")
