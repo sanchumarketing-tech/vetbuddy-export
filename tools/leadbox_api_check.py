@@ -15,12 +15,20 @@ KEY = os.environ["COREFACTOR_LEADBOX_API_KEY"].strip()
 day = sys.argv[1] if len(sys.argv) > 1 else (datetime.now(cf.IST).date() - timedelta(days=1)).isoformat()
 hosts = ["https://tw1.teleduce.corefactors.in", "https://teleduce.corefactors.in"]
 leads, used = [], None
-for host in hosts:
+tries = [(h, m) for h in hosts for m in ("GET-json", "POST-json", "GET-params")]
+for host, mode in tries:
     leads, page = [], 1
     while True:
-        r = requests.get(f"{host}/lead/retrieval/", headers={"API-KEY": KEY, "Content-Type": "application/json"},
-                         params={"created_at_range": f"{day},{day}", "page": page, "record_size": 100}, timeout=120)
-        print(f"{host} page {page}: HTTP {r.status_code}, {r.headers.get('content-type')}")
+        q = {"created_at_range": f"{day},{day}", "page": page, "record_size": 100}
+        h = {"API-KEY": KEY, "Content-Type": "application/json"}
+        u = f"{host}/lead/retrieval/"
+        if mode == "GET-json":
+            r = requests.get(u, headers=h, json=q, timeout=120)
+        elif mode == "POST-json":
+            r = requests.post(u, headers=h, json=q, timeout=120)
+        else:
+            r = requests.get(u, headers=h, params=q, timeout=120)
+        print(f"{host} [{mode}] page {page}: HTTP {r.status_code}, {r.headers.get('content-type')}")
         try:
             j = r.json()
         except ValueError:
@@ -35,8 +43,8 @@ for host in hosts:
             break
         page += 1
         time.sleep(0.5)
-    if leads:
-        used = host
+    if leads or code == "7008":
+        used = f"{host} [{mode}]"
         break
 print(f"\nLeads created on {day}: {len(leads)} (from {used})")
 if not leads:
