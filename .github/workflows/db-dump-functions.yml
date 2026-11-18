@@ -1,7 +1,11 @@
 name: Export live Call Desk database functions (read-only)
 
+# Writes the live definitions of the Call Desk functions to sql/live/ and commits them (database unchanged).
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run:
@@ -16,7 +20,12 @@ jobs:
       - env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python tools/dump_db_functions.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: live-functions
-          path: sql/live
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sql/live
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "sql/live: export of the live Call Desk database functions"
+          git push origin HEAD:main
+          git push origin HEAD:project-files || true
