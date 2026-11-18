@@ -1,0 +1,29 @@
+name: Lead Box API check (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Created on (YYYY-MM-DD), empty = yesterday"
+        required: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests openpyxl xlrd
+      - env:
+          COREFACTOR_LEADBOX_API_KEY: ${{ secrets.COREFACTOR_LEADBOX_API_KEY }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_LEADBOX_SITE_URL: ${{ vars.SP_LEADBOX_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
+          SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
+          IN_DATE: ${{ inputs.date }}
+        run: python tools/leadbox_api_check.py $IN_DATE
