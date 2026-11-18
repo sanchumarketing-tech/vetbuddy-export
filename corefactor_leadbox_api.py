@@ -33,11 +33,12 @@ RENAME = {"uniqueid": "ID", "createddate": "created_at", "modifieddate": "modifi
 
 
 def fetch(day):
-    """All leads created on `day` (IST). The API's range filter is not in IST, so ask for the days around it
-    and keep the leads whose created_at (IST) is that day."""
+    """All leads created on `day` (IST). The API's range filter cuts off part of the day at its edges
+    (checked 18 Nov 2026: day-1..day+1 missed 107 of 1,606 leads; day-3..day+3 returned all of them), so ask for
+    three days either side and keep the leads whose created_at (IST) is that day."""
     base = cf.env("COREFACTOR_BASE_URL", "https://tw1.teleduce.corefactors.in").rstrip("/")
     key = cf.env("COREFACTOR_LEADBOX_API_KEY", required=True).strip()
-    rng = f"{day - timedelta(days=1)},{day + timedelta(days=1)}"
+    rng = f"{day - timedelta(days=3)},{day + timedelta(days=3)}"
     out, page = [], 1
     while True:
         for attempt in range(1, 4):
