@@ -16,9 +16,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q requests openpyxl xlrd
+      - run: pip install -q requests openpyxl xlrd "psycopg[binary]"
       - env:
           COREFACTOR_LEADBOX_API_KEY: ${{ secrets.COREFACTOR_LEADBOX_API_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
           SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
           SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
@@ -26,4 +27,5 @@ jobs:
           SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
           SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
           IN_DATE: ${{ inputs.date }}
-        run: python tools/leadbox_api_check.py $IN_DATE
+        run: |
+          if [ -n "$IN_DATE" ]; then python tools/leadbox_api_compare.py "$IN_DATE"; else python tools/leadbox_api_check.py; fi
