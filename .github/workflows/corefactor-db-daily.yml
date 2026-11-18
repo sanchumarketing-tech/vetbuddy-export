@@ -30,7 +30,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        report: [calllogs, leadbox]
+        report: [calllogs]      # Lead Box: comes from Corefactor's API (separate job)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

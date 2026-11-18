@@ -1,4 +1,5 @@
 -- 29. Corefactor Lead Box pushed live (webhook), 18 Nov 2026.
+-- 18 Nov 2026: NOT USED - Lead Box comes through Corefactor's API instead. The function stays, but anon can no longer call it.
 -- Corefactor pushes each new / updated lead to https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/leads?key=<key>
 -- (same key as the call webhook). public.cf_lead_webhook keeps the raw push in calldesk.cf_live_raw (kind 'lead')
 -- and saves the lead to calldesk.leads (the table the daily Lead Box job fills). A later push for the same

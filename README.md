@@ -301,7 +301,7 @@ region **Northeast Asia (Seoul), ap-northeast-2** · compute **Nano** · disk 2 
 | Item | Count | Details |
 |---|---|---|
 | **Pooling users** (logins through the connection pooler, Supavisor) | **2** | `vb_loader` – all GitHub Actions jobs (session mode, port 5432)<br>`vb_teams` – the Teams bot Edge Function (transaction mode, port 6543) |
-| **Edge Functions** | **2** | `teams-bot` – the "Sanchu Sales" Microsoft Teams bot (`bot/teams-bot/index.ts`), JWT check off (it checks Microsoft's token itself)<br>`corefactor` – Corefactor's live push of calls and Lead Box leads (`supabase/functions/corefactor/index.ts`, links `functions/v1/corefactor/calls` and `/leads`), JWT check off (it checks the key in the link); added 18 Nov 2026 |
+| **Edge Functions** | **2** | `teams-bot` – the "Sanchu Sales" Microsoft Teams bot (`bot/teams-bot/index.ts`), JWT check off (it checks Microsoft's token itself)<br>`corefactor` – Corefactor's live push of call logs (`supabase/functions/corefactor/index.ts`, link `functions/v1/corefactor/calls`), JWT check off (it checks the key in the link); added 18 Nov 2026 |
 | **Triggers (ours)** | **1** | `refresh_pbi_after_load` on `vetbuddy.load_log` → `vetbuddy.trg_refresh_pbi()`: refreshes the Power BI summary tables after each VetBuddy load |
 | Event triggers (installed by Supabase) | 7 | `pgrst_ddl_watch`, `pgrst_drop_watch` (API schema reload), `issue_graphql_placeholder`, `issue_pg_graphql_access`, `issue_pg_cron_access`, `issue_pg_net_access`, `ensure_rls` – part of every Supabase project, not ours |
 | Scheduled jobs inside Supabase (pg_cron) | 0 | every schedule is a GitHub Actions job (below) |

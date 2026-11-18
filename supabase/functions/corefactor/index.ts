@@ -1,9 +1,8 @@
 // Corefactor webhook, hosted on Supabase (no Vercel).
 //   POST https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/calls?key=<key>   live calls
-//   POST https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/leads?key=<key>   Lead Box leads
 // Accepts JSON, form-encoded or query-string fields. GET with only the key answers {"ok": true} (link test).
-// The body goes to public.cf_webhook / public.cf_lead_webhook, which check the key, keep the raw push
-// (calldesk.cf_live_raw) and save the call / lead (calldesk.calls / calldesk.leads).
+// The body goes to public.cf_webhook, which checks the key, keeps the raw push (calldesk.cf_live_raw)
+// and saves the call (calldesk.calls). Lead Box comes through Corefactor's API instead (separate job).
 // Deployed with verify_jwt = false so Corefactor needs only the key in the link.
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
@@ -24,8 +23,8 @@ async function rpc(fn: string, args: unknown) {
 Deno.serve(async (req) => {
   const u = new URL(req.url);
   const kind = u.pathname.split("/").filter(Boolean).pop();
-  const fn = kind === "calls" ? "cf_webhook" : kind === "leads" ? "cf_lead_webhook" : null;
-  if (!fn) return json(404, { ok: false, message: "use /corefactor/calls or /corefactor/leads" });
+  const fn = kind === "calls" ? "cf_webhook" : null;
+  if (!fn) return json(404, { ok: false, message: "use /corefactor/calls" });
   const q = Object.fromEntries(u.searchParams);
   const key = q.key ?? req.headers.get("x-api-key") ?? req.headers.get("x-webhook-key");
   delete q.key;
