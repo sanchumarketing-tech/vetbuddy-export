@@ -443,3 +443,16 @@ begin
 end $$;
 revoke execute on function public.cd_agent_incentive(int, text[], int) from public;
 grant execute on function public.cd_agent_incentive(int, text[], int) to anon, authenticated;
+
+
+-- =====================================================================
+-- 27  Nobody is called two days in a row (18 Nov 2026)
+--   calldesk.called_on(phone, day): an outgoing call that day (Corefactor / Runo, answered or not) or "Called" in the app.
+--   row_visible + cd_team hide numbers called the day before the list day (a requested call-back still shows).
+--   build_list: carried rows, new dues and follow-ups of numbers called yesterday are not added - they wait as
+--   follow-ups for the next day; "called with 2+ dues" now returns after 2 days (not the next day); a waiting
+--   follow-up whose number also has a fresh due shows only the fresh reason; check-ins are never parked.
+--   balance_lists: fills agents with waiting follow-ups (their units, not called yesterday) before check-ins.
+--   The exact live text of every Call Desk function is in sql/live/ (Actions -> "Export live Call Desk database
+--   functions" refreshes it).
+-- =====================================================================
