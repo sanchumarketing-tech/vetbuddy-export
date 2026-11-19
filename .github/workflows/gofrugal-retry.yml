@@ -1,7 +1,7 @@
 name: Gofrugal retry (data sync checkpoint)
 
 # 19 Nov 2026. The 06:47 VetBuddy job downloads Gofrugal 3111 / 3126 only after every outlet's data sync
-# has reached 11:30 PM of yesterday (gofrugal_sync.py). If it was held back, these runs try again;
+# has reached 11:59 PM of yesterday (gofrugal_sync.py). If it was held back, these runs try again;
 # each does nothing when today's Gofrugal file is already in SharePoint.
 # If it is still missing at 9 AM, the sales report script posts "Gofrugal data sync issue" on WhatsApp.
 

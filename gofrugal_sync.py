@@ -6,7 +6,7 @@ Gofrugal HQ only has an outlet's bills after that outlet's backup has synced. Th
 NetTrade > Data Sync > Configuration > Backup config lists every outlet with its last successful
 sync time ("Data as on") and its backup status. Before the pharmacy download:
   1. every outlet except the inactive / old ones (GOFRUGAL_SKIP_OUTLETS: Ecommerce, Whitefield, Koramangala 1-3,
-     Palavakkam, Coimbatore 2-3, Anna Nagar 2-4, Warehouse VOW) must have synced at or after 11:30 PM of the report's last day (yesterday);
+     Palavakkam, Coimbatore 2-3, Anna Nagar 2-4, Warehouse VOW) must have synced at or after 11:59 PM of the report's last day (yesterday);
   2. if not: outlets whose backup status is "Suspended" are set back to "Backup status - Active"
      (this needs the HQ password: GitHub secret GOFRUGAL_HQ_PASS), then a
      "Backup request - Incremental" is sent for the outlets that are behind - same as doing it on the page;
@@ -45,7 +45,7 @@ def new_session():
     gs = gofrugal.Session()
     gs.login(SYNC_USER or None, SYNC_PASS or None)
     return gs
-CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:30")        # of the report's last day
+CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:59")        # of the report's last day
 WAIT_MIN = int(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "5"))
 
 
