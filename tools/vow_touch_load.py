@@ -19,7 +19,7 @@ with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
     cur.execute("delete from calldesk.vow_touch")
     # 19 Nov 2026: also keep every Vet on Wheels lead (and every lead of these numbers) with its Lead Box fields,
     # for the "why came / why not booked / booked but no VetBuddy appointment" analysis
-    cur.execute("create table if not exists calldesk.vow_leads (created_at timestamp, phone text, vow_lead boolean, d jsonb)")
+    # table calldesk.vow_leads (created_at timestamp, phone text, vow_lead boolean, d jsonb) is created by an admin
     cur.execute("delete from calldesk.vow_leads")
     LEAD_FROM = dt.date.fromisoformat(os.environ.get("VOW_LEADS_FROM") or "2026-10-12")
     leads_out = []
