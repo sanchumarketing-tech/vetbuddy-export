@@ -32,6 +32,16 @@ IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 SKIP = {s.strip().lower() for s in (os.environ.get("GOFRUGAL_SKIP_OUTLETS")
                                     or "Sanchu Ecommerce,Sanchu Whitefield,Sanchu Koramangala").split(",") if s.strip()}
 HQ_PASS = os.environ.get("GOFRUGAL_HQ_PASS", "")
+# the login that may open Backup config (the report login cannot: 403). The checkpoint is ON only when set.
+SYNC_USER = os.environ.get("GOFRUGAL_SYNC_USER", "")
+SYNC_PASS = os.environ.get("GOFRUGAL_SYNC_PASS", "")
+READY = bool(SYNC_USER and SYNC_PASS)
+
+
+def new_session():
+    gs = gofrugal.Session()
+    gs.login(SYNC_USER or None, SYNC_PASS or None)
+    return gs
 CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:30")        # of the report's last day
 WAIT_MIN = int(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "5"))
 
@@ -106,9 +116,7 @@ def report(rows, cutoff, title):
 
 def ensure(last_day: dt.date, deadline: dt.datetime, gs=None) -> bool:
     """True when every watched outlet has synced past the cut-off (requests a sync if needed)."""
-    gs = gs or gofrugal.Session()
-    if not gs.role_id:
-        gs.login()
+    gs = gs or new_session()
     h, m = (int(x) for x in CUTOFF.split(":"))
     cutoff = dt.datetime.combine(last_day, dt.time(h, m))
     rows = outlets(gs)
@@ -150,8 +158,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
     now = dt.datetime.now(IST).replace(tzinfo=None)
     last_day = now.date() - dt.timedelta(days=1)
-    gs = gofrugal.Session()
-    gs.login()
+    gs = new_session()
     if "--check" in sys.argv:
         h, m = (int(x) for x in CUTOFF.split(":"))
         report(outlets(gs), dt.datetime.combine(last_day, dt.time(h, m)), "Gofrugal data sync (check only)")

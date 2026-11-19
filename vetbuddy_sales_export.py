@@ -88,6 +88,7 @@ logging.basicConfig(
 log = logging.getLogger("vetbuddy")
 
 import gofrugal  # noqa: E402  (after logging is set up)
+import gofrugal_sync  # noqa: E402
 import master_sheet  # noqa: E402
 import vetbuddy_sql  # noqa: E402
 
@@ -553,6 +554,26 @@ def main() -> int:
         log.info("Database step skipped (SUPABASE_DB_URL not set)")
 
     # 6. Gofrugal pharmacy: .xlsx -> SharePoint "Gofrugal Upload", rows -> database
+    return max(status, gofrugal_step(d_from, d_to))
+
+
+def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
+    """Gofrugal pharmacy (3111 + 3126): .xlsx -> SharePoint "Gofrugal Upload", rows -> database.
+    19 Nov 2026: when GOFRUGAL_SYNC_USER is set, Gofrugal's data sync is checked first (gofrugal_sync.py);
+    nothing is downloaded until every outlet has synced past 11:30 PM of d_to."""
+    status = 0
+    if gofrugal.ENABLED and gofrugal_sync.READY:
+        deadline = dt.datetime.now(IST).replace(tzinfo=None) + dt.timedelta(
+            minutes=int(os.environ.get("GOFRUGAL_SYNC_MAX_MIN", "25")))
+        try:
+            ok = gofrugal_sync.ensure(d_to, deadline)
+        except Exception as e:  # noqa: BLE001
+            log.error("Gofrugal sync check failed: %s", e)
+            ok = False
+        if not ok:
+            log.error("Gofrugal data not synced up to %s 23:30 - pharmacy download held back "
+                      "(the next Gofrugal retry tries again; 9 AM WhatsApp alert if still missing)", d_to)
+            return 1
     if gofrugal.ENABLED:
         gf = {}
 
@@ -577,6 +598,20 @@ def main() -> int:
     else:
         log.info("Gofrugal step skipped (GOFRUGAL_USER / GOFRUGAL_PASS not set)")
     return status
+
+
+def gofrugal_only_main() -> int:
+    """Retry run (Gofrugal retry workflow): only the Gofrugal step, and only if today's file is not there yet."""
+    d_from, d_to = mtd_range(dt.datetime.now(IST).date())
+    name = f"Gofrugal_Pharmacy_MTD_{d_from}_to_{d_to}.xlsx"
+    if SP_ENABLED:
+        h = {"Authorization": f"Bearer {graph_token()}"}
+        drive = sp_drive(h)
+        r = requests.get(f"{GRAPH}/drives/{drive['id']}/root:/{SP_GOFRUGAL_FOLDER.strip('/')}/{name}", headers=h, timeout=60)
+        if r.status_code == 200:
+            log.info("%s is already in SharePoint - nothing to do", name)
+            return 0
+    return gofrugal_step(d_from, d_to)
 
 
 def pharmacy_load(d_from: dt.date, d_to: dt.date, session=None) -> None:
@@ -689,6 +724,8 @@ def backfill_main() -> int:
 
 
 if __name__ == "__main__":
+    if "--gofrugal-only" in sys.argv:
+        sys.exit(gofrugal_only_main())
     if "--archive" in sys.argv:
         sys.exit(archive_main())
     if "--backfill-pharmacy" in sys.argv:

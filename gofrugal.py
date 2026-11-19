@@ -44,10 +44,11 @@ class Session:
         self.role_id = None
         self.login_id = None
 
-    def login(self):
+    def login(self, user=None, password=None):
+        user, password = user or USER, password or PASSWORD
         self.s.get(f"{BASE}/RayMedi_HQ/mainIndex.do", timeout=60)          # login page + session
         self.s.post(f"{BASE}/RayMedi_HQ/j_security_check",
-                    data={"j_username": USER, "j_password": PASSWORD}, timeout=120)
+                    data={"j_username": user, "j_password": password}, timeout=120)
         self.s.get(f"{BASE}/smartreport/index.html", timeout=60)             # report module session
         r = self.s.get(f"{BASE}/smartreport/user",
                        params={"referrerProduct": "", "companyCode": "", "isHQ": "false"}, timeout=60)
@@ -57,7 +58,7 @@ class Session:
             u = {}
         if r.status_code != 200 or not u.get("roleId"):
             raise RuntimeError("Gofrugal login failed - check GOFRUGAL_USER / GOFRUGAL_PASS")
-        self.role_id, self.login_id = u["roleId"], u.get("name") or USER
+        self.role_id, self.login_id = u["roleId"], u.get("name") or user
         log.info("Gofrugal: logged in as %s", self.login_id)
 
     def export_csv(self, report, d_from: dt.date, d_to: dt.date) -> str:

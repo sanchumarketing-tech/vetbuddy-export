@@ -1,0 +1,57 @@
+name: Gofrugal retry (data sync checkpoint)
+
+# 19 Nov 2026. The 06:47 VetBuddy job downloads Gofrugal 3111 / 3126 only after every outlet's data sync
+# has reached 11:30 PM of yesterday (gofrugal_sync.py). If it was held back, these runs try again;
+# each does nothing when today's Gofrugal file is already in SharePoint.
+# If it is still missing at 9 AM, the sales report script posts "Gofrugal data sync issue" on WhatsApp.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"     # 07:30 AM IST
+    - cron: "35 2 * * *"    # 08:05 AM IST
+    - cron: "5 3 * * *"     # 08:35 AM IST
+  workflow_dispatch:
+
+concurrency:
+  group: gofrugal-retry
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Gofrugal (only if today's file is not there yet)
+        env:
+          VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
+          VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_FOLDER: ${{ vars.SP_FOLDER || 'VetBuddy Reports' }}
+          SP_ARCHIVE_FOLDER: ${{ vars.SP_ARCHIVE_FOLDER }}
+          SP_MASTER_PATH: ${{ vars.SP_MASTER_PATH }}
+          SP_MASTER_SITE_URL: ${{ vars.SP_MASTER_SITE_URL }}
+          SP_MASTER_LIBRARY: ${{ vars.SP_MASTER_LIBRARY }}
+          SP_GOFRUGAL_FOLDER: ${{ vars.SP_GOFRUGAL_FOLDER }}
+          SP_GOFRUGAL_ARCHIVE_FOLDER: ${{ vars.SP_GOFRUGAL_ARCHIVE_FOLDER }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GOFRUGAL_USER: ${{ secrets.GOFRUGAL_USER }}
+          GOFRUGAL_PASS: ${{ secrets.GOFRUGAL_PASS }}
+          GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
+          # Gofrugal data-sync checkpoint (gofrugal_sync.py) - ON only when GOFRUGAL_SYNC_USER is set
+          GOFRUGAL_SYNC_USER: ${{ secrets.GOFRUGAL_SYNC_USER }}
+          GOFRUGAL_SYNC_PASS: ${{ secrets.GOFRUGAL_SYNC_PASS }}
+          GOFRUGAL_HQ_PASS: ${{ secrets.GOFRUGAL_HQ_PASS }}
+          GOFRUGAL_SYNC_MAX_MIN: "20"
+        run: |
+          if [ -z "$GOFRUGAL_SYNC_USER" ]; then echo "Gofrugal sync checkpoint not set up (GOFRUGAL_SYNC_USER) - nothing to do"; exit 0; fi
+          python vetbuddy_sales_export.py --gofrugal-only

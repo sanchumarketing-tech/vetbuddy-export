@@ -54,6 +54,10 @@ jobs:
           GOFRUGAL_USER: ${{ secrets.GOFRUGAL_USER }}
           GOFRUGAL_PASS: ${{ secrets.GOFRUGAL_PASS }}
           GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
+          # Gofrugal data-sync checkpoint (gofrugal_sync.py) - ON only when GOFRUGAL_SYNC_USER is set
+          GOFRUGAL_SYNC_USER: ${{ secrets.GOFRUGAL_SYNC_USER }}
+          GOFRUGAL_SYNC_PASS: ${{ secrets.GOFRUGAL_SYNC_PASS }}
+          GOFRUGAL_HQ_PASS: ${{ secrets.GOFRUGAL_HQ_PASS }}
           RELOAD_MONTH: ${{ inputs.month }}
         run: |
           if [ "$TASK" = "archive" ]; then
