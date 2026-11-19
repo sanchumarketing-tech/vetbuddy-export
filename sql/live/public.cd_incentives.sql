@@ -4,6 +4,7 @@ CREATE OR REPLACE FUNCTION public.cd_incentives(p_month date DEFAULT NULL::date,
  LANGUAGE plpgsql
  STABLE SECURITY DEFINER
  SET search_path TO 'calldesk', 'public'
+ SET plan_cache_mode TO 'force_custom_plan'
 AS $function$
 declare m calldesk.agents := calldesk.me(); f date; t date;
   pm date := date_trunc('month', coalesce(p_month,
@@ -20,8 +21,8 @@ begin
           where ap.appt_date >= f and ap.appt_date < t and ap.pet_id is not null
           order by lg.agent_id, ap.pet_id, ap.appt_date, ap.appt_id),
   sh as (select pet_id, array_agg(distinct agent_name) names from bk group by pet_id having count(distinct agent_id) > 1),
-  sv as (select distinct substring(s.client_id from '\(([^)]*)\)') pid, s.sale_date from vetbuddy.sales s
-          where s.sale_date >= f and s.sale_date < t + 4 and s.client_id is not null),
+  sv as (select distinct substring(s.client_id from '\(([^)]*)\)') pid, s.sale_date from vetbuddy.mv_pbi_pet_day s
+          where s.sale_date >= f and s.sale_date < t + 4),   -- 19-11-2026: pet-day summary (7 MB) instead of the full sales lines
   vv as (select b.agent_id, b.pet_id, min(sv.sale_date) visit_date from bk b join sv on sv.pid = b.pet_id and sv.sale_date between b.appt_date and b.appt_date + 3 group by 1, 2),
   rows as (select b.*, vv.visit_date, sh.pet_id is not null shared, array_to_string(array_remove(sh.names, b.agent_name), ', ') shared_with
              from bk b left join vv using (agent_id, pet_id) left join sh using (pet_id)),
