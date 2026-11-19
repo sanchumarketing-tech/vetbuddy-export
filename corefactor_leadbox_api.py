@@ -86,8 +86,12 @@ def archive(report, day, header, rows):
 
 
 def to_rows(header, leads):
-    api = {cf.norm(k): k for k in leads[0]}
-    cols = [api.get(cf.norm(h)) or (RENAME.get(cf.norm(h)) if RENAME.get(cf.norm(h)) in leads[0] else None)
+    keys = {}
+    for l in leads:                        # every field any lead has (a field can be missing on some leads)
+        for k in l:
+            keys.setdefault(k, None)
+    api = {cf.norm(k): k for k in keys}
+    cols = [api.get(cf.norm(h)) or (RENAME.get(cf.norm(h)) if RENAME.get(cf.norm(h)) in keys else None)
             for h in header]
     blank = [h for h, c in zip(header, cols) if c is None]
     log.info("Master columns with no API field (left blank): %s", ", ".join(blank) or "none")

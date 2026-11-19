@@ -205,7 +205,7 @@ class GraphSheet:
             return raw
 
         start = self.last + 1
-        chunk = 400
+        chunk = int(__import__('os').environ.get('GRAPH_CHUNK_ROWS') or 50)
         for i in range(0, len(rows), chunk):
             part = rows[i:i + chunk]
             r1, r2 = start + i, start + i + len(part) - 1
