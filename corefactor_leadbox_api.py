@@ -135,7 +135,7 @@ def main():
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--stage", choices=["archive", "excel", "all"], default="all",
                     help="archive = only the day's file (for the database load); excel = only the master sheet")
-    ap.add_argument("--engine", choices=["graph", "openpyxl"], default="graph",
+    ap.add_argument("--engine", choices=["graph", "openpyxl"], default="openpyxl",
                     help="graph = write into the file on SharePoint (fast); openpyxl = download / re-upload (old, slow)")
     ap.add_argument("--master-path", help="another master file (e.g. a test copy)")
     args = ap.parse_args()
