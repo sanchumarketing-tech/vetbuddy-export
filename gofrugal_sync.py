@@ -5,8 +5,8 @@ Gofrugal data-sync checkpoint (19 Nov 2026) - run before reports 3111 / 3126 are
 Gofrugal HQ only has an outlet's bills after that outlet's backup has synced. The HQ page
 NetTrade > Data Sync > Configuration > Backup config lists every outlet with its last successful
 sync time ("Data as on") and its backup status. Before the pharmacy download:
-  1. every outlet except the inactive ones (GOFRUGAL_SKIP_OUTLETS: Sanchu Ecommerce, Sanchu Whitefield,
-     Sanchu Koramangala) must have synced at or after 11:30 PM of the report's last day (yesterday);
+  1. every outlet except the inactive / old ones (GOFRUGAL_SKIP_OUTLETS: Ecommerce, Whitefield, Koramangala 1-3,
+     Palavakkam, Coimbatore 2-3, Anna Nagar 2-4, Warehouse VOW) must have synced at or after 11:30 PM of the report's last day (yesterday);
   2. if not: outlets whose backup status is "Suspended" are set back to "Backup status - Active"
      (this needs the HQ password: GitHub secret GOFRUGAL_HQ_PASS), then a
      "Backup request - Incremental" is sent for the outlets that are behind - same as doing it on the page;
@@ -30,7 +30,10 @@ import gofrugal
 log = logging.getLogger("vetbuddy")
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 SKIP = {s.strip().lower() for s in (os.environ.get("GOFRUGAL_SKIP_OUTLETS")
-                                    or "Sanchu Ecommerce,Sanchu Whitefield,Sanchu Koramangala").split(",") if s.strip()}
+                                    or "Sanchu Ecommerce,Sanchu Whitefield,Sanchu Koramangala,"          # inactive (19-11-2026)
+                                       "Sanchu Palavakkam,Sanchu Koramangala 2,Sanchu Koramangala 3,"
+                                       "Sanchu Coimbatore 2,Sanchu Coimbatore 3,Sanchu Anna Nagar 2,"
+                                       "Sanchu Anna Nagar 3,Sanchu Anna Nagar 4,Sanchu Warehouse VOW").split(",") if s.strip()}
 HQ_PASS = os.environ.get("GOFRUGAL_HQ_PASS", "")
 # the login that may open Backup config (the report login cannot: 403). The checkpoint is ON only when set.
 SYNC_USER = os.environ.get("GOFRUGAL_SYNC_USER", "")
