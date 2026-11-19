@@ -19,4 +19,5 @@ jobs:
           GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
           GOFRUGAL_SYNC_USER: ${{ secrets.GOFRUGAL_SYNC_USER }}
           GOFRUGAL_SYNC_PASS: ${{ secrets.GOFRUGAL_SYNC_PASS }}
+          GOFRUGAL_HQ_PASS: ${{ secrets.GOFRUGAL_HQ_PASS }}
         run: python gofrugal_sync.py --check

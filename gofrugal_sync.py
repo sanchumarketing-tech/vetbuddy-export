@@ -163,6 +163,8 @@ def main():
     last_day = now.date() - dt.timedelta(days=1)
     gs = new_session()
     if "--check" in sys.argv:
+        log.info("Secrets present: GOFRUGAL_SYNC_USER=%s, GOFRUGAL_SYNC_PASS=%s, GOFRUGAL_HQ_PASS=%s",
+                 "yes" if SYNC_USER else "NO", "yes" if SYNC_PASS else "NO", "yes" if HQ_PASS else "NO")
         h, m = (int(x) for x in CUTOFF.split(":"))
         report(outlets(gs), dt.datetime.combine(last_day, dt.time(h, m)), "Gofrugal data sync (check only)")
         return 0
