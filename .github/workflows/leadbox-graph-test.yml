@@ -6,6 +6,9 @@ on:
       date:
         description: "Day (YYYY-MM-DD)"
         required: true
+      mode:
+        description: "empty = full test, verify = only re-read the test copy"
+        required: false
 
 jobs:
   run:
@@ -28,4 +31,5 @@ jobs:
           SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
           OUTPUT_DIR: ${{ runner.temp }}/out
           IN_DATE: ${{ inputs.date }}
-        run: python tools/leadbox_graph_test.py "$IN_DATE"
+          IN_MODE: ${{ inputs.mode }}
+        run: python tools/leadbox_graph_test.py "$IN_DATE" $IN_MODE
