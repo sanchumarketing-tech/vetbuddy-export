@@ -17,6 +17,12 @@ with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
     phones = {r[0] for r in cur.fetchall()}
     log.info("%d numbers to look for", len(phones))
     cur.execute("delete from calldesk.vow_touch")
+    # 19 Nov 2026: also keep every Vet on Wheels lead (and every lead of these numbers) with its Lead Box fields,
+    # for the "why came / why not booked / booked but no VetBuddy appointment" analysis
+    cur.execute("create table if not exists calldesk.vow_leads (created_at timestamp, phone text, vow_lead boolean, d jsonb)")
+    cur.execute("delete from calldesk.vow_leads")
+    LEAD_FROM = dt.date.fromisoformat(os.environ.get("VOW_LEADS_FROM") or "2026-10-12")
+    leads_out = []
     seen, recs = Counter(), []
 
     def master_rows(site_var, lib_var, path_var, default_path):
@@ -77,10 +83,23 @@ with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
             if n["lead rows"] == 1:
                 log.info("Lead Box columns: %s", ", ".join(k for k in r if k))
             ph = nph(pick(r, "Phone", "Mobile", "Phone Number", "Mobile Number", "Contact Number", "Customer Number", "Lead Number"))
-            if ph not in phones:
-                continue
             t = when(r, "Created Date", "Created On", "Created At", "Date")
             if not t or not lo <= t <= hi:
+                continue
+            blob = " ".join(str(r.get(k) or "") for k in ("Purpose of Calling", "Purpose Of Calling", "Appointment Type", "Campaign_Name",
+                                                           "AdSet_Name", "Ad_Name", "Form_Name", "Lead Source Campaign")).lower()
+            is_vow = "wheel" in blob or "vow" in blob
+            if (is_vow and t.date() >= LEAD_FROM) or ph in phones:
+                d = {}
+                for k, v in r.items():
+                    if not k or v in (None, "") or k.startswith("Location") or k in ("Email", "Alternate Mobile Number"):
+                        continue
+                    d[k] = v.isoformat() if isinstance(v, (dt.datetime, dt.date)) else (str(v).strip()[:300] if isinstance(v, str) else v)
+                if d:
+                    import json as _j
+                    leads_out.append((t, ph, is_vow, _j.dumps(d, default=str)))
+                    n["vow leads kept"] += 1
+            if ph not in phones:
                 continue
             recs.append(("Lead Box", t, ph, "lead", str(pick(r, "Status", "Lead Status", "Stage") or ""), None, None,
                          str(pick(r, "Lead Owner", "Owner", "Assigned To") or ""),
@@ -91,4 +110,5 @@ with cl.vetbuddy_sql.connect() as conn, conn.cursor() as cur:
         log.error("Lead Box master not read: %s", e)
     cur.executemany("insert into calldesk.vow_touch (source, ts, phone, direction, status, answered, talk_s, agent, detail) "
                     "values (%s, %s, %s, %s, %s, %s, %s, %s, %s)", recs)
-    log.info("Saved %d touches: %s", len(recs), dict(n))
+    cur.executemany("insert into calldesk.vow_leads (created_at, phone, vow_lead, d) values (%s, %s, %s, %s::jsonb)", leads_out)
+    log.info("Saved %d touches and %d leads: %s", len(recs), len(leads_out), dict(n))
