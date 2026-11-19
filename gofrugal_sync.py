@@ -117,14 +117,25 @@ def report(rows, cutoff, title):
                  o["status"], flag)
 
 
-def ensure(last_day: dt.date, deadline: dt.datetime, gs=None) -> bool:
+def ensure(last_day: dt.date, deadline: dt.datetime, gs=None, on_status=None) -> bool:
     """True when every watched outlet has synced past the cut-off (requests a sync if needed)."""
     gs = gs or new_session()
     h, m = (int(x) for x in CUTOFF.split(":"))
     cutoff = dt.datetime.combine(last_day, dt.time(h, m))
+    def tell(state, late):
+        if on_status:
+            try:
+                on_status({"date": dt.datetime.now(IST).strftime("%Y-%m-%d"), "checked_at": dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
+                           "needed": cutoff.strftime("%Y-%m-%d %H:%M"), "state": state,
+                           "behind": [{"outlet": o["name"], "data_as_on": o["last"].strftime("%Y-%m-%d %H:%M") if o["last"] else "",
+                                       "status": o["status"]} for o in late]})
+            except Exception as e:  # noqa: BLE001
+                log.warning("Could not save the sync status: %s", e)
+
     rows = outlets(gs)
     report(rows, cutoff, "Gofrugal data sync")
     watched, late = behind(rows, cutoff)
+    tell("ok" if not late else "behind", late)
     if not late:
         log.info("Gofrugal data sync OK for all %d outlets", len(watched))
         return True
@@ -151,6 +162,7 @@ def ensure(last_day: dt.date, deadline: dt.datetime, gs=None) -> bool:
         rows = outlets(gs)
         report(rows, cutoff, f"Gofrugal data sync - check {tries}")
         watched, late = behind(rows, cutoff)
+        tell("ok" if not late else "behind", late)
         if not late:
             log.info("Gofrugal data sync OK now; waiting %d more minutes before downloading", WAIT_MIN)
             time.sleep(WAIT_MIN * 60)

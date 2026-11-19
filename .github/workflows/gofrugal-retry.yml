@@ -10,6 +10,9 @@ on:
     - cron: "0 2 * * *"     # 07:30 AM IST
     - cron: "35 2 * * *"    # 08:05 AM IST
     - cron: "5 3 * * *"     # 08:35 AM IST
+    # after the 9 AM alert: every 30 min until 1:30 PM, so the report goes out as soon as the sync catches up
+    - cron: "0,30 4-7 * * *"  # 09:30 AM - 01:00 PM IST
+    - cron: "0 8 * * *"     # 01:30 PM IST
   workflow_dispatch:
 
 concurrency:

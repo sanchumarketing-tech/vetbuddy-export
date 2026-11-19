@@ -565,8 +565,16 @@ def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
     if gofrugal.ENABLED and gofrugal_sync.READY:
         deadline = dt.datetime.now(IST).replace(tzinfo=None) + dt.timedelta(
             minutes=int(os.environ.get("GOFRUGAL_SYNC_MAX_MIN", "25")))
+        def save_status(st):
+            # read by the sales-report Apps Script (7 AM mail, 9 AM WhatsApp): Gofrugal Upload/Gofrugal_Sync_Status.json
+            import json
+            f = OUTPUT_DIR / "Gofrugal_Sync_Status.json"
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(dict(st, report_to=str(d_to)), indent=1))
+            sharepoint_upload(f, SP_GOFRUGAL_FOLDER)
+
         try:
-            ok = gofrugal_sync.ensure(d_to, deadline)
+            ok = gofrugal_sync.ensure(d_to, deadline, on_status=save_status if SP_ENABLED else None)
         except Exception as e:  # noqa: BLE001
             log.error("Gofrugal sync check failed: %s", e)
             ok = False
