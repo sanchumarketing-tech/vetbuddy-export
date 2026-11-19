@@ -36,9 +36,25 @@ CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:30")        # of the report'
 WAIT_MIN = int(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "5"))
 
 
+def _open_page(gs):
+    """Open the Backup config page once, as the browser does (sets up the HQ page session)."""
+    if getattr(gs, "_bk_page", False):
+        return
+    for u in ("RayMedi_HQ/mainIndex.do", "RayMedi_HQ/mainIndex.do?page=ngx-framework-client%2Findex.html%23%2Fbackup-configuration",
+              "RayMedi_HQ/ngx-framework-client/index.html", "RayMedi_HQ/rest/hq/userinfo",
+              "RayMedi_HQ/rest/outletbackup/getlogindetails"):
+        r = gs.s.get(f"{gofrugal.BASE}/{u}", timeout=60)
+        log.info("  open %s -> %s", u.split("?")[0], r.status_code)
+    gs._bk_page = True
+
+
 def _hq(gs, method, path, **kw):
+    _open_page(gs)
     url = f"{gofrugal.BASE}/RayMedi_HQ/{path}"
-    r = gs.s.request(method, url, timeout=120, **kw)
+    hdr = {"Referer": f"{gofrugal.BASE}/RayMedi_HQ/ngx-framework-client/index.html",
+           "X-Requested-With": "XMLHttpRequest", "Accept": "application/json, text/plain, */*"}
+    hdr.update(kw.pop("headers", {}))
+    r = gs.s.request(method, url, timeout=120, headers=hdr, **kw)
     if r.status_code in (401, 403):
         raise RuntimeError(f"Gofrugal HQ refused {path.split('?')[0]} ({r.status_code}) - is this login allowed to use Backup config?")
     return r
