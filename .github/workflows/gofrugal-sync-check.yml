@@ -1,0 +1,20 @@
+name: Gofrugal sync check (read only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests openpyxl xlrd
+      - env:
+          GOFRUGAL_USER: ${{ secrets.GOFRUGAL_USER }}
+          GOFRUGAL_PASS: ${{ secrets.GOFRUGAL_PASS }}
+          GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
+        run: python gofrugal_sync.py --check
