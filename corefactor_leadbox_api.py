@@ -71,24 +71,88 @@ def fetch(day):
     return list(leads.values())
 
 
+def archive(report, day, header, rows):
+    """The day's file in the archive folder (read by the Call Desk database load)."""
+    if not cf.env("SP_SITE_URL"):
+        return
+    buf = io.StringIO()
+    csv.writer(buf).writerows([header] + rows)
+    arch = cf.SharePoint.from_env("SP_SITE_URL", "SP_LIBRARY")
+    folder = report.get("ARCHIVE_FOLDER")
+    arch.ensure_folder(folder)
+    name = f"{report.file_prefix}_{day.isoformat()}.csv"
+    arch.upload(f"{folder.strip('/')}/{name}", buf.getvalue().encode("utf-8-sig"))
+    log.info("Archived %s in '%s' (%d leads)", name, folder, len(rows))
+
+
+def to_rows(header, leads):
+    api = {cf.norm(k): k for k in leads[0]}
+    cols = [api.get(cf.norm(h)) or (RENAME.get(cf.norm(h)) if RENAME.get(cf.norm(h)) in leads[0] else None)
+            for h in header]
+    blank = [h for h, c in zip(header, cols) if c is None]
+    log.info("Master columns with no API field (left blank): %s", ", ".join(blank) or "none")
+    return [[l.get(c) if c else None for c in cols] for l in sorted(leads, key=lambda x: str(x.get("created_at")))]
+
+
+def run_graph(args, report, day, leads, path):
+    """Fast path (19 Nov 2026): headers and the append through the Excel service - no download."""
+    import graph_excel as gx
+    sp = cf.SharePoint.from_env("SP_LEADBOX_SITE_URL", "SP_LEADBOX_LIBRARY")
+    gs = gx.GraphSheet(sp, path, sheet=report.get("SHEET"), header_row=report.get("HEADER_ROW") or 1)
+    try:
+        header = gs.data_header()
+        rows = to_rows(header, leads)
+        if args.stage in ("archive", "all") and not args.check:
+            archive(report, day, header, rows)
+        if args.stage == "archive":
+            return 0
+        days = gs.days_at_bottom([gs.col(report.get("DATE_COLUMN")), gs.col(report.get("FALLBACK_DATE_COLUMN"))])
+        there = sorted(r for r, d in days.items() if d == day)
+        if args.check:
+            log.info("CHECK ONLY: API %d leads for %s; master has %d rows for that day (last row %d). Nothing changed.",
+                     len(rows), day, len(there), gs.last)
+            return 0
+        if there:
+            if args.if_present == "skip":
+                log.info("The master already has %s (%d rows) - left unchanged", day, len(there))
+                return 0
+            if there != list(range(there[0], gs.last + 1)):
+                raise cf.RunError(f"{day} is in the master but not as its last rows - remove it by hand and re-run.")
+            gs.clear_rows(there[0], there[-1])
+            log.info("Cleared %d existing rows for %s to write them again", len(there), day)
+        req = [x.strip() for x in (report.get("FORMULA_COLUMNS") or "").split(",") if x.strip()]
+        gs.append(header, rows, required_formula_cols=req)
+        log.info("Done: %d leads for %s added to the master sheet", len(rows), day)
+        return 0
+    finally:
+        gs.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date")
     ap.add_argument("--if-present", choices=["skip", "replace"], default=cf.LEAD_BOX.get("IF_PRESENT") or "skip")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--stage", choices=["archive", "excel", "all"], default="all",
+                    help="archive = only the day's file (for the database load); excel = only the master sheet")
+    ap.add_argument("--engine", choices=["graph", "openpyxl"], default="graph",
+                    help="graph = write into the file on SharePoint (fast); openpyxl = download / re-upload (old, slow)")
+    ap.add_argument("--master-path", help="another master file (e.g. a test copy)")
     args = ap.parse_args()
     cf.setup_logging()
     report = cf.LEAD_BOX
     day = (datetime.strptime(args.date, "%Y-%m-%d").date() if args.date
            else datetime.now(cf.IST).date() - timedelta(days=1))
-    log.info("Corefactor Lead Box for %s, through the Lead API", day)
+    log.info("Corefactor Lead Box for %s, through the Lead API (stage %s, %s)", day, args.stage, args.engine)
     leads = fetch(day)
     if not leads:
         log.warning("No leads created on %s - nothing changed", day)
         return 0
+    path = args.master_path or report.get("MASTER_PATH", required=True)
+    if args.engine == "graph":
+        return run_graph(args, report, day, leads, path)
 
     sp = cf.SharePoint.from_env("SP_LEADBOX_SITE_URL", "SP_LEADBOX_LIBRARY")
-    path = report.get("MASTER_PATH", required=True)
     for attempt in range(1, 6):
         wb_bytes, etag = sp.download(path)
         master = cf.Master(wb_bytes, report)
@@ -96,33 +160,20 @@ def main():
                    for r in range(master.last, max(master.hr, master.last - 500), -1)
                    if isinstance(master.ws.cell(r, ci).value, str) and str(master.ws.cell(r, ci).value).startswith("=")}
         header = [str(master.headers[ci]).strip() for ci in sorted(master.headers) if ci not in formula]
-        api = {cf.norm(k): k for k in leads[0]}
-        cols = [api.get(cf.norm(h)) or (RENAME.get(cf.norm(h)) if RENAME.get(cf.norm(h)) in leads[0] else None)
-                for h in header]
-        blank = [h for h, c in zip(header, cols) if c is None]
-        if attempt == 1:
-            log.info("Master columns with no API field (left blank): %s", ", ".join(blank) or "none")
-        rows = [[l.get(c) if c else None for c in cols] for l in sorted(leads, key=lambda x: str(x.get("created_at")))]
-        present = master.has_day(day)
+        rows = to_rows(header, leads)
         if args.check:
             n = sum(1 for r in range(master.hr + 1, master.last + 1) if master.row_day(r) == day)
             log.info("CHECK ONLY: API %d leads for %s; master has %d rows for that day. Nothing changed.", len(rows), day, n)
             return 0
-        if present:
+        if attempt == 1 and args.stage in ("archive", "all"):
+            archive(report, day, header, rows)
+        if args.stage == "archive":
+            return 0
+        if master.has_day(day):
             if args.if_present == "skip":
                 log.info("The master already has %s - left unchanged", day)
                 return 0
             master.remove_day(day)
-        if attempt == 1:
-            buf = io.StringIO()
-            csv.writer(buf).writerows([header] + rows)
-            if cf.env("SP_SITE_URL"):
-                arch = cf.SharePoint.from_env("SP_SITE_URL", "SP_LIBRARY")
-                folder = report.get("ARCHIVE_FOLDER")
-                arch.ensure_folder(folder)
-                name = f"{report.file_prefix}_{day.isoformat()}.csv"
-                arch.upload(f"{folder.strip('/')}/{name}", buf.getvalue().encode("utf-8-sig"))
-                log.info("Archived %s in '%s'", name, folder)
         master.append(header, rows)
         try:
             sp.upload(path, master.to_bytes(), if_match=etag)

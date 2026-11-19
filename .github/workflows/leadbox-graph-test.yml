@@ -1,0 +1,31 @@
+name: Lead Box fast Excel update - test on a copy
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day (YYYY-MM-DD)"
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests xlrd openpyxl
+      - env:
+          COREFACTOR_LEADBOX_API_KEY: ${{ secrets.COREFACTOR_LEADBOX_API_KEY }}
+          COREFACTOR_BASE_URL: ${{ vars.COREFACTOR_BASE_URL || 'https://tw1.teleduce.corefactors.in' }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_LEADBOX_SITE_URL: ${{ vars.SP_LEADBOX_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
+          SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
+          OUTPUT_DIR: ${{ runner.temp }}/out
+          IN_DATE: ${{ inputs.date }}
+        run: python tools/leadbox_graph_test.py "$IN_DATE"
