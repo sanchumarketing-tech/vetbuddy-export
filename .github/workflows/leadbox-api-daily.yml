@@ -34,7 +34,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +44,9 @@ jobs:
 
       - run: pip install requests xlrd openpyxl
 
-      - name: Corefactor Lead Box
+      # 19 Nov 2026: 1) fetch + day file in the archive, 2) the database (Call Desk has the leads within minutes),
+      # 3) the master Excel - written in place through the Excel service (~10 min instead of ~45; no download).
+      - name: Corefactor Lead Box - fetch + archive
         env:
           COREFACTOR_LEADBOX_API_KEY: ${{ secrets.COREFACTOR_LEADBOX_API_KEY }}
           COREFACTOR_BASE_URL: ${{ vars.COREFACTOR_BASE_URL || 'https://tw1.teleduce.corefactors.in' }}
@@ -63,12 +65,10 @@ jobs:
           SP_LEADBOX_IF_PRESENT: ${{ inputs.if_present || 'skip' }}
           INPUT_DATE: ${{ inputs.date }}
           INPUT_CHECK: ${{ inputs.check }}
-        run: python corefactor_leadbox_api.py ${INPUT_DATE:+--date "$INPUT_DATE"} $( [ "$INPUT_CHECK" = "true" ] && echo --check )
+        run: python corefactor_leadbox_api.py --stage archive --engine graph ${INPUT_DATE:+--date "$INPUT_DATE"} $( [ "$INPUT_CHECK" = "true" ] && echo --check )
 
-      # Day's file + log on GitHub for 14 days (also on failure, for diagnosis)
-      # Call Desk: write this job's data into the database too (16 Nov 2026). It cannot fail the job.
       - name: Save the Lead Box to the database (Call Desk)
-        if: success() && inputs.check != true
+        if: inputs.check != true
         continue-on-error: true
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -82,6 +82,27 @@ jobs:
         run: |
           pip install -q "psycopg[binary]" xlrd openpyxl requests
           python calldesk_load.py --only leads --no-build
+
+      - name: Corefactor Lead Box - master Excel (in place)
+        env:
+          COREFACTOR_LEADBOX_API_KEY: ${{ secrets.COREFACTOR_LEADBOX_API_KEY }}
+          COREFACTOR_BASE_URL: ${{ vars.COREFACTOR_BASE_URL || 'https://tw1.teleduce.corefactors.in' }}
+          OUTPUT_DIR: ${{ runner.temp }}/reports
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          # Archive copy: same site and library as CRM Upload
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_LEADBOX_ARCHIVE_FOLDER: ${{ vars.SP_LEADBOX_ARCHIVE_FOLDER || 'Lead Box Archive' }}
+          # Master sheet
+          SP_LEADBOX_SITE_URL: ${{ vars.SP_LEADBOX_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_LEADBOX_LIBRARY: ${{ vars.SP_LEADBOX_LIBRARY || 'Documents' }}
+          SP_LEADBOX_MASTER_PATH: ${{ vars.SP_LEADBOX_MASTER_PATH || 'Sanchu Reports/Backend Leadbox Report.xlsx' }}
+          SP_LEADBOX_IF_PRESENT: ${{ inputs.if_present || 'skip' }}
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_CHECK: ${{ inputs.check }}
+        run: python corefactor_leadbox_api.py --stage excel --engine graph ${INPUT_DATE:+--date "$INPUT_DATE"} $( [ "$INPUT_CHECK" = "true" ] && echo --check )
 
       - if: always()
         uses: actions/upload-artifact@v4
