@@ -758,6 +758,8 @@ function Incentives({ me }) {
   useEffect(() => { load(); }, [load]);
   const one = d && (agent !== -1 || !isLead) ? d.agents[0] : null;
   const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "–");
+  const rs = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
+  const slabDept = one?.department || dept;
   const saveEdit = async () => {
     try {
       await rpc("cd_agent_incentive", { p_id: edit.id, p_logins: edit.logins.split(",").map((x) => x.trim()).filter(Boolean), p_target: edit.target === "" ? null : Number(edit.target) });
@@ -782,7 +784,8 @@ function Incentives({ me }) {
         <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this salary month, 21st to 20th (one per pet).
         <strong> Visited</strong> = that pet was billed in VetBuddy on the appointment date or up to 3 days after.
         <strong> Shared</strong> = the same pet was booked by two or more agents for the same appointment date - it counts for none of them.
-        <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo).
+        <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo). <strong>Incentive</strong> = slab amount for the eligible visits (attendance and chat bonuses not included yet).
+        {d?.slabs?.[slabDept] && <><br /><strong>{slabDept} slabs:</strong> {d.slabs[slabDept].map((s) => `${s.from} visits ${rs(s.fixed)}, then ₹${s.per_visit} per visit`).join(" · ")}</>}
       </p>
       {err && <p className="note warn">{err}</p>}
       {!d && !err && <p className="muted">Loading…</p>}
@@ -795,6 +798,8 @@ function Incentives({ me }) {
             <div><span>{one.visited}</span>visited</div>
             <div><span>{one.shared}</span>shared (not counted)</div>
             <div className="good"><span>{one.eligible}</span>eligible for incentive</div>
+            <div className="good"><span>{rs(one.amount)}</span>incentive</div>
+            {one.next_slab && <div><span>{one.next_slab.more}</span>more visits to the {one.next_slab.at} slab (₹{one.next_slab.per_visit} per visit)</div>}
             <div><span>{one.target ? pct(one.eligible, one.target) : "–"}</span>of target</div>
           </div>
           {one.logins?.length === 0 && <p className="note warn">No VetBuddy login is linked to {one.name} yet{isLead ? " - add it below." : " - ask your team lead."}</p>}
@@ -817,20 +822,20 @@ function Incentives({ me }) {
       {d && !one && (
         <>
           <table className="grid">
-            <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
+            <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Incentive</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
             <tbody>
               {d.agents.map((a) => (
                 <tr key={a.id}>
                   <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
                   <td className="muted">{a.department || "–"}</td>
                   <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.booked}</td><td>{a.visited}</td>
-                  <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
+                  <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td><strong>{rs(a.amount)}</strong>{a.next_slab && <div className="muted small">{a.next_slab.more} more → ₹{a.next_slab.per_visit}/visit</div>}</td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
                   <td className="muted small">{a.logins?.length ? a.logins.join(", ") : <span className="warntext">none</span>}</td>
                   <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
                 </tr>
               ))}
               <tr className="total"><td>Total</td><td /><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
-                {["called", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td /><td /><td /></tr>
+                {["called", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td><strong>{rs(d.agents.reduce((s, a) => s + Number(a.amount || 0), 0))}</strong></td><td /><td /><td /></tr>
             </tbody>
           </table>
           {edit && (
