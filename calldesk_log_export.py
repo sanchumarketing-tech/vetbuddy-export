@@ -5,7 +5,7 @@ Call Desk log -> SharePoint Excel ("Sanchu Reports/Call Desk Log.xlsx" in the sa
 One row per customer on an agent's list: date, agent, customer, phone, unit, reason, status
 (Called / Not called / Rescheduled), rescheduled date and time, when it was marked called and by whom,
 the agent's note, and what the Corefactor / Runo logs say. One sheet per month (newest first) plus
-"Today". Runs every hour in the day (GitHub workflow calldesk-log.yml); only reads the database.
+"Today". Runs 3 times a day - 1 PM, 6 PM, 10:15 PM (GitHub workflow calldesk-log.yml); only reads the database.
 """
 import datetime as dt
 import io

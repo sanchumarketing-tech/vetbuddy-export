@@ -91,7 +91,7 @@ GitHub may start a scheduled run 5–20 minutes late. The month-to-date runs (Ve
 09:00  Apps Script: import the two SharePoint files ─► report (try 2 of 2 at 9:30; then no report that day)
          └ 1 min after the import: WhatsApp picture ─► Supabase numbers (bot) ─► Teams picture
          └ at/after 9:00, if the Gofrugal file is missing: WhatsApp "Gofrugal data sync issue, sales report will be delayed."
-09:11 – 22:11 hourly  Call Desk log ─► "Call Desk Log.xlsx"
+13:07, 18:07, 22:17  Call Desk log ─► "Call Desk Log.xlsx" (3 times a day since 20 Nov)
 13:01  Appointment Status (today so far) ─► sheet "Next day"
 23:47  CRM Upload ─► CRM Archive, Gofrugal Upload ─► Gofrugal Archive
 ```
@@ -384,7 +384,7 @@ The team's daily calling tool:
   - Live copies of those functions: `sql/live/`.
   - Incentives: `cd_incentives` (`sql/30_incentives_speed.sql`).
 - **Publishing:** *Call Desk web app* builds the site and publishes it to Vercel (needs secret `VERCEL_TOKEN`).
-- **Activity log:** every hour, 9:11 AM–10:11 PM, `calldesk_log_export.py` writes **Call Desk Log.xlsx** (Sanchu Reports).
+- **Activity log:** 3 times a day (1:07 PM, 6:07 PM, 10:17 PM), `calldesk_log_export.py` writes **Call Desk Log.xlsx** (Sanchu Reports).
 
 ## 8. Google Sheet "Daily Sales Report" (Apps Script)
 

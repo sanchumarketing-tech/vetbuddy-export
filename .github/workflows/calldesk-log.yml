@@ -1,11 +1,13 @@
 name: Call Desk log to Excel
 
-# Every hour 9 AM - 10 PM IST: writes "Sanchu Reports/Call Desk Log.xlsx" (sanchureports OneDrive) from the
+# 3 times a day (20-11-2026, was hourly - saves GitHub minutes and database reads): writes "Sanchu Reports/Call Desk Log.xlsx" (sanchureports OneDrive) from the
 # Call Desk database - who was called, not called or rescheduled (with the new date and time). Read only.
 
 on:
   schedule:
-    - cron: "41 3-16 * * *"   # 09:11 AM .. 10:11 PM IST, every hour
+    - cron: "37 7 * * *"     # 01:07 PM IST
+    - cron: "37 12 * * *"    # 06:07 PM IST
+    - cron: "47 16 * * *"    # 10:17 PM IST (end of day)
   workflow_dispatch:
 
 concurrency:
