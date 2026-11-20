@@ -21,5 +21,11 @@ begin
                                     failed = case when excluded.pin_hash is not null then 0 else calldesk.agents.failed end,
                                     locked_until = case when excluded.pin_hash is not null then null else calldesk.agents.locked_until end;
   if not p_active then delete from calldesk.sessions s using calldesk.agents a where a.id = s.agent_id and a.email = lower(trim(p_email)); end if;
+  -- (20 Nov 2026) today's list follows the change at once: a new agent gets numbers of their units, a team lead / inactive agent gives theirs back
+  begin
+    perform calldesk.rebalance_today();
+  exception when others then
+    raise warning 'rebalance_today failed: %', sqlerrm;
+  end;
 end $function$
 ;
