@@ -1,0 +1,22 @@
+name: Pharmacy sales per outlet (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        default: "45"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "psycopg[binary]"
+      - env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DAYS: ${{ inputs.days }}
+        run: python tools/pharmacy_outlet_check.py
