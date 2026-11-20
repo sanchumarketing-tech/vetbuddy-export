@@ -903,7 +903,9 @@ export default function App() {
   useEffect(() => { check(); }, [check]);
   useEffect(() => { const f = () => setMe(null); window.addEventListener("cd-signed-out", f); return () => window.removeEventListener("cd-signed-out", f); }, []);
   const loadAgents = useCallback(() => {
-    rpc("cd_team", { p_day: todayISO() }).then((t) => { setAgents(t.agents); setDepts(t.departments || []); }).catch(() => {});
+    const got = (t) => { setAgents(t.agents); setDepts(t.departments || []); };
+    // one retry: a slow first load (cold database) must not leave the Agents page empty
+    rpc("cd_team", { p_day: todayISO() }).then(got).catch(() => setTimeout(() => rpc("cd_team", { p_day: todayISO() }).then(got).catch(() => {}), 2000));
   }, []);
   useEffect(() => { if (me?.role === "lead") loadAgents(); }, [me, loadAgents]);
   const out = async () => { await logout(); setMe(null); };
