@@ -656,6 +656,11 @@ function Agents({ me, agents, depts = [], reload }) {
   const blank = { id: null, email: "", name: "", role: "agent", department: "Sharpshooting", units: [], target: 200, active: true, pin: "" };
   const [f, setF] = useState(blank);
   const [msg, setMsg] = useState("");
+  const [fDept, setFDept] = useState("");   // filters: "" = all, "-" = none / Any
+  const [fUnit, setFUnit] = useState("");
+  const shown = agents.filter((a) =>
+    (!fDept || (fDept === "-" ? !a.department : a.department === fDept)) &&
+    (!fUnit || (fUnit === "-" ? !a.units?.length : (a.units || []).includes(fUnit))));
   const save = async (e) => {
     e.preventDefault(); setMsg("");
     try {
@@ -665,12 +670,26 @@ function Agents({ me, agents, depts = [], reload }) {
   };
   return (
     <div className="page">
-      <h2>Agents</h2>
+      <div className="page-head">
+        <h2>Agents{(fDept || fUnit) ? <span className="muted small"> ({shown.length} of {agents.length})</span> : null}</h2>
+        <label className="inline">Department <select value={fDept} onChange={(e) => setFDept(e.target.value)}>
+          <option value="">All departments</option>
+          {depts.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+          <option value="-">No department</option>
+        </select></label>
+        <label className="inline">Unit <select value={fUnit} onChange={(e) => setFUnit(e.target.value)}>
+          <option value="">All units</option>
+          {UNITS.map((u) => <option key={u} value={u}>{title(u)}</option>)}
+          <option value="-">Any (no unit set)</option>
+        </select></label>
+        {(fDept || fUnit) && <button className="ghost" onClick={() => { setFDept(""); setFUnit(""); }}>Show all</button>}
+      </div>
       <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent switched off or made a team lead gives theirs back. Team leads never get numbers. Only agents of a department with call lists (Sharpshooting for now) get numbers; the other departments are listed but get no calls until their process is set up.</p>
       <table className="grid">
         <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
         <tbody>
-          {agents.map((a) => (
+          {shown.length === 0 && <tr><td colSpan={9} className="muted">No agents match these filters.</td></tr>}
+          {shown.map((a) => (
             <tr key={a.id}>
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
               <td>{a.department || <span className="muted">–</span>}{a.department && !a.calls && <span className="muted small"> (no calls yet)</span>}</td>
