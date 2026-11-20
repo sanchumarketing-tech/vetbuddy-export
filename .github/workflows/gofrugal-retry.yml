@@ -1,16 +1,14 @@
 name: Gofrugal retry (data sync checkpoint)
 
-# 20 Nov 2026. The 06:47 VetBuddy job downloads Gofrugal 3111 / 3126 only after the 7 billing shops' data sync
-# has reached 11:59 PM of yesterday (gofrugal_sync.py). If it was held back (or the 06:47 run started late),
-# these runs keep checking every 2 minutes and download as soon as the 7 shops are synced - never past 9:15 AM,
-# so the 9 AM sales report goes out by 9:30 or not at all. Each run does nothing when today's file is already there.
+# 20 Nov 2026 - two tries only. Try 1 is the 06:47 VetBuddy job; this is try 2 (one run at 08:15 AM IST).
+# It checks the 7 billing shops' Gofrugal data sync (gofrugal_sync.py): if behind it sends Active / Incremental,
+# looks again once after 5 minutes, and downloads 3111 / 3126 only when all 7 are past 11:59 PM of yesterday.
+# If still behind there is no report that day (the 9:00 / 9:30 report script finds no Gofrugal file).
+# Does nothing when today's Gofrugal file is already there.
 
 on:
   schedule:
-    - cron: "50 1 * * *"    # 07:20 AM IST
-    - cron: "20 2 * * *"    # 07:50 AM IST
-    - cron: "50 2 * * *"    # 08:20 AM IST
-    - cron: "20 3 * * *"    # 08:50 AM IST
+    - cron: "45 2 * * *"    # 08:15 AM IST
   workflow_dispatch:
 
 concurrency:
@@ -20,7 +18,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,7 +50,7 @@ jobs:
           GOFRUGAL_SYNC_USER: ${{ secrets.GOFRUGAL_SYNC_USER }}
           GOFRUGAL_SYNC_PASS: ${{ secrets.GOFRUGAL_SYNC_PASS }}
           GOFRUGAL_HQ_PASS: ${{ secrets.GOFRUGAL_HQ_PASS }}
-          GOFRUGAL_SYNC_MAX_MIN: "115"   # checks every 2 min, stops at 9:15 AM IST (GOFRUGAL_SYNC_UNTIL)
+          GOFRUGAL_SYNC_MAX_MIN: "15"
         run: |
           if [ -z "$GOFRUGAL_SYNC_USER" ]; then echo "Gofrugal sync checkpoint not set up (GOFRUGAL_SYNC_USER) - nothing to do"; exit 0; fi
           python vetbuddy_sales_export.py --gofrugal-only

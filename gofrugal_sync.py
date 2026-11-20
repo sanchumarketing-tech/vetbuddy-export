@@ -52,8 +52,9 @@ def new_session():
     gs.login(SYNC_USER or None, SYNC_PASS or None)
     return gs
 CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:59")        # of the report's last day
-WAIT_MIN = float(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "2"))     # 20-11-2026: check every 2 minutes
-RESEND_MIN = float(os.environ.get("GOFRUGAL_SYNC_RESEND_MIN", "10"))   # re-send Active / Incremental at most this often
+WAIT_MIN = float(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "5"))     # after the Incremental request, look again once after 5 min
+RECHECKS = int(os.environ.get("GOFRUGAL_SYNC_RECHECKS", "1"))       # 20-11-2026: one re-check per run (no polling)
+RESEND_MIN = float(os.environ.get("GOFRUGAL_SYNC_RESEND_MIN", "60"))   # Active / Incremental sent once per run
 AFTER_OK_MIN = float(os.environ.get("GOFRUGAL_SYNC_AFTER_OK_MIN", "0"))  # 20-11-2026: download at once when synced
 UNTIL = os.environ.get("GOFRUGAL_SYNC_UNTIL", "09:15")             # never wait past this (IST) - the report is due by 9:30
 
@@ -173,7 +174,7 @@ def ensure(last_day: dt.date, deadline: dt.datetime, gs=None, on_status=None) ->
                 res = post_config(gs, 1, [o["id"] for o in active_late])
                 log.info("Backup request - Incremental sent for %s: %s", ", ".join(o["name"] for o in active_late), res)
             last_sent = now
-        if now + dt.timedelta(minutes=WAIT_MIN) > deadline:
+        if tries > RECHECKS or now + dt.timedelta(minutes=WAIT_MIN) > deadline:
             log.error("Gofrugal data sync still behind at %s (no waiting past %s): %s", now.strftime("%H:%M"),
                       deadline.strftime("%H:%M"), ", ".join(o["name"] for o in late))
             return False

@@ -8,8 +8,8 @@
    same saveUpload, so "Undo last upload" works for it too).
 
    Timing: a daily trigger wakes up between 8:15 and 8:45 and books a one-time run for
-   9:00:00. If the files for yesterday are not in SharePoint yet, it tries again every
-   15 minutes until 2 PM; as soon as they arrive, the report is updated.
+   9:00:00. If the files for yesterday are not in SharePoint yet, it tries once more at 9:30 AM
+   (20-11-2026: two tries only); after that there is no report that day.
    Each run is written to the sheet "Auto Import Log".
 
    Setup (once): menu Sales Report > SharePoint auto import >
@@ -27,8 +27,7 @@ var SPI = {
   VB_RE: /^VetBuddy_GoodsServices_MTD_(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})\.xlsx$/i,
   GF_RE: /^Gofrugal_Pharmacy_MTD_(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})\.xlsx$/i,
   RUN_AT: [9, 0],          // 9:00 AM
-  RETRY_MIN: 15,           // try again every 15 min when the files are not there yet
-  LAST_TRY_HOUR: 14,       // ... until 2 PM, then import whatever is there and stop
+  SECOND_TRY: [9, 30],     // 20-11-2026: two tries only - 9:00 and 9:30 AM; then no report that day (never a half report)
   LOG_SHEET: 'Auto Import Log',
   SHEETJS: 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'  // same library as the upload window
 };
@@ -54,7 +53,7 @@ function spiInstall() {
   spiRemoveTriggers_(['spiDaily', 'spiRun']);
   ScriptApp.newTrigger('spiDaily').timeBased().atHour(SPI.RUN_AT[0] - 1).nearMinute(30).everyDays(1).inTimezone(SPI.TZ).create();
   SpreadsheetApp.getUi().alert('Daily import is ON.\nEvery morning at 9:00 AM the report is updated from SharePoint ' +
-    '(if the files are late, it retries every 15 minutes until 2 PM).\nSee the sheet "' + SPI.LOG_SHEET + '".');
+    '(if the files are late, it tries once more at 9:30 AM, then stops for the day).\nSee the sheet "' + SPI.LOG_SHEET + '".');
 }
 
 function spiUninstall() {
@@ -91,10 +90,12 @@ function spiRun() {
   var p = PropertiesService.getScriptProperties();
   var today = spiDay_(0), want = spiDay_(-1);
   if (p.getProperty('SPI_DONE_DATE') === today) return;          // already updated today
-  var lastTry = Number(Utilities.formatDate(new Date(), SPI.TZ, 'H')) >= SPI.LAST_TRY_HOUR;
+  // 20-11-2026: two tries only (9:00 and 9:30 AM), both files needed - never a report with half the sales
+  var second = spiTodayAt_(SPI.SECOND_TRY[0], SPI.SECOND_TRY[1]).getTime();
+  var lastTry = Date.now() >= second - 5 * 60000;
   var r;
   try {
-    r = spiImport_(want, lastTry);
+    r = spiImport_(want, false);
   } catch (e) {
     r = { done: false, msg: 'ERROR: ' + e.message };
     spiLog_('', '', r.msg);
@@ -109,7 +110,15 @@ function spiRun() {
     ScriptApp.newTrigger('spiPost').timeBased().after(60 * 1000).create();
     return;
   }
-  if (!lastTry) ScriptApp.newTrigger('spiRun').timeBased().after(SPI.RETRY_MIN * 60 * 1000).create();
+  if (lastTry) { spiStopped_(today); return; }
+  ScriptApp.newTrigger('spiRun').timeBased().at(new Date(second)).create();      // the second (last) try
+}
+
+function spiStopped_(today) {
+  var p = PropertiesService.getScriptProperties();
+  if (p.getProperty('SPI_STOP_DATE') === today) return;
+  p.setProperty('SPI_STOP_DATE', today);
+  spiLog_('', '', 'Stopped: the files were not complete at the 9:30 AM try - no sales report today.');
 }
 
 // after a successful import: Supabase (bot) update, picture, Teams and WhatsApp posts (once a day)
@@ -168,7 +177,7 @@ function spiSyncMail() {
     lines.push('The Gofrugal file for ' + want + ' is not in SharePoint yet and no sync check has been recorded today.');
   }
   lines.push('', 'Backup status Active and Backup request - Incremental have been sent automatically; the job keeps retrying',
-             '(8:05, 8:35, then every 30 minutes until 1:30 PM). Please check the outlet systems / internet.',
+             '(one more try at 8:15 AM; no report that day if still not synced). Please check the shop systems / internet.',
              'The 9 AM WhatsApp sales report waits for the Gofrugal file.');
   MailApp.sendEmail(SPI_MAIL_TO, 'Gofrugal data not synced - ' + today, lines.join('\n'));
   p.setProperty('SPI_MAIL_DATE', today);
