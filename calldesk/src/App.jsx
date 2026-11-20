@@ -653,20 +653,20 @@ function Team({ day, setDay, openAgent }) {
 const UNITS = ["ADYAR", "ANNA NAGAR", "NEELANGARAI", "VELACHERY", "VALASARAVAKKAM", "CH VET ON WHEELS", "COIMBATORE", "CBE VET ON WHEELS", "MADURAI", "MADURAI VET ON WHEELS", "TRICHY"];
 
 function Agents({ me, agents, reload }) {
-  const blank = { email: "", name: "", role: "agent", units: [], target: 200, active: true, pin: "" };
+  const blank = { id: null, email: "", name: "", role: "agent", units: [], target: 200, active: true, pin: "" };
   const [f, setF] = useState(blank);
   const [msg, setMsg] = useState("");
   const save = async (e) => {
     e.preventDefault(); setMsg("");
     try {
-      await rpc("cd_agent_save", { p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null });
+      await rpc("cd_agent_save", { p_id: f.id ?? null, p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null });   // p_id: an edit updates that agent, even if the name or email changes
       setMsg(`Saved ${f.name}.` + (f.pin ? ` New PIN set - they sign in with "${f.name}" or ${f.email.toLowerCase()} and that PIN.` : "")); setF(blank); reload();
     } catch (e2) { setMsg(e2.message); }
   };
   return (
     <div className="page">
       <h2>Agents</h2>
-      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. New lists use these settings from the next morning (or rebuild today's list from GitHub).</p>
+      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent switched off or made a team lead gives theirs back. Team leads never get numbers.</p>
       <table className="grid">
         <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
         <tbody>
@@ -674,20 +674,20 @@ function Agents({ me, agents, reload }) {
             <tr key={a.id}>
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
-              <td><button className="link" onClick={() => setF({ email: a.email, name: a.name, role: a.role, units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
+              <td><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
             </tr>
           ))}
         </tbody>
       </table>
       <form className="agentform" onSubmit={save}>
-        <h3>{agents.some((a) => a.email === f.email) ? "Edit agent" : "Add an agent"}</h3>
+        <h3>{f.id != null ? "Edit agent" : "Add an agent"}</h3>
         <div className="formgrid">
           <label>Name<input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
           <label>Email<input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
           <label>Role<select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="agent">Agent</option><option value="lead">Team lead</option></select></label>
           <label>Daily target<input type="number" min={0} max={1000} value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></label>
-          <label>{agents.some((a) => a.email === f.email) ? "New PIN (leave empty to keep)" : "PIN (4 to 8 digits)"}<input inputMode="numeric" pattern="[0-9]*" maxLength={8} value={f.pin}
-            onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={!agents.some((a) => a.email === f.email)} /></label>
+          <label>{f.id != null ? "New PIN (leave empty to keep)" : "PIN (4 to 8 digits)"}<input inputMode="numeric" pattern="[0-9]*" maxLength={8} value={f.pin}
+            onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={!f.id != null} /></label>
           <label className="check"><input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</label>
         </div>
         <div className="units">
