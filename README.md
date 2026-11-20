@@ -216,7 +216,7 @@ Then:
 
 Outlets that are never checked (inactive / old) – `GOFRUGAL_SKIP_OUTLETS`, default in `gofrugal_sync.py`:
 Ecommerce, Whitefield, Koramangala, Koramangala 2, Koramangala 3, Palavakkam, Coimbatore 2, Coimbatore 3,
-Anna Nagar 2, Anna Nagar 3, Anna Nagar 4, Warehouse VOW. **When an outlet opens or closes, update this list.**
+Anna Nagar 2, Anna Nagar 3, Anna Nagar 4, Anna Nagar 5, Warehouse, Warehouse VOW. **When an outlet opens or closes, update this list.**
 
 The checkpoint uses its own Gofrugal login (`GOFRUGAL_SYNC_USER` / `GOFRUGAL_SYNC_PASS`), because the report login is
 not allowed to open Backup config (403). If those secrets are empty, the checkpoint is skipped and the download runs as before.

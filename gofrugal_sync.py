@@ -6,7 +6,7 @@ Gofrugal HQ only has an outlet's bills after that outlet's backup has synced. Th
 NetTrade > Data Sync > Configuration > Backup config lists every outlet with its last successful
 sync time ("Data as on") and its backup status. Before the pharmacy download:
   1. every outlet except the inactive / old ones (GOFRUGAL_SKIP_OUTLETS: Ecommerce, Whitefield, Koramangala 1-3,
-     Palavakkam, Coimbatore 2-3, Anna Nagar 2-4, Warehouse VOW) must have synced at or after 11:59 PM of the report's last day (yesterday);
+     Palavakkam, Coimbatore 2-3, Anna Nagar 2-5, Warehouse, Warehouse VOW) must have synced at or after 11:59 PM of the report's last day (yesterday);
   2. if not: outlets whose backup status is "Suspended" are set back to "Backup status - Active"
      (this needs the HQ password: GitHub secret GOFRUGAL_HQ_PASS), then a
      "Backup request - Incremental" is sent for the outlets that are behind - same as doing it on the page;
@@ -33,7 +33,9 @@ SKIP = {s.strip().lower() for s in (os.environ.get("GOFRUGAL_SKIP_OUTLETS")
                                     or "Sanchu Ecommerce,Sanchu Whitefield,Sanchu Koramangala,"          # inactive (19-11-2026)
                                        "Sanchu Palavakkam,Sanchu Koramangala 2,Sanchu Koramangala 3,"
                                        "Sanchu Coimbatore 2,Sanchu Coimbatore 3,Sanchu Anna Nagar 2,"
-                                       "Sanchu Anna Nagar 3,Sanchu Anna Nagar 4,Sanchu Warehouse VOW").split(",") if s.strip()}
+                                       "Sanchu Anna Nagar 3,Sanchu Anna Nagar 4,Sanchu Warehouse VOW,"
+                                       "Sanchu Warehouse,Sanchu Anna Nagar 5"    # 20-11-2026: no pharmacy sales in 45 days
+                                       ).split(",") if s.strip()}
 HQ_PASS = os.environ.get("GOFRUGAL_HQ_PASS", "")
 # the login that may open Backup config (the report login cannot: 403). The checkpoint is ON only when set.
 SYNC_USER = os.environ.get("GOFRUGAL_SYNC_USER", "")
