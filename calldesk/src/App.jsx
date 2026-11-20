@@ -769,8 +769,8 @@ function Incentives({ me }) {
       <p className="muted small">
         <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this salary month, 21st to 20th (one per pet).
         <strong> Visited</strong> = that pet was billed in VetBuddy on the appointment date or up to 3 days after.
-        <strong> Shared</strong> = the same pet was booked by two or more agents in the salary month - it counts for none of them.
-        <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo), <strong>answered</strong> = 15 seconds or more.
+        <strong> Shared</strong> = the same pet was booked by two or more agents for the same appointment date - it counts for none of them.
+        <strong> Eligible</strong> = visited and not shared. <strong>Called</strong> = different numbers called (Corefactor / Runo).
       </p>
       {err && <p className="note warn">{err}</p>}
       {!d && !err && <p className="muted">Loading…</p>}
@@ -779,7 +779,6 @@ function Incentives({ me }) {
           <div className="summary inc">
             <div><span>{one.target ?? "–"}</span>target</div>
             <div><span>{one.called}</span>people called</div>
-            <div><span>{one.answered}</span>answered</div>
             <div><span>{one.booked}</span>appointments booked</div>
             <div><span>{one.visited}</span>visited</div>
             <div><span>{one.shared}</span>shared (not counted)</div>
@@ -806,19 +805,19 @@ function Incentives({ me }) {
       {d && !one && (
         <>
           <table className="grid">
-            <thead><tr><th>Agent</th><th>Target</th><th>Called</th><th>Answered</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
+            <thead><tr><th>Agent</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
             <tbody>
               {d.agents.map((a) => (
                 <tr key={a.id}>
                   <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
-                  <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.answered}</td><td>{a.booked}</td><td>{a.visited}</td>
+                  <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.booked}</td><td>{a.visited}</td>
                   <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
                   <td className="muted small">{a.logins?.length ? a.logins.join(", ") : <span className="warntext">none</span>}</td>
                   <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
                 </tr>
               ))}
               <tr className="total"><td>Total</td><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
-                {["called", "answered", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td /><td /><td /></tr>
+                {["called", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td /><td /><td /></tr>
             </tbody>
           </table>
           {edit && (
