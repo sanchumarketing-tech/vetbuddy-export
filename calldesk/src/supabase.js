@@ -2,7 +2,7 @@
 // pass the session to Supabase. The page never holds a key or a token.
 export class SignedOut extends Error {}
 
-export async function rpc(name, args = {}) {
+export async function rpc(name, args = {}, retry = true) {
   const r = await fetch("/api/rpc", {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
@@ -12,6 +12,8 @@ export async function rpc(name, args = {}) {
   const text = await r.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  // statement timeout (cold database, first load of the day): the statement was rolled back, so one retry is safe
+  if (!r.ok && retry && data && data.code === "57014") { await new Promise((ok) => setTimeout(ok, 300)); return rpc(name, args, false); }
   if (!r.ok) throw new Error((data && (data.message || data.msg)) || `Error ${r.status}`);
   return data;
 }
