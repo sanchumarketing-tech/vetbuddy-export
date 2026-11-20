@@ -4,8 +4,9 @@ Call Desk log -> SharePoint Excel ("Sanchu Reports/Call Desk Log.xlsx" in the sa
 
 One row per customer on an agent's list: date, agent, customer, phone, unit, reason, status
 (Called / Not called / Rescheduled), rescheduled date and time, when it was marked called and by whom,
-the agent's note, and what the Corefactor / Runo logs say. One sheet per month (newest first) plus
-"Today". Runs 3 times a day - 1 PM, 6 PM, 10:15 PM (GitHub workflow calldesk-log.yml); only reads the database.
+the agent's note, what the Corefactor / Runo logs say, the "What to pitch next" ticks and the vaccination
+details agents typed on the pet cards. One sheet per month (newest first) plus "Today", and a
+"Vaccination details" sheet (one row per pet). Runs 3 times a day - 1 PM, 6 PM, 10:15 PM (GitHub workflow calldesk-log.yml); only reads the database.
 """
 import datetime as dt
 import io
@@ -23,8 +24,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger("calldesk-log")
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 COLS = ["Date", "Agent", "Customer", "Phone", "Unit", "Reason", "Status", "Rescheduled to", "Marked called at",
-        "Marked by", "Note", "Call log: called", "Call log: answered", "Last logged call"]
-WIDTH = [11, 16, 24, 12, 14, 70, 12, 19, 19, 16, 30, 10, 10, 42]
+        "Marked by", "Note", "Call log: called", "Call log: answered", "Last logged call", "What to pitch next",
+        "Vaccination details"]
+WIDTH = [11, 16, 24, 12, 14, 70, 12, 19, 19, 16, 30, 10, 10, 42, 24, 40]
 
 SQL = """
 select q.list_date, coalesce(a.name, '(not assigned)'), q.client, q.phone, q.unit,
@@ -32,10 +34,23 @@ select q.list_date, coalesce(a.name, '(not assigned)'), q.client, q.phone, q.uni
        case when q.outcome = 'callback' and q.callback_at is not null then 'Rescheduled'
             when q.called_at is not null then 'Called' else 'Not called' end,
        q.callback_at at time zone 'Asia/Kolkata', q.called_at at time zone 'Asia/Kolkata', q.called_by, q.note,
-       q.attempted_at is not null, q.connected_at is not null, q.last_call
+       q.attempted_at is not null, q.connected_at is not null, q.last_call,
+       array_to_string(q.pitch, ', '),
+       (select string_agg(coalesce(v.pet_name, 'Pet') || ': ' || v.note, ' | ' order by v.pet_name)
+          from calldesk.pet_vacc_notes v where v.phone = q.phone)
 from calldesk.queue q left join calldesk.agents a on a.id = q.agent_id
 where q.list_date >= %s and not q.superseded and calldesk.row_visible(q)   -- same rows the agents see (reasons switched off / omitted numbers hidden)
 order by q.list_date desc, 2, q.rank, q.id
+"""
+
+VACC_COLS = ["Updated", "Typed by", "Customer", "Phone", "Unit", "Pet", "Vaccination details"]
+VACC_WIDTH = [19, 16, 24, 12, 14, 18, 70]
+VACC_SQL = """
+select v.updated_at at time zone 'Asia/Kolkata', v.by_name, l.client, v.phone, l.unit, v.pet_name, v.note
+from calldesk.pet_vacc_notes v
+left join lateral (select q.client, q.unit from calldesk.queue q where q.phone = v.phone
+                   order by q.list_date desc limit 1) l on true
+order by v.updated_at desc
 """
 
 
@@ -50,6 +65,8 @@ def main():
     with vetbuddy_sql.connect() as conn, conn.cursor() as cur:
         cur.execute(SQL, (first,))
         rows = cur.fetchall()
+        cur.execute(VACC_SQL)
+        vacc = cur.fetchall()
     log.info("%d rows since %s", len(rows), first)
 
     from openpyxl import Workbook
@@ -67,7 +84,8 @@ def main():
             c.alignment = Alignment(wrap_text=True, vertical="center")
         for r in data:
             ws.append([r[0], r[1], clean(r[2]).title(), r[3], (r[4] or "").title(), clean(r[5]), r[6], r[7], r[8],
-                       r[9] or "", r[10] or "", "Yes" if r[11] else "No", "Yes" if r[12] else "No", r[13] or ""])
+                       r[9] or "", r[10] or "", "Yes" if r[11] else "No", "Yes" if r[12] else "No", r[13] or "",
+                       r[14] or "", r[15] or ""])
             ws.cell(ws.max_row, 7).fill = PatternFill("solid", fgColor=fill[r[6]])
         for i, w in enumerate(WIDTH, 1):
             ws.column_dimensions[ws.cell(1, i).column_letter].width = w
@@ -81,6 +99,19 @@ def main():
     months = sorted({(r[0].year, r[0].month) for r in rows}, reverse=True)
     for y, m in months:
         sheet(dt.date(y, m, 1).strftime("%b %Y"), [r for r in rows if (r[0].year, r[0].month) == (y, m)])
+    ws = wb.create_sheet("Vaccination details")
+    ws.append(VACC_COLS)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1F3864")
+    for r in vacc:
+        ws.append([r[0], r[1] or "", clean(r[2]).title(), r[3], (r[4] or "").title(), r[5] or "", r[6]])
+    for i, w in enumerate(VACC_WIDTH, 1):
+        ws.column_dimensions[ws.cell(1, i).column_letter].width = w
+    for row in ws.iter_rows(min_row=2):
+        row[0].number_format = "dd-mm-yyyy hh:mm AM/PM"
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
     buf = io.BytesIO()
     wb.save(buf)
 
