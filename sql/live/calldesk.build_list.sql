@@ -126,7 +126,11 @@ begin
          max(z.sale_date) filter (where z.plan_category ilike 'vaccination%' and z.item_name ilike 'Vaccination &%') as last_vac,
          count(distinct z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_n,
          max(z.sale_date) filter (where z.plan_subcategory ilike 'holiday boarding') as last_board,
-         min(z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_first
+         min(z.sale_date) filter (where z.item_name ~* 'post bite' and z.sale_date >= d - 35) as pb_first,
+         (array_agg(z.item_name order by z.sale_date desc) filter (where z.item_name ~* '^Vaccination & Physical Examination' and z.item_name ~* 'DHPP|TRI ?Cat'))[1] as core_item,
+         max(z.sale_date) filter (where z.item_name ~* '^Vaccination & Physical Examination' and z.item_name ~* 'DHPP|TRI ?Cat') as core_date,
+         (array_agg(z.item_name order by z.sale_date desc) filter (where z.item_name ~* '^Vaccination & Physical Examination - Anti Rabies' and z.item_name !~* 'post bite'))[1] as rab_item,
+         max(z.sale_date) filter (where z.item_name ~* '^Vaccination & Physical Examination - Anti Rabies' and z.item_name !~* 'post bite') as rab_date
   from (select substring(client_id from '\(([^)]*)\)') as pet_id, patient_dob_text, sale_date, item_name, plan_category, plan_subcategory
           from vetbuddy.sales where client_id is not null and sale_date >= d - 460 and sale_date < d) z
   group by z.pet_id;
@@ -140,13 +144,41 @@ begin
   where e.pb_n between 1 and 4
     and d between e.pb_first + (array[3,7,14,28])[e.pb_n] - 1 and e.pb_first + (array[3,7,14,28])[e.pb_n] + 7;
   insert into t_cand
-  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_course', 5,
-         'Vaccine course not finished: ' || regexp_replace(e.last_vac_item, '^Vaccination & Physical Examination - ', '') || ' given on ' || to_char(e.last_vac, 'DD Mon') || ' - next dose is due',
-         e.last_vac + 21, d - e.last_vac
+  select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'vaccine_course', case when v.nxt ~* 'annual' then 6 else 5 end,
+         'Next vaccine due ' || to_char(v.due, 'DD Mon') || ': ' || v.nxt || ' (last: ' || regexp_replace(v.last_item, '^Vaccination & Physical Examination\s*-\s*', '') || ' on ' || to_char(v.last_date, 'DD Mon YYYY') || ')',
+         v.due, d - v.due
   from t_pet p join t_ext e using (pet_id)
-  where e.last_vac_item !~* 'annual|post bite' and d - e.last_vac between 21 and 60
-    and (e.last_vac_item ~* '\((primary|1st booster|uv)\)'
-         or (e.last_vac_item ~* '2nd booster' and e.dob is not null and e.last_vac - e.dob < 112));
+  cross join lateral (
+    -- vaccine chart (20 Nov 2026): Primary 45 d -> 1st booster 66 d -> 2nd booster (+ARV) 90 d -> 3rd booster 111 d -> Annual at 1 year -> every year;
+    -- unvaccinated pets: UV -> UV booster 21 days later -> Annual; Anti Rabies: Primary 90 d -> Booster 111 d -> Annual
+    select x.last_item, x.last_date, x.nxt,
+           greatest(coalesce(case when e.dob < x.last_date then e.dob + x.age end, x.last_date + x.gap), x.last_date + x.min_gap) as due
+      from (
+        select e.core_item last_item, e.core_date last_date,
+               case when e.core_item ~* 'DHPP' then 'DHPPIL' else 'TRI Cat' end ||
+               case when e.core_item ~* 'uv\s*-\s*booster' then ' + ARV (Annual)'
+                    when e.core_item ~* '\(\s*uv\s*\)' then ' + ARV (UV - Booster)'
+                    when e.core_item ~* 'primary' then ' (1st booster)'
+                    when e.core_item ~* '1st booster' then ' + ARV (2nd booster)'
+                    when e.core_item ~* '2nd booster' then ' + ARV (3rd booster)'
+                    else ' + ARV (Annual)' end as nxt,
+               case when e.core_item ~* 'uv' then null when e.core_item ~* 'primary' then 66 when e.core_item ~* '1st booster' then 90
+                    when e.core_item ~* '2nd booster' then 111 when e.core_item ~* '3rd booster' then 365 end as age,
+               case when e.core_item ~* 'uv\s*-\s*booster' then 344 when e.core_item ~* '\(\s*uv\s*\)' then 21 when e.core_item ~* 'primary' then 21
+                    when e.core_item ~* '1st booster' then 24 when e.core_item ~* '2nd booster' then 21 when e.core_item ~* '3rd booster' then 254 else 365 end as gap,
+               case when e.core_item ~* 'annual' then 300 when e.core_item ~* '3rd booster|uv\s*-\s*booster' then 120 else 14 end as min_gap
+         where e.core_item is not null
+        union all
+        select e.rab_item, e.rab_date,
+               'Anti Rabies (' || case when e.rab_item ~* 'primary' then 'Booster' else 'Annual' end || ')',
+               case when e.rab_item ~* 'primary' then 111 when e.rab_item ~* 'booster' then 365 end,
+               case when e.rab_item ~* 'primary' then 21 when e.rab_item ~* 'booster' then 254 else 365 end,
+               case when e.rab_item ~* 'annual' then 300 when e.rab_item ~* 'booster' then 120 else 14 end
+         where e.rab_item is not null
+           -- the core course already carries ARV from the 2nd booster: no separate rabies call then
+           and not (e.core_item ~* 'ARV' and e.core_date >= e.rab_date)) x) v
+  where d between v.due - case when v.nxt ~* 'annual' then 7 else 3 end and v.due + 30
+    and not exists (select 1 from calldesk.calls k where k.phone = p.phone and k.call_at >= (v.due - 10)::timestamp and k.answered);
   insert into t_cand
   select p.phone, p.client_name, p.unit, p.pet_id, p.pet_name, 'deworm_due', 6,
          'Deworming due - last done on ' || to_char(e.last_deworm, 'DD Mon') || ' (' || iv.txt || ')', e.last_deworm + iv.days, d - (e.last_deworm + iv.days)

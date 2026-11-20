@@ -36,10 +36,10 @@ begin
   cl as (select k.agent, count(distinct k.phone) called
            from calldesk.calls k where k.direction = 'out' and k.call_at >= f and k.call_at < t and k.agent in (select name from ag) group by 1),
   mk as (select q.agent_id, count(*) marked from calldesk.queue q where q.called_at >= f and q.called_at < t group by 1)
-  select jsonb_build_object('month', pm, 'department', p_dept, 'departments', (select jsonb_agg(name order by sort, name) from calldesk.departments), 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
+  select jsonb_build_object('month', pm, 'department', p_dept, 'slabs', (select coalesce(jsonb_object_agg(z.department, z.s), '{}') from (select department, jsonb_agg(jsonb_build_object('from', from_visits, 'fixed', fixed_amount, 'per_visit', per_visit) order by from_visits) s from calldesk.incentive_slabs group by 1) z), 'departments', (select jsonb_agg(name order by sort, name) from calldesk.departments), 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
       select g.id, g.name, g.department, g.appt_target target, g.vb_logins logins, g.units,
              coalesce(cl.called, 0) called, coalesce(mk.marked, 0) marked_called,
-             coalesce(per.booked, 0) booked, coalesce(per.visited, 0) visited, coalesce(per.shared, 0) shared, coalesce(per.eligible, 0) eligible
+             coalesce(per.booked, 0) booked, coalesce(per.visited, 0) visited, coalesce(per.shared, 0) shared, coalesce(per.eligible, 0) eligible, calldesk.incentive_amount(g.department, coalesce(per.eligible, 0)::int) amount, calldesk.incentive_next(g.department, coalesce(per.eligible, 0)::int) next_slab
         from ag g left join cl on cl.agent = g.name left join mk on mk.agent_id = g.id left join per on per.agent_id = g.id
        where g.active or coalesce(cl.called, 0) > 0 or coalesce(per.booked, 0) > 0) x), '[]'),
     'rows', case when p_agent <> -1 or m.role <> 'lead' then coalesce((select jsonb_agg(jsonb_build_object(
