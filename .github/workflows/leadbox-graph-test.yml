@@ -9,6 +9,12 @@ on:
       mode:
         description: "empty = full test, verify = only re-read the test copy"
         required: false
+      chunk:
+        description: "rows per write (default 50)"
+        required: false
+      sparse:
+        description: "1 = send number formats only for date / time columns"
+        required: false
 
 jobs:
   run:
@@ -32,4 +38,6 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/out
           IN_DATE: ${{ inputs.date }}
           IN_MODE: ${{ inputs.mode }}
+          GRAPH_CHUNK_ROWS: ${{ inputs.chunk }}
+          GRAPH_SPARSE_FORMAT: ${{ inputs.sparse }}
         run: python tools/leadbox_graph_test.py "$IN_DATE" $IN_MODE

@@ -205,7 +205,13 @@ class GraphSheet:
             return raw
 
         start = self.last + 1
-        chunk = int(__import__('os').environ.get('GRAPH_CHUNK_ROWS') or 50)
+        import os as _os
+        chunk = int(_os.environ.get('GRAPH_CHUNK_ROWS') or 50)
+        # 20-11-2026 (speed test): GRAPH_SPARSE_FORMAT=1 sends number formats only for date / time columns
+        # (null = leave the cell as it is), so each request carries far less
+        sparse = _os.environ.get('GRAPH_SPARSE_FORMAT') == '1'
+        fmt_row = [f if (is_date_fmt(f) or is_time_fmt(f)) else None for f in fmt] if sparse else fmt
+        t_all = time.time()
         for i in range(0, len(rows), chunk):
             part = rows[i:i + chunk]
             r1, r2 = start + i, start + i + len(part) - 1
@@ -221,9 +227,10 @@ class GraphSheet:
                     else:
                         line.append("")
                 body_vals.append(line)
+            t0 = time.time()
             self.patch(f"A{r1}:{self.lastcol}{r2}", {"formulasR1C1": body_vals,
-                                                        "numberFormat": [fmt] * len(part)})
-            log.info("  wrote rows %d-%d", r1, r2)
+                                                        "numberFormat": [fmt_row] * len(part)})
+            log.info("  wrote rows %d-%d in %.1fs", r1, r2, time.time() - t0)
         new_last = start + len(rows) - 1
         # an Excel table that ended at the old last row grows to the new last row
         for t in self._req("get", self.wsu + "/tables?$select=id,name").json().get("value", []):
@@ -233,7 +240,8 @@ class GraphSheet:
                 self._req("post", f"/tables('{t['id']}')/resize",
                           json={"newRange": f"{self.ws}!{m.group(1)}{m.group(2)}:{m.group(3)}{new_last}"})
                 log.info("Table '%s' now ends at row %d", t["name"], new_last)
-        log.info("Appended %d rows (rows %d-%d) without downloading the workbook", len(rows), start, new_last)
+        log.info("Appended %d rows (rows %d-%d) without downloading the workbook in %.0fs (chunk %d%s)", len(rows), start,
+                 new_last, time.time() - t_all, chunk, ", sparse formats" if sparse else "")
         self.last = new_last
         self._bottom = None
         return len(rows)
