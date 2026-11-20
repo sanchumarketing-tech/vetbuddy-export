@@ -14,28 +14,31 @@ begin
   f := (pm - interval '1 month' + interval '20 days')::date;   -- 21st of the previous month
   t := (pm + interval '20 days')::date;                         -- up to the 20th (exclusive 21st)
   return (
-  with lg as (select g.id agent_id, g.name, lower(x) login from calldesk.agents g, unnest(g.vb_logins) x where g.role = 'agent'),
-  bk as (select distinct on (lg.agent_id, ap.pet_id) lg.agent_id, lg.name agent_name, ap.pet_id, ap.appt_id, ap.appt_date, ap.appt_time,
+  with lg as materialized (select g.id agent_id, g.name, lower(x) login from calldesk.agents g, unnest(g.vb_logins) x where g.role = 'agent'),
+  -- every booking by a mapped agent login with the appointment in the salary month
+  ba as materialized (select lg.agent_id, lg.name agent_name, ap.pet_id, ap.appt_id, ap.appt_date, ap.appt_time,
                 ap.status, ap.client, ap.pet, ap.phone, ap.clinic, ap.created_by
            from calldesk.appointments ap join lg on lg.login = lower(ap.created_by)
-          where ap.appt_date >= f and ap.appt_date < t and ap.pet_id is not null
-          order by lg.agent_id, ap.pet_id, ap.appt_date, ap.appt_id),
-  sh as (select pet_id, array_agg(distinct agent_name) names from bk group by pet_id having count(distinct agent_id) > 1),
-  sv as (select distinct substring(s.client_id from '\(([^)]*)\)') pid, s.sale_date from vetbuddy.mv_pbi_pet_day s
-          where s.sale_date >= f and s.sale_date < t + 4),   -- 19-11-2026: pet-day summary (7 MB) instead of the full sales lines
-  vv as (select b.agent_id, b.pet_id, min(sv.sale_date) visit_date from bk b join sv on sv.pid = b.pet_id and sv.sale_date between b.appt_date and b.appt_date + 3 group by 1, 2),
-  rows as (select b.*, vv.visit_date, sh.pet_id is not null shared, array_to_string(array_remove(sh.names, b.agent_name), ', ') shared_with
-             from bk b left join vv using (agent_id, pet_id) left join sh using (pet_id)),
+          where ap.appt_date >= f and ap.appt_date < t and ap.pet_id is not null),
+  -- one per pet per agent (the earliest appointment)
+  bk as materialized (select distinct on (agent_id, pet_id) * from ba order by agent_id, pet_id, appt_date, appt_id),
+  -- shared: the same pet booked by two or more agents for the same appointment date
+  sh as materialized (select pet_id, appt_date, array_agg(distinct agent_name) names from ba group by 1, 2 having count(distinct agent_id) > 1),
+  sv as materialized (select distinct substring(s.client_id from '\(([^)]*)\)') pid, s.sale_date from vetbuddy.mv_pbi_pet_day s
+          where s.sale_date >= f and s.sale_date < t + 4),
+  vv as materialized (select b.agent_id, b.pet_id, min(sv.sale_date) visit_date from bk b join sv on sv.pid = b.pet_id and sv.sale_date between b.appt_date and b.appt_date + 3 group by 1, 2),
+  rows as materialized (select b.*, vv.visit_date, sh.pet_id is not null shared, array_to_string(array_remove(sh.names, b.agent_name), ', ') shared_with
+             from bk b left join vv using (agent_id, pet_id) left join sh on sh.pet_id = b.pet_id and sh.appt_date = b.appt_date),
   per as (select agent_id, count(*) booked, count(*) filter (where visit_date is not null) visited, count(*) filter (where shared) shared,
                  count(*) filter (where visit_date is not null and not shared) eligible from rows group by 1),
-  ag as (select a.* from calldesk.agents a
+  ag as materialized (select a.* from calldesk.agents a
           where a.role = 'agent' and (m.role = 'lead' and (p_agent = -1 or a.id = p_agent) or a.id = m.id)),
-  cl as (select k.agent, count(distinct k.phone) called, count(distinct k.phone) filter (where k.answered) answered
+  cl as (select k.agent, count(distinct k.phone) called
            from calldesk.calls k where k.direction = 'out' and k.call_at >= f and k.call_at < t and k.agent in (select name from ag) group by 1),
   mk as (select q.agent_id, count(*) marked from calldesk.queue q where q.called_at >= f and q.called_at < t group by 1)
   select jsonb_build_object('month', pm, 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
       select g.id, g.name, g.appt_target target, g.vb_logins logins, g.units,
-             coalesce(cl.called, 0) called, coalesce(cl.answered, 0) answered, coalesce(mk.marked, 0) marked_called,
+             coalesce(cl.called, 0) called, coalesce(mk.marked, 0) marked_called,
              coalesce(per.booked, 0) booked, coalesce(per.visited, 0) visited, coalesce(per.shared, 0) shared, coalesce(per.eligible, 0) eligible
         from ag g left join cl on cl.agent = g.name left join mk on mk.agent_id = g.id left join per on per.agent_id = g.id
        where g.active or coalesce(cl.called, 0) > 0 or coalesce(per.booked, 0) > 0) x), '[]'),
