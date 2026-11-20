@@ -1,5 +1,5 @@
--- live definition of public.cd_incentives(p_month date, p_agent integer) - exported from the database
-CREATE OR REPLACE FUNCTION public.cd_incentives(p_month date DEFAULT NULL::date, p_agent integer DEFAULT '-1'::integer)
+-- live definition of public.cd_incentives(p_month date, p_agent integer, p_dept text) - exported from the database
+CREATE OR REPLACE FUNCTION public.cd_incentives(p_month date DEFAULT NULL::date, p_agent integer DEFAULT '-1'::integer, p_dept text DEFAULT NULL::text)
  RETURNS jsonb
  LANGUAGE plpgsql
  STABLE SECURITY DEFINER
@@ -32,12 +32,12 @@ begin
   per as (select agent_id, count(*) booked, count(*) filter (where visit_date is not null) visited, count(*) filter (where shared) shared,
                  count(*) filter (where visit_date is not null and not shared) eligible from rows group by 1),
   ag as materialized (select a.* from calldesk.agents a
-          where a.role = 'agent' and (m.role = 'lead' and (p_agent = -1 or a.id = p_agent) or a.id = m.id)),
+          where a.role = 'agent' and (m.role = 'lead' and (p_agent = -1 or a.id = p_agent) or a.id = m.id) and (coalesce(p_dept, '') = '' or p_agent <> -1 or m.role <> 'lead' or a.department = p_dept)),
   cl as (select k.agent, count(distinct k.phone) called
            from calldesk.calls k where k.direction = 'out' and k.call_at >= f and k.call_at < t and k.agent in (select name from ag) group by 1),
   mk as (select q.agent_id, count(*) marked from calldesk.queue q where q.called_at >= f and q.called_at < t group by 1)
-  select jsonb_build_object('month', pm, 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
-      select g.id, g.name, g.appt_target target, g.vb_logins logins, g.units,
+  select jsonb_build_object('month', pm, 'department', p_dept, 'departments', (select jsonb_agg(name order by sort, name) from calldesk.departments), 'cycle_from', f, 'cycle_to', t - 1, 'agents', coalesce((select jsonb_agg(x order by x.eligible desc, x.name) from (
+      select g.id, g.name, g.department, g.appt_target target, g.vb_logins logins, g.units,
              coalesce(cl.called, 0) called, coalesce(mk.marked, 0) marked_called,
              coalesce(per.booked, 0) booked, coalesce(per.visited, 0) visited, coalesce(per.shared, 0) shared, coalesce(per.eligible, 0) eligible
         from ag g left join cl on cl.agent = g.name left join mk on mk.agent_id = g.id left join per on per.agent_id = g.id

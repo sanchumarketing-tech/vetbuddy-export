@@ -19,9 +19,9 @@ begin
                      and k.call_at >= sw.f::timestamp and k.call_at < (sw.t2 + 1)::timestamp) from sw), false)) and (q0.outcome = 'callback' or q0.called_at is not null or not calldesk.called_on(q0.phone, d - 1)) as vis
           from q0),
   v as (select * from q where vis)
-  select jsonb_build_object('day', d,
+  select jsonb_build_object('day', d, 'departments', (select jsonb_agg(jsonb_build_object('name', name, 'calls', calls) order by sort, name) from calldesk.departments),
     'agents', coalesce((select jsonb_agg(x order by x.name) from (
-      select a.id, a.name, a.email, a.role, a.units, a.daily_target target, a.active, a.pin_hash is not null as has_pin,
+      select a.id, a.name, a.email, a.role, a.units, a.daily_target target, a.active, a.pin_hash is not null as has_pin, a.department, coalesce((select dp.calls from calldesk.departments dp where dp.name = a.department), false) as calls,
              count(v.id) assigned,
              count(v.id) filter (where v.attempted_at is not null) attempted,
              count(v.id) filter (where v.connected_at is not null) connected,

@@ -346,7 +346,7 @@ begin
     select c.id, c.outcome, row_number() over (order by (c.outcome = 'callback') desc, c.rank, c.score desc nulls last, c.id) rn
       from (select distinct on (phone) * from t_carry order by phone, list_date desc) c) z
   where z.outcome = 'callback'
-     or z.rn <= (select floor(0.6 * coalesce(sum(daily_target), 0)) from calldesk.agents where active and role = 'agent' and daily_target > 0);
+     or z.rn <= (select floor(0.6 * coalesce(sum(daily_target), 0)) from calldesk.agents where active and role = 'agent' and daily_target > 0 and department in (select name from calldesk.departments where calls));
   insert into calldesk.followups (phone, due, reasons, why, from_list)
   select c.phone, d,
          (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(c.reasons) e where e->>'type' not in ('callback', 'checkin')),
@@ -426,7 +426,7 @@ begin
   create temp table t_agent on commit drop as
   select ag.id, ag.units, ag.daily_target as target,
          (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = ag.id)::int as n
-  from calldesk.agents ag where ag.active and ag.role = 'agent' and ag.daily_target > 0;
+  from calldesk.agents ag where ag.active and ag.role = 'agent' and ag.daily_target > 0 and ag.department in (select name from calldesk.departments where calls);
   select coalesce(sum(target), 0) into capacity from t_agent;
   for r in select t.*, rp.pets from t_row t join t_rowpets rp using (phone)
            order by (t.rank = 12), row_number() over (partition by t.top_type order by t.score desc nulls last, t.phone)::numeric

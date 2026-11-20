@@ -18,7 +18,7 @@ begin
   -- only active agents (role agent, target above 0) get numbers - never team leads
   insert into t_rb select g.id, g.units, g.daily_target,
          (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = g.id)::int
-    from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0;
+    from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0 and g.department in (select name from calldesk.departments where calls);
 
   -- 1. untouched rows held by a team lead, an inactive agent, or an agent whose units do not include the row's unit: released
   with x as (

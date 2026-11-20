@@ -11,7 +11,7 @@ begin
   truncate t_bal;
   insert into t_bal select g.id, g.units, g.daily_target,
          (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = g.id)::int
-    from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0;
+    from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0 and g.department in (select name from calldesk.departments where calls);
 
   -- 1. over target: least urgent untouched rows move to an allowed agent with room, else wait as follow-ups
   for ag in select * from t_bal where n > target loop
