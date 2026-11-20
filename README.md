@@ -82,14 +82,14 @@ GitHub may start a scheduled run 5–20 minutes late. The month-to-date runs (Ve
 07:11  Camp master (Excel ─► database, for the bot)
 07:13  Runo call logs ─► Runo Upload + "Runo CallLog.xlsx" (this month replaced) + database
 07:23  Appointment Status (yesterday) ─► "Appointment Status.xlsx" Sheet1 + archive + database
-07:30, 08:05, 08:35, then every 30 min 09:30 – 13:30
-       Gofrugal retry: only if the Gofrugal file is still missing (sync was behind)
+07:20, 07:50, 08:20, 08:50
+       Gofrugal retry: only if the Gofrugal file is still missing; checks every 2 min, stops at 9:15
 07:40  Corefactor from the database (webhook pushes ─► archive + call log master; skips days already there)
 07:47  Reminder calls check (VetBuddy reminders vs call logs) + database
 07:55  Apps Script: email IT + data analyst if Gofrugal is still not synced
 08:05  Call Desk: build today's call lists in the database
 08:15–08:45  Apps Script books the 9:00 import
-09:00  Apps Script: import the two SharePoint files ─► report (retries every 15 min until 2 PM)
+09:00  Apps Script: import the two SharePoint files ─► report (retries every 5 min; last try 9:30, then no report that day)
          └ 1 min after the import: WhatsApp picture ─► Supabase numbers (bot) ─► Teams picture
          └ at/after 9:00, if the Gofrugal file is missing: WhatsApp "Gofrugal data sync issue, sales report will be delayed."
 09:11 – 22:11 hourly  Call Desk log ─► "Call Desk Log.xlsx"
@@ -191,32 +191,31 @@ code (`P0xxxx` in the name) first, otherwise by name, with small spelling differ
 
 There is no pharmacy master workbook – the pharmacy data lives in the daily file and the database.
 
-### 2.1 Gofrugal data-sync checkpoint (since 19 Nov 2026)
+### 2.1 Gofrugal data-sync checkpoint (since 19 Nov 2026, rules of 20 Nov 2026)
 
 Gofrugal HQ only has a shop's bills after that shop's PC has synced its backup. The robot downloads 3111/3126
-only when **every active outlet shows "Data as on" at or after 11:59 PM of the report's last day** (yesterday).
-This is the same as checking HQ → NetTrade → Data Sync → Configuration → **Backup config**.
+only when **the 7 billing shops show "Data as on" at or after 11:59 PM of the report's last day** (yesterday):
+Adyar, Anna Nagar, Velachery, Neelangarai, Valasaravakkam, Coimbatore, Madurai (`GOFRUGAL_WATCH_OUTLETS`, default in
+`gofrugal_sync.py`). Every other outlet in Gofrugal (warehouse, closed / old outlets) is ignored.
+**When a shop opens or closes, update this list.** This is the same as checking HQ → NetTrade → Data Sync →
+Configuration → **Backup config**.
 
-1. Read every outlet's last successful sync time and backup status.
-2. Outlets behind:
+1. Read the 7 shops' last successful sync time and backup status.
+2. Shops behind:
    - status **Suspended** → set **Backup status – Active** (needs the HQ password, secret `GOFRUGAL_HQ_PASS`);
-   - then send **Backup request – Incremental** for them.
-3. Check again every 5 minutes (up to 25 minutes in the 6:47 run).
-4. When all are up to date, wait 5 more minutes, then download.
-5. If still behind: **nothing is downloaded** (no half-synced file reaches the report). The status is saved in
-   SharePoint as `Gofrugal Upload/Gofrugal_Sync_Status.json`.
+   - then send **Backup request – Incremental** for them (sent again at most every 10 minutes).
+3. Check again **every 2 minutes**.
+4. As soon as all 7 are past 11:59 PM, **download at once** (no extra waiting).
+5. Never wait past **9:15 AM**. If still behind then: **nothing is downloaded** (no half-synced file reaches the
+   report) and there is no report that day. The status is saved in SharePoint as `Gofrugal Upload/Gofrugal_Sync_Status.json`.
 
 Then:
-- **Gofrugal retry** workflow runs at 7:30, 8:05, 8:35 and every 30 minutes 9:30 AM–1:30 PM. Each run repeats the
-  steps above and downloads once synced. It does nothing if the day's Gofrugal file already exists.
-- **7:55 AM**: Apps Script emails it@sanchu.co.in and dataanalyst@sanchu.co.in the list of outlets behind.
-- **9:00 AM** (or later): if the file is still missing, Apps Script posts
-  *"Gofrugal data sync issue, sales report will be delayed."* in the WhatsApp group (once a day). The report is posted
-  automatically as soon as the file arrives (the import retries every 15 minutes until 2 PM).
-
-Outlets that are never checked (inactive / old) – `GOFRUGAL_SKIP_OUTLETS`, default in `gofrugal_sync.py`:
-Ecommerce, Whitefield, Koramangala, Koramangala 2, Koramangala 3, Palavakkam, Coimbatore 2, Coimbatore 3,
-Anna Nagar 2, Anna Nagar 3, Anna Nagar 4, Anna Nagar 5, Warehouse, Warehouse VOW. **When an outlet opens or closes, update this list.**
+- **Gofrugal retry** workflow runs at 7:20, 7:50, 8:20 and 8:50 AM (in case the 6:47 run was held back or GitHub started
+  it late). It repeats the steps above until 9:15 and does nothing if the day's Gofrugal file already exists.
+- **7:55 AM**: Apps Script emails it@sanchu.co.in and dataanalyst@sanchu.co.in the list of shops behind.
+- **9:00 AM**: if the file is still missing, Apps Script posts *"Gofrugal data sync issue, sales report will be delayed."*
+  in the WhatsApp group (once a day). The import retries every 5 minutes; the last try is **9:30 AM** - after that the
+  report is not posted that day (never a report with half the sales).
 
 The checkpoint uses its own Gofrugal login (`GOFRUGAL_SYNC_USER` / `GOFRUGAL_SYNC_PASS`), because the report login is
 not allowed to open Backup config (403). If those secrets are empty, the checkpoint is skipped and the download runs as before.
@@ -397,7 +396,7 @@ the live script.
 
 | Function | When | What |
 |---|---|---|
-| `spiDaily` → `spiRun` | trigger 8:15–8:45, run at 9:00 | imports `CRM Upload/VetBuddy_GoodsServices_MTD_…` and `Gofrugal Upload/Gofrugal_Pharmacy_MTD_…` for yesterday (like *Upload & update report*); retries every 15 min until 2 PM |
+| `spiDaily` → `spiRun` | trigger 8:15–8:45, run at 9:00 | imports `CRM Upload/VetBuddy_GoodsServices_MTD_…` and `Gofrugal Upload/Gofrugal_Pharmacy_MTD_…` for yesterday (like *Upload & update report*); retries every 5 min, last try 9:30 (both files needed) |
 | `spiPost` | 1 min after a successful import, once a day | picture of "Core Team Report" → **WhatsApp first** → Supabase numbers (`sheet_push`, for the bot) → Teams |
 | `spiGfAlert_` | inside `spiRun`, from 9:00 | WhatsApp text "Gofrugal data sync issue, sales report will be delayed." once a day if the Gofrugal file is missing |
 | `spiMailDaily` → `spiSyncMail` | 6:30 trigger books 7:55 | emails IT + data analyst if Gofrugal is not synced (installed by `spiSyncMailInstall`, run once) |
@@ -646,7 +645,7 @@ Done: master updated with … calls (2026-11-01 to 2026-11-03)
 | `Database load FAILED` / `Pharmacy load FAILED` | Check `SUPABASE_DB_URL` (Session pooler, `vb_loader.` user). Yesterday's data stays in the database |
 | `Gofrugal download FAILED` | Check `GOFRUGAL_USER` / `GOFRUGAL_PASS`; try the login in a browser |
 | `Gofrugal step skipped` | `GOFRUGAL_USER` / `GOFRUGAL_PASS` are not set |
-| `Gofrugal data sync still behind …` (run ends with exit 1, no Gofrugal file) | Some outlet's PC/internet hasn't synced. The retries continue until 1:30 PM. The log lists the outlets with BEHIND – call those shops. If an outlet has closed, add it to `GOFRUGAL_SKIP_OUTLETS` |
+| `Gofrugal data sync still behind …` (run ends with exit 1, no Gofrugal file) | One of the 7 shops' PC / internet hasn't synced. Retries keep checking until 9:15. The log lists the shops marked BEHIND – call those shops. If a shop has opened or closed, update `GOFRUGAL_WATCH_OUTLETS` in `gofrugal_sync.py` |
 | `Gofrugal HQ refused … (403)` | The sync login (`GOFRUGAL_SYNC_USER`) lost access to Backup config |
 | `Suspended outlets … need 'Backup status - Active', but GOFRUGAL_HQ_PASS is not set` | Add / fix the secret `GOFRUGAL_HQ_PASS` |
 

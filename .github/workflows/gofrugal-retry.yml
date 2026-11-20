@@ -1,18 +1,16 @@
 name: Gofrugal retry (data sync checkpoint)
 
-# 19 Nov 2026. The 06:47 VetBuddy job downloads Gofrugal 3111 / 3126 only after every outlet's data sync
-# has reached 11:59 PM of yesterday (gofrugal_sync.py). If it was held back, these runs try again;
-# each does nothing when today's Gofrugal file is already in SharePoint.
-# If it is still missing at 9 AM, the sales report script posts "Gofrugal data sync issue" on WhatsApp.
+# 20 Nov 2026. The 06:47 VetBuddy job downloads Gofrugal 3111 / 3126 only after the 7 billing shops' data sync
+# has reached 11:59 PM of yesterday (gofrugal_sync.py). If it was held back (or the 06:47 run started late),
+# these runs keep checking every 2 minutes and download as soon as the 7 shops are synced - never past 9:15 AM,
+# so the 9 AM sales report goes out by 9:30 or not at all. Each run does nothing when today's file is already there.
 
 on:
   schedule:
-    - cron: "0 2 * * *"     # 07:30 AM IST
-    - cron: "35 2 * * *"    # 08:05 AM IST
-    - cron: "5 3 * * *"     # 08:35 AM IST
-    # after the 9 AM alert: every 30 min until 1:30 PM, so the report goes out as soon as the sync catches up
-    - cron: "0,30 4-7 * * *"  # 09:30 AM - 01:00 PM IST
-    - cron: "0 8 * * *"     # 01:30 PM IST
+    - cron: "50 1 * * *"    # 07:20 AM IST
+    - cron: "20 2 * * *"    # 07:50 AM IST
+    - cron: "50 2 * * *"    # 08:20 AM IST
+    - cron: "20 3 * * *"    # 08:50 AM IST
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +20,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,7 +52,7 @@ jobs:
           GOFRUGAL_SYNC_USER: ${{ secrets.GOFRUGAL_SYNC_USER }}
           GOFRUGAL_SYNC_PASS: ${{ secrets.GOFRUGAL_SYNC_PASS }}
           GOFRUGAL_HQ_PASS: ${{ secrets.GOFRUGAL_HQ_PASS }}
-          GOFRUGAL_SYNC_MAX_MIN: "20"
+          GOFRUGAL_SYNC_MAX_MIN: "115"   # checks every 2 min, stops at 9:15 AM IST (GOFRUGAL_SYNC_UNTIL)
         run: |
           if [ -z "$GOFRUGAL_SYNC_USER" ]; then echo "Gofrugal sync checkpoint not set up (GOFRUGAL_SYNC_USER) - nothing to do"; exit 0; fi
           python vetbuddy_sales_export.py --gofrugal-only

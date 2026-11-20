@@ -36,6 +36,10 @@ SKIP = {s.strip().lower() for s in (os.environ.get("GOFRUGAL_SKIP_OUTLETS")
                                        "Sanchu Anna Nagar 3,Sanchu Anna Nagar 4,Sanchu Warehouse VOW,"
                                        "Sanchu Warehouse,Sanchu Anna Nagar 5"    # 20-11-2026: no pharmacy sales in 45 days
                                        ).split(",") if s.strip()}
+# 20-11-2026: only these shops must be synced (the ones that bill). Every other outlet is ignored.
+WATCH = {s.strip().lower() for s in (os.environ.get("GOFRUGAL_WATCH_OUTLETS")
+                                     or "Sanchu Adyar,Sanchu Anna Nagar,Sanchu Velachery,Sanchu Neelangarai,"
+                                        "Sanchu Valasaravakkam,Sanchu Coimbatore,Sanchu Madurai").split(",") if s.strip()}
 HQ_PASS = os.environ.get("GOFRUGAL_HQ_PASS", "")
 # the login that may open Backup config (the report login cannot: 403). The checkpoint is ON only when set.
 SYNC_USER = os.environ.get("GOFRUGAL_SYNC_USER", "")
@@ -48,7 +52,10 @@ def new_session():
     gs.login(SYNC_USER or None, SYNC_PASS or None)
     return gs
 CUTOFF = os.environ.get("GOFRUGAL_SYNC_CUTOFF", "23:59")        # of the report's last day
-WAIT_MIN = int(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "5"))
+WAIT_MIN = float(os.environ.get("GOFRUGAL_SYNC_WAIT_MIN", "2"))     # 20-11-2026: check every 2 minutes
+RESEND_MIN = float(os.environ.get("GOFRUGAL_SYNC_RESEND_MIN", "10"))   # re-send Active / Incremental at most this often
+AFTER_OK_MIN = float(os.environ.get("GOFRUGAL_SYNC_AFTER_OK_MIN", "0"))  # 20-11-2026: download at once when synced
+UNTIL = os.environ.get("GOFRUGAL_SYNC_UNTIL", "09:15")             # never wait past this (IST) - the report is due by 9:30
 
 
 def _open_page(gs):
@@ -97,8 +104,12 @@ def outlets(gs):
 
 
 def behind(rows, cutoff):
-    watched = [o for o in rows if o["name"].lower() not in SKIP]
-    return watched, [o for o in watched if o["last"] is None or o["last"] < cutoff]
+    watched = [o for o in rows if o["name"].lower() in WATCH]
+    missing = WATCH - {o["name"].lower() for o in watched}
+    late = [o for o in watched if o["last"] is None or o["last"] < cutoff]
+    # a watched shop that is not in Gofrugal's list at all counts as not synced (safe side)
+    late += [{"id": "", "name": m, "last": None, "status": "not in Gofrugal list", "remarks": ""} for m in sorted(missing)]
+    return watched, late
 
 
 def post_config(gs, req, ids, passwd=""):
@@ -114,7 +125,7 @@ def post_config(gs, req, ids, passwd=""):
 def report(rows, cutoff, title):
     log.info("%s (needed: synced at or after %s)", title, cutoff.strftime("%d-%m-%Y %H:%M"))
     for o in sorted(rows, key=lambda x: x["name"]):
-        flag = "skip (inactive)" if o["name"].lower() in SKIP else ("OK" if o["last"] and o["last"] >= cutoff else "BEHIND")
+        flag = "not watched" if o["name"].lower() not in WATCH else ("OK" if o["last"] and o["last"] >= cutoff else "BEHIND")
         log.info("  %-26s %-19s %-9s %s", o["name"], o["last"].strftime("%d-%m-%Y %H:%M") if o["last"] else "-",
                  o["status"], flag)
 
@@ -139,35 +150,43 @@ def ensure(last_day: dt.date, deadline: dt.datetime, gs=None, on_status=None) ->
     watched, late = behind(rows, cutoff)
     tell("ok" if not late else "behind", late)
     if not late:
-        log.info("Gofrugal data sync OK for all %d outlets", len(watched))
+        log.info("Gofrugal data sync OK for all %d shops", len(watched))
         return True
-    tries = 0
+    hh, mm = (int(x) for x in UNTIL.split(":"))
+    deadline = min(deadline, dt.datetime.combine(dt.datetime.now(IST).date(), dt.time(hh, mm)))
+    tries, last_sent = 0, None
     while True:
         tries += 1
-        susp = [o for o in late if o["status"].lower() != "active"]
-        if susp:
-            if HQ_PASS:
-                res = post_config(gs, 3, [o["id"] for o in susp], HQ_PASS)
-                log.info("Backup status -> Active for %s: %s", ", ".join(o["name"] for o in susp), res)
-            else:
-                log.warning("Suspended outlets %s need 'Backup status - Active', but GOFRUGAL_HQ_PASS is not set",
-                            ", ".join(o["name"] for o in susp))
-        active_late = [o for o in late if o["status"].lower() == "active" or (susp and HQ_PASS and o in susp)]
-        if active_late:
-            res = post_config(gs, 1, [o["id"] for o in active_late])
-            log.info("Backup request - Incremental sent for %s: %s", ", ".join(o["name"] for o in active_late), res)
-        if dt.datetime.now(IST).replace(tzinfo=None) + dt.timedelta(minutes=WAIT_MIN) > deadline:
-            log.error("Gofrugal data sync still behind and no time left before %s", deadline.strftime("%H:%M"))
+        now = dt.datetime.now(IST).replace(tzinfo=None)
+        if last_sent is None or now - last_sent >= dt.timedelta(minutes=RESEND_MIN):
+            real = [o for o in late if o["id"]]
+            susp = [o for o in real if o["status"].lower() != "active"]
+            if susp:
+                if HQ_PASS:
+                    res = post_config(gs, 3, [o["id"] for o in susp], HQ_PASS)
+                    log.info("Backup status -> Active for %s: %s", ", ".join(o["name"] for o in susp), res)
+                else:
+                    log.warning("Suspended shops %s need 'Backup status - Active', but GOFRUGAL_HQ_PASS is not set",
+                                ", ".join(o["name"] for o in susp))
+            active_late = [o for o in real if o["status"].lower() == "active" or (susp and HQ_PASS and o in susp)]
+            if active_late:
+                res = post_config(gs, 1, [o["id"] for o in active_late])
+                log.info("Backup request - Incremental sent for %s: %s", ", ".join(o["name"] for o in active_late), res)
+            last_sent = now
+        if now + dt.timedelta(minutes=WAIT_MIN) > deadline:
+            log.error("Gofrugal data sync still behind at %s (no waiting past %s): %s", now.strftime("%H:%M"),
+                      deadline.strftime("%H:%M"), ", ".join(o["name"] for o in late))
             return False
-        log.info("Waiting %d minutes for the sync (check %d)", WAIT_MIN, tries)
+        log.info("Waiting %s minutes for the sync (check %d)", WAIT_MIN, tries)
         time.sleep(WAIT_MIN * 60)
         rows = outlets(gs)
         report(rows, cutoff, f"Gofrugal data sync - check {tries}")
         watched, late = behind(rows, cutoff)
         tell("ok" if not late else "behind", late)
         if not late:
-            log.info("Gofrugal data sync OK now; waiting %d more minutes before downloading", WAIT_MIN)
-            time.sleep(WAIT_MIN * 60)
+            log.info("Gofrugal data sync OK now for all %d shops - downloading", len(watched))
+            if AFTER_OK_MIN:
+                time.sleep(AFTER_OK_MIN * 60)
             return True
 
 
