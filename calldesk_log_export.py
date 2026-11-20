@@ -5,8 +5,8 @@ Call Desk log -> SharePoint Excel ("Sanchu Reports/Call Desk Log.xlsx" in the sa
 One row per customer on an agent's list: date, agent, customer, phone, unit, reason, status
 (Called / Not called / Rescheduled), rescheduled date and time, when it was marked called and by whom,
 the agent's note, what the Corefactor / Runo logs say, the "What to pitch next" ticks and the vaccination
-details agents typed on the pet cards. One sheet per month (newest first) plus "Today", and a
-"Vaccination details" sheet (one row per pet). Runs 3 times a day - 1 PM, 6 PM, 10:15 PM (GitHub workflow calldesk-log.yml); only reads the database.
+details agents typed on the pet cards (as columns on each row - no separate sheet). One sheet per month
+(newest first) plus "Today". Runs 3 times a day - 1 PM, 6 PM, 10:15 PM (GitHub workflow calldesk-log.yml); only reads the database.
 """
 import datetime as dt
 import io
@@ -43,15 +43,6 @@ where q.list_date >= %s and not q.superseded and calldesk.row_visible(q)   -- sa
 order by q.list_date desc, 2, q.rank, q.id
 """
 
-VACC_COLS = ["Updated", "Typed by", "Customer", "Phone", "Unit", "Pet", "Vaccination details"]
-VACC_WIDTH = [19, 16, 24, 12, 14, 18, 70]
-VACC_SQL = """
-select v.updated_at at time zone 'Asia/Kolkata', v.by_name, l.client, v.phone, l.unit, v.pet_name, v.note
-from calldesk.pet_vacc_notes v
-left join lateral (select q.client, q.unit from calldesk.queue q where q.phone = v.phone
-                   order by q.list_date desc limit 1) l on true
-order by v.updated_at desc
-"""
 
 
 def clean(s):
@@ -65,8 +56,6 @@ def main():
     with vetbuddy_sql.connect() as conn, conn.cursor() as cur:
         cur.execute(SQL, (first,))
         rows = cur.fetchall()
-        cur.execute(VACC_SQL)
-        vacc = cur.fetchall()
     log.info("%d rows since %s", len(rows), first)
 
     from openpyxl import Workbook
@@ -99,19 +88,6 @@ def main():
     months = sorted({(r[0].year, r[0].month) for r in rows}, reverse=True)
     for y, m in months:
         sheet(dt.date(y, m, 1).strftime("%b %Y"), [r for r in rows if (r[0].year, r[0].month) == (y, m)])
-    ws = wb.create_sheet("Vaccination details")
-    ws.append(VACC_COLS)
-    for c in ws[1]:
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="1F3864")
-    for r in vacc:
-        ws.append([r[0], r[1] or "", clean(r[2]).title(), r[3], (r[4] or "").title(), r[5] or "", r[6]])
-    for i, w in enumerate(VACC_WIDTH, 1):
-        ws.column_dimensions[ws.cell(1, i).column_letter].width = w
-    for row in ws.iter_rows(min_row=2):
-        row[0].number_format = "dd-mm-yyyy hh:mm AM/PM"
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
     buf = io.BytesIO()
     wb.save(buf)
 
