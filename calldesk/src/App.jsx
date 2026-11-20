@@ -91,6 +91,31 @@ function SkipCalled({ s, hidden, onChange }) {
   );
 }
 
+const PITCH = ["Grooming", "Vaccination", "Consultation", "Clinical"];
+
+// vaccination details typed by the agent for one pet (saved when the box loses focus or on Enter; empty = removed)
+function VaccNote({ phone, pet, v, onSaved }) {
+  const [t, setT] = useState(v?.note || "");
+  const [st, setSt] = useState("");
+  useEffect(() => { setT(v?.note || ""); }, [v?.note, pet.pet_id]);
+  const save = async () => {
+    if (t.trim() === (v?.note || "")) return;
+    setSt("Saving…");
+    try {
+      const r = await rpc("cd_vacc_note_save", { p_phone: phone, p_pet_id: String(pet.pet_id), p_note: t, p_pet_name: pet.name || null });
+      onSaved(r); setSt("Saved"); setTimeout(() => setSt(""), 1500);
+    } catch (e) { setSt(e.message); }
+  };
+  return (
+    <div className="vaccnote" onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
+      <input placeholder="Type vaccination details" value={t} maxLength={500} style={{ width: "100%", boxSizing: "border-box" }}
+        onChange={(e) => setT(e.target.value)} onBlur={save}
+        onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }} />
+      {(st || v?.by) && <div className="muted small">{st || `by ${v.by}`}</div>}
+    </div>
+  );
+}
+
 // one pet: parent, location, vaccinations and visit history (from VetBuddy bills)
 function PetPanel({ phone, pet, onClose }) {
   const [d, setD] = useState(null);
@@ -267,12 +292,24 @@ function Customer({ row, onSaved, onNext, onSkip }) {
   const [bills, setBills] = useState(null);
   const [copied, setCopied] = useState(false);
   const [openPet, setOpenPet] = useState(null);
+  const [extras, setExtras] = useState({ pitch: [], vacc: {} });   // "What to pitch next" ticks + typed vaccination details
+  const [pitchErr, setPitchErr] = useState("");
 
   useEffect(() => {
-    setCalls(null); setBills(null); setOpenPet(null);
+    setCalls(null); setBills(null); setOpenPet(null); setPitchErr("");
+    setExtras({ pitch: row.pitch || [], vacc: {} });
+    rpc("cd_card_extras", { p_id: row.id }).then((e) => setExtras({ pitch: e?.pitch || [], vacc: e?.vacc || {} })).catch(() => {});
     rpc("cd_calls", { p_phone: row.phone }).then(setCalls).catch(() => setCalls([]));
     rpc("cd_bills", { p_phone: row.phone }).then(setBills).catch(() => setBills([]));
   }, [row.id]);
+
+  const togglePitch = async (p, on) => {
+    const before = extras.pitch;
+    const next = on ? [...before, p] : before.filter((x) => x !== p);
+    setExtras((x) => ({ ...x, pitch: next })); setPitchErr("");
+    try { const v = await rpc("cd_pitch_save", { p_id: row.id, p_items: next }); setExtras((x) => ({ ...x, pitch: v || [] })); }
+    catch (e) { setExtras((x) => ({ ...x, pitch: before })); setPitchErr(e.message); }
+  };
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(row.phone); } catch { /* ignore */ }
@@ -351,22 +388,34 @@ function Customer({ row, onSaved, onNext, onSkip }) {
         </ul>
       </section>
 
+      <section className="pitchnext">
+        <h3>What to pitch next</h3>
+        <div className="units">
+          {PITCH.map((p) => (
+            <label key={p} className="check"><input type="checkbox" checked={extras.pitch.includes(p)} onChange={(e) => togglePitch(p, e.target.checked)} /> {p}</label>
+          ))}
+        </div>
+        {pitchErr && <p className="note warn">{pitchErr}</p>}
+      </section>
+
       {pets.length > 0 && (
         <section>
           <h3>Pets <span className="muted small">- click a pet to see its history</span></h3>
           <div className="pets">
             {pets.map((p) => (
-              <button type="button" className={`pet click ${openPet === p.pet_id ? "on" : ""}`} key={p.pet_id}
-                      onClick={() => setOpenPet(openPet === p.pet_id ? null : p.pet_id)}>
+              <div role="button" tabIndex={0} className={`pet click ${openPet === p.pet_id ? "on" : ""}`} key={p.pet_id} style={{ textAlign: "left" }}
+                      onClick={() => setOpenPet(openPet === p.pet_id ? null : p.pet_id)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) setOpenPet(openPet === p.pet_id ? null : p.pet_id); }}>
                 <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
                 <dl>
                   <dt>Last visit</dt><dd>{fmtDate(p.last_visit)}{p.last_service ? ` (${p.last_service})` : ""}</dd>
-                  <dt>Vaccination</dt><dd>{p.last_vaccination ? fmtDate(p.last_vaccination) : <span className="muted">no record</span>}</dd>
+                  <dt>Vaccination</dt><dd>{p.last_vaccination ? fmtDate(p.last_vaccination) : <span className="muted">no record</span>}
+                    <VaccNote phone={row.phone} pet={p} v={extras.vacc[p.pet_id]} onSaved={(v) => setExtras((x) => ({ ...x, vacc: { ...x.vacc, [p.pet_id]: v } }))} /></dd>
                   {p.last_bath && (<><dt>Bath</dt><dd>{fmtDate(p.last_bath)}</dd></>)}
                   {p.last_haircut && (<><dt>Haircut</dt><dd>{fmtDate(p.last_haircut)}</dd></>)}
                 </dl>
                 <span className="pet-open">{openPet === p.pet_id ? "Hide history" : "View history"}</span>
-              </button>
+              </div>
             ))}
           </div>
           {openPet && <PetPanel phone={row.phone} pet={pets.find((p) => p.pet_id === openPet)} onClose={() => setOpenPet(null)} />}
