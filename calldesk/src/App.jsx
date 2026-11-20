@@ -545,7 +545,7 @@ function CallList({ me, agentId, agents, day, setDay }) {
             {picked.size} selected · move to
             <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
               <option value="">agent…</option>
-              {agents.filter((a) => a.active && a.role === "agent").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {agents.filter((a) => a.active && a.role === "agent" && a.calls).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
             <button className="primary sm" disabled={!moveTo} onClick={move}>Move</button>
           </div>
@@ -626,7 +626,7 @@ function Team({ day, setDay, openAgent }) {
       <table className="grid">
         <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Marked called</th><th>Rescheduled</th><th>Called (logs)</th><th>Answered (logs)</th><th>Done %</th></tr></thead>
         <tbody>
-          {t.agents.filter((a) => a.role === "agent").map((a) => (
+          {t.agents.filter((a) => a.role === "agent" && a.calls).map((a) => (
             <tr key={a.id} className="click" onClick={() => openAgent(a.id)}>
               <td>{a.name}{!a.active && <span className="muted"> (off)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td>
@@ -652,29 +652,30 @@ function Team({ day, setDay, openAgent }) {
 
 const UNITS = ["ADYAR", "ANNA NAGAR", "NEELANGARAI", "VELACHERY", "VALASARAVAKKAM", "CH VET ON WHEELS", "COIMBATORE", "CBE VET ON WHEELS", "MADURAI", "MADURAI VET ON WHEELS", "TRICHY"];
 
-function Agents({ me, agents, reload }) {
-  const blank = { id: null, email: "", name: "", role: "agent", units: [], target: 200, active: true, pin: "" };
+function Agents({ me, agents, depts = [], reload }) {
+  const blank = { id: null, email: "", name: "", role: "agent", department: "Sharpshooting", units: [], target: 200, active: true, pin: "" };
   const [f, setF] = useState(blank);
   const [msg, setMsg] = useState("");
   const save = async (e) => {
     e.preventDefault(); setMsg("");
     try {
-      await rpc("cd_agent_save", { p_id: f.id ?? null, p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null });   // p_id: an edit updates that agent, even if the name or email changes
+      await rpc("cd_agent_save", { p_id: f.id ?? null, p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null, p_department: f.department || "" });   // p_id: an edit updates that agent, even if the name or email changes
       setMsg(`Saved ${f.name}.` + (f.pin ? ` New PIN set - they sign in with "${f.name}" or ${f.email.toLowerCase()} and that PIN.` : "")); setF(blank); reload();
     } catch (e2) { setMsg(e2.message); }
   };
   return (
     <div className="page">
       <h2>Agents</h2>
-      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent switched off or made a team lead gives theirs back. Team leads never get numbers.</p>
+      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent switched off or made a team lead gives theirs back. Team leads never get numbers. Only agents of a department with call lists (Sharpshooting for now) get numbers; the other departments are listed but get no calls until their process is set up.</p>
       <table className="grid">
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
         <tbody>
           {agents.map((a) => (
             <tr key={a.id}>
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
+              <td>{a.department || <span className="muted">–</span>}{a.department && !a.calls && <span className="muted small"> (no calls yet)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
-              <td><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
+              <td><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
             </tr>
           ))}
         </tbody>
@@ -685,9 +686,13 @@ function Agents({ me, agents, reload }) {
           <label>Name<input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
           <label>Email<input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
           <label>Role<select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="agent">Agent</option><option value="lead">Team lead</option></select></label>
+          <label>Department<select value={f.department || ""} onChange={(e) => setF({ ...f, department: e.target.value })}>
+            <option value="">None</option>
+            {depts.map((d) => <option key={d.name} value={d.name}>{d.name}{d.calls ? "" : " (no calls yet)"}</option>)}
+          </select></label>
           <label>Daily target<input type="number" min={0} max={1000} value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></label>
           <label>{f.id != null ? "New PIN (leave empty to keep)" : "PIN (4 to 8 digits)"}<input inputMode="numeric" pattern="[0-9]*" maxLength={8} value={f.pin}
-            onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={!f.id != null} /></label>
+            onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={f.id == null} /></label>
           <label className="check"><input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</label>
         </div>
         <div className="units">
@@ -742,13 +747,14 @@ function Incentives({ me }) {
   const isLead = me.role === "lead";
   const [month, setMonth] = useState(salaryMonthISO());
   const [agent, setAgent] = useState(isLead ? -1 : me.id);
+  const [dept, setDept] = useState("Sharpshooting");   // department filter (all-agents view)
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   const [edit, setEdit] = useState(null);
   const load = useCallback(() => {
     setD(null); setErr("");
-    rpc("cd_incentives", { p_month: `${month}-01`, p_agent: isLead ? agent : -1 }).then(setD).catch((e) => setErr(e.message));
-  }, [month, agent, isLead]);
+    rpc("cd_incentives", { p_month: `${month}-01`, p_agent: isLead ? agent : -1, p_dept: isLead && agent === -1 ? dept : null }).then(setD).catch((e) => setErr(e.message));
+  }, [month, agent, isLead, dept]);
   useEffect(() => { load(); }, [load]);
   const one = d && (agent !== -1 || !isLead) ? d.agents[0] : null;
   const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "–");
@@ -761,8 +767,14 @@ function Incentives({ me }) {
   return (
     <div className="page">
       <div className="page-head">
-        <h2>Incentives{one ? ` - ${one.name}` : ""}</h2>
+        <h2>Incentives{one ? ` - ${one.name}` : ""}{one?.department ? <span className="muted small"> ({one.department})</span> : null}</h2>
         {isLead && agent !== -1 && <button className="ghost" onClick={() => setAgent(-1)}>All agents</button>}
+        {isLead && agent === -1 && (
+          <label className="inline">Department <select value={dept} onChange={(e) => setDept(e.target.value)}>
+            <option value="">All departments</option>
+            {(d?.departments || ["Sharpshooting", "Inbound", "Social Media", "Chat"]).map((x) => <option key={x} value={x}>{x}</option>)}
+          </select></label>
+        )}
         <label className="inline">Salary month <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
       </div>
       {d && <p className="cycle"><strong>{monthName(month)}</strong> salary month: {fmtDate(d.cycle_from)} to {fmtDate(d.cycle_to)}</p>}
@@ -805,18 +817,19 @@ function Incentives({ me }) {
       {d && !one && (
         <>
           <table className="grid">
-            <thead><tr><th>Agent</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
+            <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
             <tbody>
               {d.agents.map((a) => (
                 <tr key={a.id}>
                   <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
+                  <td className="muted">{a.department || "–"}</td>
                   <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.booked}</td><td>{a.visited}</td>
                   <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
                   <td className="muted small">{a.logins?.length ? a.logins.join(", ") : <span className="warntext">none</span>}</td>
                   <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
                 </tr>
               ))}
-              <tr className="total"><td>Total</td><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
+              <tr className="total"><td>Total</td><td /><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
                 {["called", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td /><td /><td /></tr>
             </tbody>
           </table>
@@ -879,6 +892,7 @@ export default function App() {
   const [day, setDay] = useState(todayISO());
   const [agentId, setAgentId] = useState(-1);
   const [agents, setAgents] = useState([]);
+  const [depts, setDepts] = useState([]);   // departments: [{ name, calls }]
   const [err, setErr] = useState("");
 
   const check = useCallback(() => {
@@ -889,7 +903,7 @@ export default function App() {
   useEffect(() => { check(); }, [check]);
   useEffect(() => { const f = () => setMe(null); window.addEventListener("cd-signed-out", f); return () => window.removeEventListener("cd-signed-out", f); }, []);
   const loadAgents = useCallback(() => {
-    rpc("cd_team", { p_day: todayISO() }).then((t) => setAgents(t.agents)).catch(() => {});
+    rpc("cd_team", { p_day: todayISO() }).then((t) => { setAgents(t.agents); setDepts(t.departments || []); }).catch(() => {});
   }, []);
   useEffect(() => { if (me?.role === "lead") loadAgents(); }, [me, loadAgents]);
   const out = async () => { await logout(); setMe(null); };
@@ -922,14 +936,14 @@ export default function App() {
           <select className="agentpick" title="Whose list" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
             <option value={-1}>Everyone</option>
             <option value={0}>Not assigned</option>
-            {agents.filter((a) => a.role === "agent").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {agents.filter((a) => a.role === "agent" && a.calls).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
 
       </header>
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
-      {tab === "agents" && <Agents me={me} agents={agents} reload={loadAgents} />}
+      {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
       {tab === "kpi" && <Kpis />}
       {tab === "incentives" && <Incentives me={me} />}
     </div>
