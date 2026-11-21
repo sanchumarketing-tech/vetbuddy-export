@@ -560,10 +560,9 @@ def main() -> int:
 def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
     """Gofrugal pharmacy (3111 + 3126): .xlsx -> SharePoint "Gofrugal Upload", rows -> database.
     19 Nov 2026: when GOFRUGAL_SYNC_USER is set, Gofrugal's data sync is checked first (gofrugal_sync.py).
-    21 Nov 2026: the check no longer holds the download back. It looks at the shops' sync status once (no waiting),
-    re-activates suspended shops, asks the shops behind for an Incremental backup, saves the status
-    (Gofrugal_Sync_Status.json, used by the report's 7:55 mail) and then downloads whatever Gofrugal HQ has,
-    so the sales report goes out on time. Shops behind are listed in the log."""
+    21 Nov 2026: the check looks at the shops' sync status once (no waiting): suspended shops are re-activated, shops
+    behind get an Incremental backup request, the status is saved (Gofrugal_Sync_Status.json), and the download runs
+    only when all 7 shops show "Data as on" at or after 11:59 PM of d_to (so today's report has every bill of yesterday)."""
     status = 0
     if gofrugal.ENABLED and gofrugal_sync.READY:
         deadline = dt.datetime.now(IST).replace(tzinfo=None) + dt.timedelta(
@@ -582,8 +581,9 @@ def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
             log.error("Gofrugal sync check failed: %s", e)
             ok = False
         if not ok:
-            log.warning("Gofrugal data not synced up to %s 23:59 for every shop (see the shops marked BEHIND above) - "
-                        "downloading anyway so the sales report is not held up", d_to)
+            log.error("Gofrugal data not synced up to %s 23:59 - pharmacy download held back "
+                      "(run Gofrugal retry again once the shops marked BEHIND above have synced)", d_to)
+            return 1
     if gofrugal.ENABLED:
         gf = {}
 
