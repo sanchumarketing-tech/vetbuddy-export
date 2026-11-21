@@ -559,12 +559,15 @@ def main() -> int:
 
 def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
     """Gofrugal pharmacy (3111 + 3126): .xlsx -> SharePoint "Gofrugal Upload", rows -> database.
-    19 Nov 2026: when GOFRUGAL_SYNC_USER is set, Gofrugal's data sync is checked first (gofrugal_sync.py);
-    nothing is downloaded until every outlet has synced past 11:59 PM of d_to."""
+    19 Nov 2026: when GOFRUGAL_SYNC_USER is set, Gofrugal's data sync is checked first (gofrugal_sync.py).
+    21 Nov 2026: the check no longer holds the download back. It looks at the shops' sync status once (no waiting),
+    re-activates suspended shops, asks the shops behind for an Incremental backup, saves the status
+    (Gofrugal_Sync_Status.json, used by the report's 7:55 mail) and then downloads whatever Gofrugal HQ has,
+    so the sales report goes out on time. Shops behind are listed in the log."""
     status = 0
     if gofrugal.ENABLED and gofrugal_sync.READY:
         deadline = dt.datetime.now(IST).replace(tzinfo=None) + dt.timedelta(
-            minutes=int(os.environ.get("GOFRUGAL_SYNC_MAX_MIN", "25")))
+            minutes=int(os.environ.get("GOFRUGAL_SYNC_MAX_MIN", "0")))   # 0 = check once, no waiting
         def save_status(st):
             # read by the sales-report Apps Script (7 AM mail, 9 AM WhatsApp): Gofrugal Upload/Gofrugal_Sync_Status.json
             import json
@@ -579,9 +582,8 @@ def gofrugal_step(d_from: dt.date, d_to: dt.date) -> int:
             log.error("Gofrugal sync check failed: %s", e)
             ok = False
         if not ok:
-            log.error("Gofrugal data not synced up to %s 23:59 - pharmacy download held back "
-                      "(the next Gofrugal retry tries again; 9 AM WhatsApp alert if still missing)", d_to)
-            return 1
+            log.warning("Gofrugal data not synced up to %s 23:59 for every shop (see the shops marked BEHIND above) - "
+                        "downloading anyway so the sales report is not held up", d_to)
     if gofrugal.ENABLED:
         gf = {}
 
