@@ -256,6 +256,9 @@ function rowDone(r) {
   return !!r.outcome && r.outcome !== "callback";
 }
 
+// the agent's new DND / Deceased marks go to the team's sheets at once (api/sheets.py); the agent does not wait
+const writeSheets = () => { fetch("/api/sheets", { method: "POST", credentials: "same-origin", keepalive: true }).catch(() => {}); };
+
 // ------------------------------------------------------------------ customer panel
 function Customer({ row, onSaved, onNext, onSkip }) {
   const [marking, setMarking] = useState(false);
@@ -277,6 +280,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
     try {
       const why = dndWhy.trim() || "Customer asked not to call";
       await rpc("cd_dnd", { p_id: row.id, p_reason: why });
+      writeSheets();
       onSaved({ ...row, outcome: "dnd", note: why, status: "closed" });
       setDndOpen(false); onNext();
     } catch (e) { setDndErr(e.message); }
@@ -333,6 +337,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
     try {
       const r = await rpc("cd_pet_deceased", { p_id: row.id, p_pet_id: String(p.pet_id), p_on: on });
       setDead((d) => (on ? [...d, String(p.pet_id)] : d.filter((x) => x !== String(p.pet_id))));
+      if (on) writeSheets();
       if (on && r?.all_deceased) setDeadErr("All pets on this number are now marked deceased - this number will not be called again. Close the call kindly and move to the next customer.");
     } catch (e) { setDeadErr(e.message); }
   };

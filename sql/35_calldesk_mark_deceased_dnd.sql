@@ -121,3 +121,7 @@ grant execute on function calldesk.exclusions_clean() to vb_loader;
 
 -- visible_ids / row_visible (patched live): a blocked number (exclusions) is not shown unless its row is closed
 --   (coalesce(q.outcome, 'callback') <> 'callback' or not exists (select 1 from calldesk.exclusions x where x.phone = q.phone))
+
+-- the app writes new marks at once (calldesk/api/sheets.py on Vercel; needs SP_TENANT_ID / SP_CLIENT_ID / SP_CLIENT_SECRET there)
+--   public.cd_sheet_pending()  the unwritten DND numbers and Deceased marks of the last 3 days
+--   public.cd_sheet_done(phones, pets)  stamps sheet_at (the scheduled calldesk_sheet_sync.py does the same)
