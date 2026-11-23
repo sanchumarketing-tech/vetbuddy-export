@@ -1,0 +1,23 @@
+name: VoW invoices for one day (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "YYYY-MM-DD"
+        required: true
+      unit:
+        default: "CBE VET ON WHEELS"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q "psycopg[binary]"
+      - env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DAY: ${{ inputs.day }}
+          UNIT: ${{ inputs.unit }}
+        run: python tools/vow_invoice_check.py
