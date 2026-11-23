@@ -40,5 +40,5 @@ jobs:
           SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
           SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
           SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
-          DND_IMPORT: ${{ vars.DND_IMPORT }}
+          DND_IMPORT: ${{ vars.DND_IMPORT || '1' }}   # every number in the team's DND sheet is blocked (decided 23 Nov 2026)
         run: python calldesk_sheet_sync.py
