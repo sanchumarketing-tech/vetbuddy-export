@@ -7,6 +7,10 @@ CREATE OR REPLACE FUNCTION calldesk.deceased_apply()
 AS $function$
 declare d date := calldesk.today(); res jsonb;
 begin
+  -- pets marked deceased by the agents (cd_pet_deceased) come back after the full VetBuddy reload
+  insert into calldesk.deceased_pets (pet_id, pet_name, client_name, first_active, last_active, source)
+  select pet_id, pet_name, client_name, first_active::text, last_active, 'calldesk' from calldesk.deceased_marked
+  on conflict (pet_id) do nothing;
   create temp table t_dsales on commit drop as
   select distinct calldesk.norm_phone(s.client_phone) phone, substring(s.client_id from '\(([^)]*)\)') pet_id, lower(trim(s.patient_name)) lc
     from vetbuddy.sales s where s.client_id is not null and s.client_phone is not null;

@@ -19,7 +19,9 @@ AS $function$
           where y.list_date between p_from - 8 and p_to
             and y.called_at >= ((p_from - 1)::timestamp at time zone 'Asia/Kolkata') and y.called_at < (p_to::timestamp at time zone 'Asia/Kolkata'))
   select q.id from q, off
-   where exists (select 1 from jsonb_array_elements(calldesk.deceased_strip(q.phone, q.reasons)) e where e->>'type' = 'callback' or not (e->>'type' = any (off.t)))
+   where -- a blocked number (DND sheet / DND / wrong number) is not shown unless already closed (23 Nov 2026)
+     (coalesce(q.outcome, 'callback') <> 'callback' or not exists (select 1 from calldesk.exclusions x where x.phone = q.phone))
+     and exists (select 1 from jsonb_array_elements(calldesk.deceased_strip(q.phone, q.reasons)) e where e->>'type' = 'callback' or not (e->>'type' = any (off.t)))
      and (q.outcome = 'callback' or not exists (select 1 from om where om.phone = q.phone))
      and (q.outcome = 'callback' or q.called_at is not null or not exists (select 1 from cy where cy.phone = q.phone and cy.d = q.list_date))
 $function$
