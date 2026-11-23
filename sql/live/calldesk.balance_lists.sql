@@ -9,8 +9,12 @@ declare ag record; r record; a int; moved int := 0; waited int := 0; filled int 
 begin
   create temp table if not exists t_bal (id int primary key, units text[], target int, n int) on commit drop;
   truncate t_bal;
+  -- only rows the agent can see count towards the target
+  create temp table if not exists t_vis (id bigint primary key) on commit drop;
+  truncate t_vis;
+  insert into t_vis select distinct v.id from calldesk.visible_ids(d, d) v;
   insert into t_bal select g.id, g.units, g.daily_target,
-         (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = g.id)::int
+         (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = g.id and q.id in (select id from t_vis))::int
     from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0 and g.department in (select name from calldesk.departments where calls);
 
   -- 1. over target: least urgent untouched rows move to an allowed agent with room, else wait as follow-ups
@@ -18,7 +22,7 @@ begin
     extra := ag.n - ag.target;
     for r in select q.id, q.phone, q.unit, q.reasons, q.carried_from, q.list_date from calldesk.queue q
               where q.list_date = d and q.agent_id = ag.id and q.called_at is null and q.dialed_at is null
-                and q.attempted_at is null and q.skipped_at is null and coalesce(q.outcome, '') <> 'callback'
+                and q.attempted_at is null and q.skipped_at is null and coalesce(q.outcome, '') <> 'callback' and q.id in (select id from t_vis)
               order by q.rank desc, q.score asc nulls first, q.id desc limit extra loop
       select id into a from t_bal where n < target and id <> ag.id and (units = '{}' or r.unit = any (units))
        order by (units = '{}'), n::numeric / target, id limit 1;
@@ -41,7 +45,7 @@ begin
   end loop;
 
   -- 2. under target: unassigned rows of their units first
-  for r in select q.id, q.unit from calldesk.queue q where q.list_date = d and q.agent_id is null order by q.rank, q.score desc loop
+  for r in select q.id, q.unit from calldesk.queue q where q.list_date = d and q.agent_id is null and q.id in (select id from t_vis) order by q.rank, q.score desc loop
     select id into a from t_bal where n < target and (units = '{}' or r.unit = any (units)) order by (units = '{}'), n::numeric / target, id limit 1;
     continue when a is null;
     update calldesk.queue set agent_id = a where id = r.id;
@@ -113,6 +117,32 @@ begin
         filled := filled + 1;
       end loop;
     end loop;
+    -- 3b. still short ("Any" agents): older customers from before VetBuddy (Dec 2025), not seen since, unit unknown
+    if exists (select 1 from t_bal where n < target and units = '{}') then
+      create temp table if not exists t_new (phone text primary key) on commit drop;
+      truncate t_new;
+      insert into t_new select distinct calldesk.norm_phone(s.client_phone) from vetbuddy.sales s where s.client_phone is not null on conflict do nothing;
+      for ag in select * from t_bal where n < target and units = '{}' order by id loop
+        need := ag.target - ag.n;
+        for r in select o.phone, o.client_name, o.last_date, o.last_pet, o.spend from vetbuddy.sales_old_summary o
+                  where o.phone ~ '^[6-9]\d{9}$'
+                    and not exists (select 1 from t_new n2 where n2.phone = o.phone)
+                    and not exists (select 1 from calldesk.exclusions x where x.phone = o.phone)
+                    and not exists (select 1 from calldesk.queue q where q.phone = o.phone and q.list_date between d - 30 and d)
+                    and not exists (select 1 from calldesk.followups f where f.phone = o.phone)
+                    and not exists (select 1 from calldesk.calls k where k.phone = o.phone and k.call_at >= (d - 30)::timestamp)
+                    and not calldesk.omitted(o.phone)
+                  order by o.last_date desc, o.spend desc nulls last limit need loop
+          insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets)
+          values (d, ag.id, r.phone, initcap(r.client_name), null, 13, coalesce(r.spend, 0),
+                  jsonb_build_array(jsonb_build_object('type', 'checkin', 'rank', 13,
+                    'label', 'Check-in (old customer) - last visit ' || to_char(r.last_date, 'DD Mon YYYY') || coalesce(' with ' || initcap(r.last_pet), '') || ' - invite them back')),
+                  case when r.last_pet is not null then jsonb_build_array(jsonb_build_object('name', initcap(r.last_pet), 'last_visit', r.last_date)) else '[]'::jsonb end)
+          on conflict (list_date, phone) do nothing;
+          if found then update t_bal set n = n + 1 where id = ag.id; filled := filled + 1; end if;
+        end loop;
+      end loop;
+    end if;
   end if;
   return jsonb_build_object('moved', moved, 'waiting', waited, 'checkin_added', filled,
                             'short', (select coalesce(jsonb_object_agg(g.name, b.target - b.n), '{}') from t_bal b join calldesk.agents g on g.id = b.id where b.n < b.target));

@@ -13,7 +13,7 @@ begin
   return coalesce((
     select jsonb_agg(jsonb_build_object(
              'id', q.id, 'day', q.list_date, 'agent_id', q.agent_id, 'phone', q.phone, 'client', q.client, 'unit', q.unit,
-             'rank', q.rank, 'reasons', calldesk.strip_off(q.reasons), 'pets', q.pets, 'tries', q.tries, 'carried_from', q.carried_from,
+             'rank', q.rank, 'reasons', calldesk.strip_off(calldesk.deceased_strip(q.phone, q.reasons)), 'pets', calldesk.deceased_strip(q.phone, q.pets), 'tries', q.tries, 'carried_from', q.carried_from,
              'calls', q.call_count, 'attempted_at', q.attempted_at, 'connected_at', q.connected_at, 'last_call', q.last_call,
              'dialed_at', q.dialed_at, 'outcome', q.outcome, 'note', q.note, 'callback_at', q.callback_at,
              'status', calldesk.status_of(q), 'called_at', q.called_at, 'called_by', q.called_by, 'try_slot', q.try_slot, 'try_note', q.try_note, 'skipped_at', q.skipped_at)

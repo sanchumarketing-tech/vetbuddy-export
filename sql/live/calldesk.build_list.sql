@@ -35,6 +35,8 @@ begin
   order by s.pet_id, s.last_visit desc;
   create index on t_pet (pet_id);
   create index on t_pet (phone);
+  -- deceased pets (VetBuddy, loaded every morning): no reasons, no pet cards (23 Nov 2026)
+  delete from t_pet p where exists (select 1 from calldesk.deceased_pets x where x.pet_id = p.pet_id);
   create temp table t_cand (phone text, client text, unit text, pet_id text, pet text,
                             type text, rank int, label text, due date, score numeric) on commit drop;
   
@@ -412,6 +414,7 @@ begin
            group by q2.id) x
    where q.id = x.id;
   delete from calldesk.queue q where q.list_date = d and q.reasons = '[]'::jsonb and q.dialed_at is null and q.outcome is null and q.note is null;
+  perform calldesk.deceased_clean(d);   -- carried rows and follow-ups: nothing about a deceased pet (23 Nov 2026)
   delete from t_cand c where exists (select 1 from calldesk.queue q where q.list_date = d and q.phone = c.phone);
   -- follow-ups that are due (the loop): one "Follow-up" reason with what was due last time
   insert into t_cand
@@ -433,6 +436,9 @@ begin
   delete from t_cand c where calldesk.called_on(c.phone, d - 1);
   -- a waiting follow-up whose number also has a fresh due today: the fresh reason wins (the follow-up leaves when the number is placed)
   delete from t_cand c where c.type = 'followup' and exists (select 1 from t_cand c2 where c2.phone = c.phone and c2.type <> 'followup');
+  -- nothing about a deceased pet, and no call to a number whose pets are all deceased (23 Nov 2026)
+  delete from t_cand c where exists (select 1 from calldesk.deceased_pets x where x.pet_id = c.pet_id)
+     or (c.phone in (select phone from calldesk.deceased_map) and calldesk.deceased_hit(c.phone, jsonb_strip_nulls(jsonb_build_object('pet', c.pet))));
   create temp table t_row on commit drop as
   select c.phone,
          (array_agg(c.type order by c.rank, c.score desc))[1] as top_type,
@@ -499,7 +505,8 @@ begin
     update calldesk.queue set agent_id = a where id = r.id;
     update t_agent set n = n + 1 where id = a;
   end loop;
-  perform calldesk.balance_lists(d);   -- every agent exactly their target (200), within their units
+  perform calldesk.balance_lists(d);   -- every agent exactly their target (200) of VISIBLE calls, within their units
+  perform calldesk.balance_lists(d);   -- second pass: trims anyone left over target, tops up anyone short
   -- (16 Nov 2026) no copy of the bills any more: cd_bills reads vetbuddy.sales directly
   update calldesk.queue q set try_slot = h.slot, try_note = h.note
   from (select x.phone,
