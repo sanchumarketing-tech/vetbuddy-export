@@ -256,6 +256,7 @@ def load_calldesk(hdr, allrows):
         with cur.copy("COPY calldesk.deceased_pets (pet_id, pet_name, client_name, first_active, last_active) FROM STDIN") as cp:
             for row in pets.values():
                 cp.write_row(row)
+        conn.commit()                      # the list is kept even if the clean-up below fails
         cur.execute("select calldesk.deceased_apply()")
         res = cur.fetchone()[0]
         conn.commit()
