@@ -139,7 +139,7 @@ begin
                                    'numbers_all_deceased', (select count(distinct phone) from calldesk.deceased_map where all_dead));
 end $$;
 revoke all on function calldesk.deceased_hit(text, jsonb), calldesk.deceased_strip(text, jsonb), calldesk.deceased_clean(date), calldesk.deceased_apply() from public, anon, authenticated;
-grant execute on function calldesk.deceased_apply() to vb_loader;
+grant execute on function calldesk.deceased_apply(), calldesk.deceased_strip(text, jsonb), calldesk.deceased_hit(text, jsonb) to vb_loader;
 
 -- visible_ids / row_visible / cd_list / build_list: patched from their live text, in the SQL editor:
 --   visible_ids  jsonb_array_elements(q.reasons)            -> jsonb_array_elements(calldesk.deceased_strip(q.phone, q.reasons))
