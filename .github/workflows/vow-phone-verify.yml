@@ -1,0 +1,31 @@
+name: VoW pharmacy bills - phone verification (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        required: true
+      to:
+        required: true
+      clinic:
+        default: "Coimbatore"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests "psycopg[binary]" openpyxl
+      - env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GOFRUGAL_USER: ${{ secrets.GOFRUGAL_USER }}
+          GOFRUGAL_PASS: ${{ secrets.GOFRUGAL_PASS }}
+          GOFRUGAL_URL: ${{ vars.GOFRUGAL_URL }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          CLINIC: ${{ inputs.clinic }}
+        run: python tools/vow_phone_verify.py
