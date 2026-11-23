@@ -118,3 +118,6 @@ begin
 end $$;
 revoke all on function calldesk.exclusions_clean() from public, anon, authenticated;
 grant execute on function calldesk.exclusions_clean() to vb_loader;
+
+-- visible_ids / row_visible (patched live): a blocked number (exclusions) is not shown unless its row is closed
+--   (coalesce(q.outcome, 'callback') <> 'callback' or not exists (select 1 from calldesk.exclusions x where x.phone = q.phone))
