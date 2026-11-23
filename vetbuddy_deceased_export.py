@@ -45,6 +45,8 @@ SITE = os.environ.get("SP_DECEASED_SITE_URL") or "https://sanchuhospital-my.shar
 LIBRARY = os.environ.get("SP_DECEASED_LIBRARY") or "Documents"
 MASTER_NAME = os.environ.get("SP_DECEASED_NAME") or "Deceased Pets Data.xlsx"
 MASTER_PATH = os.environ.get("SP_DECEASED_PATH", "")          # found by name when empty
+# 23 Nov 2026: the team's workbook, pinned by its id (a search can miss it or find a copy). Written by id too.
+MASTER_ID = os.environ.get("SP_DECEASED_ITEM_ID") or "01DIVYIDHTXAGQL34EVZGKQYRBPS7D7ANV"
 SHEET = os.environ.get("SP_DECEASED_SHEET") or "Deceased Data"
 ARCHIVE = os.environ.get("SP_DECEASED_ARCHIVE") or "Sanchu Reports/Deceased Archive"
 SEARCH_FROM = dt.date(2015, 1, 1)
@@ -127,6 +129,13 @@ def parse(xls):
 
 # ---------------------------------------------------------------- SharePoint workbook
 def find_master(h, drive):
+    if MASTER_ID:
+        r = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/items/{MASTER_ID}", headers=h, timeout=60)
+        vb._check(r, f"Finding the workbook (item {MASTER_ID})")
+        it = r.json()
+        log.info("Workbook: %s/%s (item %s, last changed %s by %s)", (it.get("parentReference") or {}).get("path", "").split("root:")[-1],
+                 it["name"], MASTER_ID, it.get("lastModifiedDateTime"), ((it.get("lastModifiedBy") or {}).get("user") or {}).get("displayName"))
+        return it
     if MASTER_PATH:
         r = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/root:/{quote(MASTER_PATH.strip('/'))}", headers=h, timeout=60)
         vb._check(r, f"Finding '{MASTER_PATH}'")
@@ -139,6 +148,28 @@ def find_master(h, drive):
     it = hits[0]
     log.info("Workbook: %s/%s", it["parentReference"].get("path", "").split("root:")[-1], it["name"])
     return it
+
+
+def put_by_id(h, drive_id, item_id, local, if_match=""):
+    """Replace the content of THIS file (by id, never by path - a path can make a second copy)."""
+    hh = dict(h)
+    if if_match:
+        hh["If-Match"] = if_match
+    r = requests.post(f"{vb.GRAPH}/drives/{drive_id}/items/{item_id}/createUploadSession", headers=hh,
+                      json={"item": {"@microsoft.graph.conflictBehavior": "replace"}}, timeout=60)
+    vb._check(r, "Starting the workbook upload")
+    url = r.json()["uploadUrl"]
+    data = Path(local).read_bytes()
+    r = requests.put(url, data=data, timeout=300, headers={"Content-Length": str(len(data)),
+                                                           "Content-Range": f"bytes 0-{len(data) - 1}/{len(data)}"})
+    if r.status_code not in (200, 201):
+        requests.delete(url, timeout=60)
+        raise RuntimeError(f"Workbook upload failed ({r.status_code}): {r.text[:300]}")
+    j = r.json()
+    if j.get("id") != item_id:
+        raise RuntimeError(f"Upload went to another file ({j.get('id')}) - check the workbook")
+    log.info("Workbook saved (item %s, %s bytes)", j.get("id"), j.get("size"))
+    return j
 
 
 def header_row(ws):
@@ -333,8 +364,7 @@ def main(argv=None):
     vb.sp_put_file(h, drive["id"], dfile, f"{ARCHIVE}/{dfile.name}")
     out = work / "master_out.xlsx"
     wb.save(out)
-    path = item["parentReference"].get("path", "").split("root:")[-1].strip("/") + "/" + item["name"]
-    vb.sp_put_file(h, drive["id"], out, path.strip("/"), if_match=item.get("eTag", ""))
+    put_by_id(h, drive["id"], item["id"], out, if_match=item.get("eTag", ""))
     log.info("Done: %s updated - %d rows for %s..%s (%d old rows replaced)", item["name"], res["added"], d_from, d_to, res["removed"])
     return 1 if cd_error else 0
 
