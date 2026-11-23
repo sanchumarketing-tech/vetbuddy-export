@@ -100,3 +100,21 @@ grant execute on function public.cd_dnd(bigint, text) to anon, authenticated;
 
 -- deceased_apply(): marked pets come back after the morning's full reload (patched in the live function:
 --   after "begin"  + insert into calldesk.deceased_pets (...) select ... from calldesk.deceased_marked on conflict do nothing;)
+
+-- calldesk_sheet_sync.py (vb_loader): numbers from the team's DND sheet are blocked, and their untouched rows
+-- on today's and later lists leave at once (follow-ups too)
+grant insert on calldesk.exclusions to vb_loader;
+create or replace function calldesk.exclusions_clean()
+ returns jsonb language plpgsql security definer set search_path to 'calldesk', 'public' as $$
+declare a int; b int;
+begin
+  delete from calldesk.queue q
+   where q.list_date >= calldesk.today() and q.dialed_at is null and q.called_at is null and q.connected_at is null
+     and q.outcome is null and q.note is null and exists (select 1 from calldesk.exclusions x where x.phone = q.phone);
+  get diagnostics a = row_count;
+  delete from calldesk.followups f where exists (select 1 from calldesk.exclusions x where x.phone = f.phone);
+  get diagnostics b = row_count;
+  return jsonb_build_object('rows_removed', a, 'followups_removed', b);
+end $$;
+revoke all on function calldesk.exclusions_clean() from public, anon, authenticated;
+grant execute on function calldesk.exclusions_clean() to vb_loader;

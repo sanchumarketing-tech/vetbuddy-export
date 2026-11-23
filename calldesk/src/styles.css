@@ -232,3 +232,7 @@ table.grid tr.total td { border-top: 2px solid var(--line); }
 .formgrid label.wide { grid-column: 1 / -1; }
 
 .cycle { margin: 0 0 8px; }
+
+/* 23 Nov 2026: DND button and the Deceased tick on a pet card */
+button.ghost.danger { color: var(--red); border-color: var(--red); }
+label.check.deceased { display: inline-flex; margin-left: 10px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; }

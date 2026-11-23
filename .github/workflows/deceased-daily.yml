@@ -46,3 +46,12 @@ jobs:
           if [ "$IN_MODE" = "check" ]; then args="--check"; fi
           if [ -n "$IN_MONTH" ]; then args="$args --month $IN_MONTH"; fi
           python vetbuddy_deceased_export.py $args
+      - name: DND and Deceased sheets (Call Desk marks -> the team's sheets)
+        if: always() && inputs.mode != 'check'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          DND_IMPORT: ${{ vars.DND_IMPORT }}
+        run: python calldesk_sheet_sync.py

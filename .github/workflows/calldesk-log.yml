@@ -33,3 +33,12 @@ jobs:
           SP_REMINDER_SITE_URL: ${{ vars.SP_REMINDER_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
           SP_REMINDER_LIBRARY: ${{ vars.SP_REMINDER_LIBRARY || 'Documents' }}
         run: python calldesk_log_export.py
+      - name: DND and Deceased sheets (Call Desk marks -> the team's sheets)
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          DND_IMPORT: ${{ vars.DND_IMPORT }}
+        run: python calldesk_sheet_sync.py

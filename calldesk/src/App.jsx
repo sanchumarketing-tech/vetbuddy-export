@@ -268,6 +268,19 @@ function Customer({ row, onSaved, onNext, onSkip }) {
     } catch (e) { alert(e.message); }
     setMarking(false);
   };
+  // DND (23 Nov 2026): the number is never called again; it goes to the team's DND sheet with the reason
+  const [dndOpen, setDndOpen] = useState(false);
+  const [dndWhy, setDndWhy] = useState("");
+  const [dndErr, setDndErr] = useState("");
+  const saveDnd = async () => {
+    setDndErr("");
+    try {
+      const why = dndWhy.trim() || "Customer asked not to call";
+      await rpc("cd_dnd", { p_id: row.id, p_reason: why });
+      onSaved({ ...row, outcome: "dnd", note: why, status: "closed" });
+      setDndOpen(false); onNext();
+    } catch (e) { setDndErr(e.message); }
+  };
   const [cbOpen, setCbOpen] = useState(false);
   const [cbAt, setCbAt] = useState("");
   const [cbNote, setCbNote] = useState(row.note || "");
@@ -294,9 +307,12 @@ function Customer({ row, onSaved, onNext, onSkip }) {
   const [openPet, setOpenPet] = useState(null);
   const [extras, setExtras] = useState({ pitch: [], vacc: {} });   // "What to pitch next" ticks + typed vaccination details
   const [pitchErr, setPitchErr] = useState("");
+  const [dead, setDead] = useState([]);          // pets ticked "Deceased" on this number (Call Desk marks)
+  const [deadErr, setDeadErr] = useState("");
 
   useEffect(() => {
-    setCalls(null); setBills(null); setOpenPet(null); setPitchErr("");
+    setCalls(null); setBills(null); setOpenPet(null); setPitchErr(""); setDead([]); setDeadErr(""); setDndOpen(false); setDndWhy(""); setDndErr("");
+    rpc("cd_pet_deceased_list", { p_id: row.id }).then((d) => setDead(d || [])).catch(() => {});
     setExtras({ pitch: row.pitch || [], vacc: {} });
     rpc("cd_card_extras", { p_id: row.id }).then((e) => setExtras({ pitch: e?.pitch || [], vacc: e?.vacc || {} })).catch(() => {});
     rpc("cd_calls", { p_phone: row.phone }).then(setCalls).catch(() => setCalls([]));
@@ -309,6 +325,16 @@ function Customer({ row, onSaved, onNext, onSkip }) {
     setExtras((x) => ({ ...x, pitch: next })); setPitchErr("");
     try { const v = await rpc("cd_pitch_save", { p_id: row.id, p_items: next }); setExtras((x) => ({ ...x, pitch: v || [] })); }
     catch (e) { setExtras((x) => ({ ...x, pitch: before })); setPitchErr(e.message); }
+  };
+
+  const markDeceased = async (p, on) => {
+    setDeadErr("");
+    if (on && !window.confirm(`Mark ${p.name || "this pet"} as deceased?\n\nNo more calls about this pet, and it is added to the Deceased sheet.`)) return;
+    try {
+      const r = await rpc("cd_pet_deceased", { p_id: row.id, p_pet_id: String(p.pet_id), p_on: on });
+      setDead((d) => (on ? [...d, String(p.pet_id)] : d.filter((x) => x !== String(p.pet_id))));
+      if (on && r?.all_deceased) setDeadErr("All pets on this number are now marked deceased - this number will not be called again. Close the call kindly and move to the next customer.");
+    } catch (e) { setDeadErr(e.message); }
   };
 
   const copy = async () => {
@@ -357,7 +383,22 @@ function Customer({ row, onSaved, onNext, onSkip }) {
         <button className="ghost" onClick={openCb}>{isCb(row) ? "Change call-back time" : "Call back later"}</button>
         <button className="primary" disabled={marking} onClick={markNext} title="Marks this customer as called and opens the next one">{marking ? "Saving…" : "Called - next customer"}</button>
         <button className="link" onClick={onSkip} title="Move on without marking as called - this number comes back to your list in 1 hour">Skip (back in 1 hour)</button>
+        <button className="ghost danger" onClick={() => { setDndOpen(!dndOpen); setDndErr(""); }} title="Do not disturb: this number is never called again and goes to the DND sheet">DND</button>
       </div>
+      {dndOpen && (
+        <div className="cbbox">
+          <div className="cbrow">
+            <strong>Do not disturb this number?</strong>
+            {["Customer asked not to call", "Pet died", "Stop messaging this number"].map((w) => (
+              <button key={w} className={`opt ${dndWhy === w ? "on" : ""}`} onClick={() => setDndWhy(w)}>{w}</button>
+            ))}
+          </div>
+          <input className="cbnote" placeholder="Reason (goes to the DND sheet)" value={dndWhy} onChange={(e) => setDndWhy(e.target.value)} />
+          {dndErr && <p className="note warn">{dndErr}</p>}
+          <div className="actions"><button className="primary" onClick={saveDnd}>Save DND and next</button><button className="link" onClick={() => setDndOpen(false)}>Cancel</button></div>
+          <p className="muted small">The number is never called again. It is added to the DND sheet with this reason.</p>
+        </div>
+      )}
       {row.try_note && <div className="tryline">Best time to call: <strong>{row.try_slot} ({SLOT_TIME[row.try_slot]})</strong> · {row.try_note}</div>}
       {isCb(row) && !cbOpen && (
         <div className="cbline">Call back at <strong>{fmtDT(row.callback_at)}</strong>{row.note ? ` · ${row.note}` : ""} <button className="link" onClick={clearCb}>Remove</button></div>
@@ -406,7 +447,11 @@ function Customer({ row, onSaved, onNext, onSkip }) {
               <div role="button" tabIndex={0} className={`pet click ${openPet === p.pet_id ? "on" : ""}`} key={p.pet_id} style={{ textAlign: "left" }}
                       onClick={() => setOpenPet(openPet === p.pet_id ? null : p.pet_id)}
                       onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) setOpenPet(openPet === p.pet_id ? null : p.pet_id); }}>
-                <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span></div>
+                <div className="pet-name">{p.name} <span className="muted">{[p.species, p.breed].filter(Boolean).join(" · ")}</span>
+                  <label className="check deceased" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} title="The pet has passed away: no more calls about it; added to the Deceased sheet">
+                    <input type="checkbox" checked={dead.includes(String(p.pet_id))} onChange={(e) => markDeceased(p, e.target.checked)} /> Deceased
+                  </label>
+                </div>
                 <dl>
                   <dt>Last visit</dt><dd>{fmtDate(p.last_visit)}{p.last_service ? ` (${p.last_service})` : ""}</dd>
                   <dt>Vaccination</dt><dd>{p.last_vaccination ? fmtDate(p.last_vaccination) : <span className="muted">no record</span>}
@@ -418,6 +463,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
               </div>
             ))}
           </div>
+          {deadErr && <p className="note warn">{deadErr}</p>}
           {openPet && <PetPanel phone={row.phone} pet={pets.find((p) => p.pet_id === openPet)} onClose={() => setOpenPet(null)} />}
         </section>
       )}

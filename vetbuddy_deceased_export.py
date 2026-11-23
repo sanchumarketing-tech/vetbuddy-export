@@ -209,7 +209,10 @@ def update(wb, hdr, rows, d_from, d_to, check=False):
         raise RuntimeError("The workbook has no 'Last Active' column - cannot tell which rows belong to the month")
     # how the workbook stores dates
     sample = {ci: ws.cell(last, ci) for ci in mh}
-    old = [r for r in range(hr + 1, last + 1) if (lambda d: d and d_from <= d <= d_to)(vb_date(ws.cell(r, la_col).value))]
+    st_col = by.get("status")
+    calldesk_line = lambda r: st_col and str(ws.cell(r, st_col).value or "").startswith("Deceased (Call Desk")   # kept (calldesk_sheet_sync.py)
+    old = [r for r in range(hr + 1, last + 1)
+           if (lambda d: d and d_from <= d <= d_to)(vb_date(ws.cell(r, la_col).value)) and not calldesk_line(r)]
     dates = [vb_date(ws.cell(r, la_col).value) for r in range(hr + 1, last + 1)]
     dates = [d for d in dates if d]
     log.info("Workbook 'Last Active': %s .. %s; %d rows already in %s..%s; new month-to-date rows: %d",
