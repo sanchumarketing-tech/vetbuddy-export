@@ -162,6 +162,8 @@ class handler(BaseHTTPRequestHandler):
         if st != 200:
             return send(self, st, raw)
         todo = json.loads(raw or b"{}")
+        if not todo.get("dnd") and not todo.get("deceased"):
+            return send(self, 200, {"written": True, "dnd": 0, "deceased": 0, "errors": []})   # nothing waiting
         out, errors = {"dnd": [], "pets": []}, []
         try:
             tok = graph_token()

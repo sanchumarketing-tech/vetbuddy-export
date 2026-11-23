@@ -258,6 +258,7 @@ function rowDone(r) {
 
 // the agent's new DND / Deceased marks go to the team's sheets at once (api/sheets.py); the agent does not wait
 const writeSheets = () => { fetch("/api/sheets", { method: "POST", credentials: "same-origin", keepalive: true }).catch(() => {}); };
+let sheetsFlushed = false;   // on the first customer opened after a page load, marks still waiting are written too
 
 // ------------------------------------------------------------------ customer panel
 function Customer({ row, onSaved, onNext, onSkip }) {
@@ -317,6 +318,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
   useEffect(() => {
     setCalls(null); setBills(null); setOpenPet(null); setPitchErr(""); setDead([]); setDeadErr(""); setDndOpen(false); setDndWhy(""); setDndErr("");
     rpc("cd_pet_deceased_list", { p_id: row.id }).then((d) => setDead(d || [])).catch(() => {});
+    if (!sheetsFlushed) { sheetsFlushed = true; writeSheets(); }
     setExtras({ pitch: row.pitch || [], vacc: {} });
     rpc("cd_card_extras", { p_id: row.id }).then((e) => setExtras({ pitch: e?.pitch || [], vacc: e?.vacc || {} })).catch(() => {});
     rpc("cd_calls", { p_phone: row.phone }).then(setCalls).catch(() => setCalls([]));
