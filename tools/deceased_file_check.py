@@ -12,10 +12,14 @@ r = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/root/search(q='{quote(dx.MAST
 for i in r.get("value", []):
     print("search hit:", i["name"], i.get("id"), "driveId", (i.get("parentReference") or {}).get("driveId", "")[:12],
           "path", (i.get("parentReference") or {}).get("path"), "size", i.get("size"), "modified", i.get("lastModifiedDateTime"),
-          "by", ((i.get("lastModifiedBy") or {}).get("user") or {}).get("displayName"), "remote", bool(i.get("remoteItem")))
+          "by", ((i.get("lastModifiedBy") or {}).get("user") or {}).get("displayName"), "remote", bool(i.get("remoteItem")), "url", i.get("webUrl"))
 p = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/root:/{quote(dx.MASTER_NAME)}", headers=h, timeout=60)
 print("by path:", p.status_code, p.json().get("id") if p.ok else p.text[:200], p.json().get("size") if p.ok else "",
-      p.json().get("lastModifiedDateTime") if p.ok else "", ((p.json().get("lastModifiedBy") or {}).get("user") or {}).get("displayName") if p.ok else "")
+      p.json().get("lastModifiedDateTime") if p.ok else "", ((p.json().get("lastModifiedBy") or {}).get("user") or {}).get("displayName") if p.ok else "", "url", p.json().get("webUrl") if p.ok else "")
+t = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/items/{dx.MASTER_ID}", headers=h, timeout=60).json()
+print("team workbook:", t.get("webUrl"), t.get("lastModifiedDateTime"))
+sh = requests.post(f"{vb.GRAPH}/drives/{drive['id']}/items/{dx.MASTER_ID}/createLink", headers=h, json={"type": "edit", "scope": "organization"}, timeout=60)
+print("team workbook link:", sh.status_code, (sh.json().get("link") or {}).get("webUrl") if sh.ok else sh.text[:200])
 if p.ok:
     v = requests.get(f"{vb.GRAPH}/drives/{drive['id']}/items/{p.json()['id']}/versions", headers=h, timeout=60).json()
     for x in v.get("value", [])[:12]:
