@@ -1,0 +1,19 @@
+name: DND sheet - check (read only)
+on:
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests openpyxl xlrd
+      - env:
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          DND_URL: "https://sanchuhospital-my.sharepoint.com/:x:/g/personal/shenbagaraj_sanchu_co_in/IQCCCrtOGOh4RIBs9FwKvN-PARonVvnuxGoOttA8JFFVsGc"
+        run: python tools/dnd_sheet_check.py

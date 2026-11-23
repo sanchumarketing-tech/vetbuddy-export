@@ -279,7 +279,7 @@ def load_calldesk(hdr, allrows):
         if pid:
             pets[pid] = (pid, cell(r, "patient"), cell(r, "clientname"), cell(r, "firstactive"), vb_date(r[col["lastactive"]]))
     with vetbuddy_sql.connect() as conn, conn.cursor() as cur:
-        cur.execute("select count(*) from calldesk.deceased_pets")
+        cur.execute("select count(*) from calldesk.deceased_pets where source = 'vetbuddy'")
         old = cur.fetchone()[0]
         if len(pets) < 0.9 * old:          # a short download must never re-open calls
             raise RuntimeError(f"Only {len(pets)} deceased pets in the export (the list has {old}) - Call Desk list not changed")
