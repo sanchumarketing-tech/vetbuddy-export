@@ -13,7 +13,8 @@ from _supabase import call_rpc, read_cookie, read_json, send, session_cookie  # 
 ALLOWED = {"cd_incentives", "cd_agent_incentive", "cd_skip", "cd_pet", "cd_skip_called", "cd_reason_set", "cd_me", "cd_list", "cd_calls", "cd_bills", "cd_dial", "cd_save", "cd_team",
            "cd_agent_save", "cd_assign", "cd_kpi", "cd_mark_called", "cd_log",
            "cd_card_extras", "cd_pitch_save", "cd_vacc_note_save",
-           "cd_pet_deceased", "cd_pet_deceased_list", "cd_dnd"}
+           "cd_pet_deceased", "cd_pet_deceased_list", "cd_dnd",
+           "cd_card_open", "cd_card_close", "cd_alerts", "cd_alert_ack"}
 
 
 class handler(BaseHTTPRequestHandler):

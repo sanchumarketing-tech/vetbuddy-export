@@ -260,6 +260,60 @@ function rowDone(r) {
 const writeSheets = () => { fetch("/api/sheets", { method: "POST", credentials: "same-origin", keepalive: true }).catch(() => {}); };
 let sheetsFlushed = false;   // on the first customer opened after a page load, marks still waiting are written too
 
+// time on one customer (23 Nov 2026): after ALERT_MIN minutes the team lead is alerted (cd_alerts)
+const ALERT_MIN = 12;
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const closeCard = (id) => { if (id) fetch("/api/rpc", { method: "POST", credentials: "same-origin", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fn: "cd_card_close", args: { p_card: id } }) }).catch(() => {}); };
+
+function CardTimer({ rowId }) {
+  const [start] = useState(() => Date.now());
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    let card = null, gone = false;
+    rpc("cd_card_open", { p_id: rowId }).then((id) => { if (gone) closeCard(id); else card = id; }).catch(() => {});
+    const leave = () => closeCard(card);
+    window.addEventListener("pagehide", leave);
+    return () => { gone = true; window.removeEventListener("pagehide", leave); closeCard(card); };
+  }, [rowId]);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const s = Math.floor((now - start) / 1000);
+  const tone = s >= ALERT_MIN * 60 ? "red" : s >= (ALERT_MIN - 2) * 60 ? "warn" : "neutral";
+  return <span title={`Time on this customer. After ${ALERT_MIN} minutes the team lead is alerted.`}><Chip tone={tone}>⏱ {mmss(s)}{s >= ALERT_MIN * 60 ? " · team lead alerted" : ""}</Chip></span>;
+}
+
+// team lead: agents on one customer for 12+ minutes (checked once a minute), with a desktop notification
+function LeadAlerts() {
+  const [list, setList] = useState([]);
+  const [perm, setPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
+  const seen = useRef(new Set());
+  const load = useCallback(() => {
+    rpc("cd_alerts").then((a) => {
+      setList(a || []);
+      (a || []).forEach((x) => {
+        if (seen.current.has(x.card)) return;
+        seen.current.add(x.card);
+        try { if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification("Call Desk: agent inactive", { body: `${x.agent} - ${x.minutes} min on ${title(x.client) || "one customer"}`, tag: `cd-${x.card}` }); } catch { /* ignore */ }
+      });
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
+  const ack = (c) => { setList((l) => l.filter((x) => x.card !== c)); rpc("cd_alert_ack", { p_card: c }).catch(() => {}); };
+  return (
+    <>
+      {perm === "default" && typeof Notification !== "undefined" && (
+        <div className="alertbar muted"><button className="link" onClick={() => Notification.requestPermission().then(setPerm)}>Turn on desktop alerts</button> to be told when an agent stays on one customer for {ALERT_MIN}+ minutes.</div>
+      )}
+      {list.length > 0 && (
+        <div className="alertbar">
+          {list.map((x) => (
+            <div key={x.card}>⚠ <strong>{x.agent}</strong> has been on <strong>{title(x.client) || phoneFmt(x.phone)}</strong> for {x.minutes} min (since {fmtTime(x.opened_at)}). <button className="link" onClick={() => ack(x.card)}>OK</button></div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ------------------------------------------------------------------ customer panel
 function Customer({ row, onSaved, onNext, onSkip }) {
   const [marking, setMarking] = useState(false);
@@ -381,7 +435,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
           <div className="cust-name">{title(row.client) || "Name not in VetBuddy"}</div>
           <div className="muted">{title(row.unit)}{row.carried_from ? ` · carried from ${fmtDate(row.carried_from)}` : ""}{row.tries ? ` · ${row.tries} earlier ${row.tries === 1 ? "try" : "tries"}` : ""}</div>
         </div>
-        <Chip tone={sTone}>{sLabel}</Chip>
+        <div><CardTimer rowId={row.id} /> <Chip tone={sTone}>{sLabel}</Chip></div>
       </div>
 
       <div className="dialer">
@@ -1069,6 +1123,7 @@ export default function App() {
         )}
 
       </header>
+      {isLead && <LeadAlerts />}
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
