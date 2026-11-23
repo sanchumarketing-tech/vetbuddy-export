@@ -15,6 +15,9 @@ Usage:
   python vetbuddy_deceased_export.py            daily run (month to date)
   python vetbuddy_deceased_export.py --check    only report the workbook's layout and the export's counts
   python vetbuddy_deceased_export.py --month 2026-10   rewrite one whole month
+
+Call Desk (23 Nov 2026): every run also replaces calldesk.deceased_pets with ALL deceased pets (any date)
+and calls calldesk.deceased_apply(), so no call is made about a deceased pet (needs SUPABASE_DB_URL).
 """
 import argparse
 import datetime as dt
@@ -222,6 +225,43 @@ def update(wb, hdr, rows, d_from, d_to, check=False):
     return {"removed": len(old), "added": len(rows)}
 
 
+def load_calldesk(hdr, allrows):
+    """All deceased pets -> calldesk.deceased_pets (full replace), then calldesk.deceased_apply()."""
+    if not os.environ.get("SUPABASE_DB_URL"):
+        log.warning("SUPABASE_DB_URL missing - Call Desk deceased list not updated")
+        return
+    import vetbuddy_sql
+    col = {norm(h): i for i, h in enumerate(hdr)}
+    need = ("patientid", "patient", "clientname", "firstactive", "lastactive")
+    if any(k not in col for k in need):
+        raise RuntimeError(f"Export columns changed - Call Desk list not updated: {hdr}")
+
+    def cell(r, k):
+        v = r[col[k]]
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)
+        return str(v).strip() if v not in (None, "") else None
+
+    pets = {}
+    for r in allrows:
+        pid = cell(r, "patientid")
+        if pid:
+            pets[pid] = (pid, cell(r, "patient"), cell(r, "clientname"), cell(r, "firstactive"), vb_date(r[col["lastactive"]]))
+    with vetbuddy_sql.connect() as conn, conn.cursor() as cur:
+        cur.execute("select count(*) from calldesk.deceased_pets")
+        old = cur.fetchone()[0]
+        if len(pets) < 0.9 * old:          # a short download must never re-open calls
+            raise RuntimeError(f"Only {len(pets)} deceased pets in the export (the list has {old}) - Call Desk list not changed")
+        cur.execute("delete from calldesk.deceased_pets")
+        with cur.copy("COPY calldesk.deceased_pets (pet_id, pet_name, client_name, first_active, last_active) FROM STDIN") as cp:
+            for row in pets.values():
+                cp.write_row(row)
+        cur.execute("select calldesk.deceased_apply()")
+        res = cur.fetchone()[0]
+        conn.commit()
+    log.info("Call Desk: %d deceased pets loaded (was %d) - %s", len(pets), old, res)
+
+
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
     p = argparse.ArgumentParser()
@@ -258,6 +298,13 @@ def main(argv=None):
     rows = [r for r in allrows if (lambda d: d and d_from <= d <= d_to)(vb_date(r[ci]))]
     rows.sort(key=lambda r: (vb_date(r[ci]), str(r[0])))
     log.info("Export: %d deceased pets in all, %d with Last Active %s..%s", len(allrows), len(rows), d_from, d_to)
+    cd_error = None
+    if not a.check:
+        try:
+            load_calldesk(hdr, allrows)    # first: the Call Desk block matters more than the workbook
+        except Exception as e:             # noqa: BLE001  the workbook is still updated; the run ends as failed
+            cd_error = e
+            log.error("Call Desk deceased list NOT updated: %s", e)
 
     h = {"Authorization": f"Bearer {vb.graph_token()}"}
     drive = vb.sp_drive(h, SITE, LIBRARY)
@@ -288,7 +335,7 @@ def main(argv=None):
     path = item["parentReference"].get("path", "").split("root:")[-1].strip("/") + "/" + item["name"]
     vb.sp_put_file(h, drive["id"], out, path.strip("/"), if_match=item.get("eTag", ""))
     log.info("Done: %s updated - %d rows for %s..%s (%d old rows replaced)", item["name"], res["added"], d_from, d_to, res["removed"])
-    return 0
+    return 1 if cd_error else 0
 
 
 if __name__ == "__main__":

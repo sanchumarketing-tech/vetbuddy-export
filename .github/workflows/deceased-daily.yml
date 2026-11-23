@@ -3,6 +3,7 @@ name: VetBuddy deceased pets (month to date)
 # 23 Nov 2026: VetBuddy Compliance -> Patient Search by Visit Date Range -> Deceased -> all clinics -> mail merge XLS.
 # Pets whose "Last Active" date is in the month (1st -> yesterday; on the 1st the whole previous month) replace the
 # month's rows in "Deceased Pets Data.xlsx" (sanchureports OneDrive, sheet "Deceased Data"), matched by header name.
+# All deceased pets also go to calldesk.deceased_pets, so the Call Desk never calls about them.
 
 on:
   schedule:
@@ -29,13 +30,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q requests xlrd openpyxl
+      - run: pip install -q requests xlrd openpyxl "psycopg[binary]"
       - env:
           VETBUDDY_USER: ${{ secrets.VETBUDDY_USER }}
           VETBUDDY_PASS: ${{ secrets.VETBUDDY_PASS }}
           SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
           SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
           SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           OUTPUT_DIR: ${{ runner.temp }}/out
           IN_MODE: ${{ inputs.mode }}
           IN_MONTH: ${{ inputs.month }}
