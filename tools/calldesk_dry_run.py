@@ -20,5 +20,16 @@ with psycopg.connect(os.environ["SUPABASE_DB_URL"], options="-c statement_timeou
         print("follow-ups due and not placed:", cur.fetchall())
     except Exception as e:  # noqa: BLE001
         print("(follow-up count not readable:", type(e).__name__, ")")
+    try:   # deceased pets (23 Nov 2026): all must be 0
+        cur.execute("""select
+            (select count(*) from calldesk.queue q where q.list_date = %s::date
+                and exists (select 1 from calldesk.deceased_map m where m.phone = q.phone and m.all_dead)) all_deceased_numbers,
+            (select count(*) from calldesk.queue q where q.list_date = %s::date
+                and q.reasons <> calldesk.deceased_strip(q.phone, q.reasons)) rows_with_deceased_reason,
+            (select count(*) from calldesk.queue q, jsonb_array_elements(q.pets) e where q.list_date = %s::date
+                and exists (select 1 from calldesk.deceased_pets x where x.pet_id = e->>'pet_id')) deceased_pet_cards""", (day, day, day))
+        print("deceased check (all must be 0):", cur.fetchone())
+    except Exception as e:  # noqa: BLE001
+        print("(deceased check not readable:", type(e).__name__, e, ")")
     c.rollback()
     print("Rolled back - nothing changed.")
