@@ -181,6 +181,13 @@ def update(wb, hdr, rows, d_from, d_to, check=False):
     log.info("Workbook 'Last Active': %s .. %s; %d rows already in %s..%s; new month-to-date rows: %d",
              min(dates) if dates else "-", max(dates) if dates else "-", len(old), d_from, d_to, len(rows))
     if check:
+        for ci, v in mh.items():
+            cells = [ws.cell(r, ci) for r in range(hr + 1, last + 1)]
+            filled = [c for c in cells if c.value not in (None, "")]
+            kinds = sorted({("formula" if isinstance(c.value, str) and c.value.startswith("=") else type(c.value).__name__) for c in filled})
+            log.info("  column %2d %-16s filled %3d of %d  %s  fmt=%s%s", ci, v, len(filled), len(cells), kinds,
+                     cells[-1].number_format if cells else "",
+                     ("  e.g. " + str(filled[-1].value)[:40]) if filled and norm(v) in ("birthdate", "deceaseddate", "firstactive", "lastactive") else "")
         return {"removed": 0, "added": 0}
     if missing:
         raise RuntimeError(f"Header check failed - the workbook has no column for {missing}. Nothing was changed.")
