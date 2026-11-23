@@ -59,6 +59,7 @@ for r in rows:
     for nc in ncols:
         if nm(r.get(nc)):
             b["keys"].add(("n", nm(r.get(nc))))
+phone_use = collections.Counter(tuple(sorted(k[1][-4:] for k in b["keys"] if k[0] == "p")) for b in bills.values())
 count = collections.Counter(); amt = collections.Counter()
 lines = []
 for (d, no), b in sorted(bills.items()):
@@ -77,7 +78,9 @@ for (d, no), b in sorted(bills.items()):
     count[st] += 1; amt[st] += b["amt"]
     if isv or st == "MISSED VoW":
         vb_txt = ", ".join(f"{i}{'(VoW)' if v else '(clinic)'} {a:,.0f}" for i, v, a in m) or "-"
-        lines.append(f"{d}  {no:9} {b['amt']:>10,.2f}  {b['doctor'][:26]:26} {st:10} by {'/'.join(sorted(how)) or '-':14} VetBuddy: {vb_txt}")
+        pk = sorted(k[1][-4:] for k in b["keys"] if k[0] == "p"); nk = sorted(k[1] for k in b["keys"] if k[0] == "n")
+        ini = "/".join("".join(w[0] for w in n.split())[:4] for n in nk) or "-"
+        lines.append(f"{d}  {no:9} cust[{','.join(pk) or 'no phone'} {ini}] {phone_use.get(tuple(pk), 0)}x  {b['amt']:>10,.2f}  {b['doctor'][:26]:26} {st:10} by {'/'.join(sorted(how)) or '-':14} VetBuddy: {vb_txt}")
 print(f"\nCoimbatore Gofrugal bills {d_from}..{d_to}: VoW bills and possible missed VoW bills")
 print("\n".join(lines))
 print("\nSummary (bills, before-tax amount):")
