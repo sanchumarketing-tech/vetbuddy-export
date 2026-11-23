@@ -33,7 +33,7 @@ A **Google Sheet** (Daily Sales Report, Apps Script) then builds the 9 AM sales 
 | What | Where | Notes |
 |---|---|---|
 | All robot code + schedules | GitHub `sanchumarketing-tech/vetbuddy-export` (private), branch **main** | `.github/workflows/*.yml` = schedules; secrets under Settings → Secrets and variables → Actions |
-| Database | Supabase project `ykmgbuooksizjqsyfhut` (Free plan, Seoul) | schemas `vetbuddy` (sales, pharmacy, bot) and `calldesk` (Call Desk). SQL in `sql/`, live function copies in `sql/live/` |
+| Database | Supabase project `ykmgbuooksizjqsyfhut` (Seoul). Free plan until it moves into the company's Pro organization (decided 23 Nov 2026, see §D) | schemas `vetbuddy` (sales, pharmacy, bot) and `calldesk` (Call Desk). SQL in `sql/`, live function copies in `sql/live/` |
 | Corefactor live webhook | Supabase Edge Function `corefactor` → `https://ykmgbuooksizjqsyfhut.supabase.co/functions/v1/corefactor/calls?key=…` | code `supabase/functions/corefactor/index.ts`; key is in table `calldesk.webhook_keys` (never in GitHub) |
 | Teams bot | Supabase Edge Function `teams-bot` | code `bot/teams-bot/`, status in `bot/STATUS.md` |
 | Call Desk website | Vercel project `sanchu-calldesk`; code `calldesk/` | published by workflow *Call Desk web app* (needs `VERCEL_TOKEN`) |
@@ -63,7 +63,7 @@ A **Google Sheet** (Daily Sales Report, Apps Script) then builds the 9 AM sales 
 | Item | State | Next step |
 |---|---|---|
 | Corefactor live call push (webhook) | Link and key given to the Corefactor team. The job *Corefactor from the database* (7:40 AM) is ready. | When pushes arrive (`select count(*) from calldesk.cf_live_raw`), check one day against the export. Then disable workflow *Corefactor daily call logs* and delete secret `COREFACTOR_SESSIONID`. |
-| Supabase disk | Free plan limit 0.5 GB, about 95 % used on 19 Nov. When full, the database goes **read-only** and the Call Desk and loads stop. | Move the project to the paid organization (about +$10/month, the webhook link stays the same), or clean up old `calldesk.queue` rows. See §D. |
+| Supabase disk | **516 MB on 23 Nov, over the Free plan's 500 MB.** On Free the database can go **read-only** and the Call Desk and loads stop. | Decided 23 Nov: transfer the project into the company's Pro organization (8 GB, about +$10/month for its server). Steps and checks in §D.4. |
 | Gofrugal 7:55 AM email | Code is live in Apps Script. | Someone signed in as sanchumarketing@gmail.com must run `spiSyncMailInstall` once in the Apps Script editor and click Allow. |
 | GitHub Actions minutes | Private repo: 2,000 min/month. Lead Box ≈ 17–20 min/day, others 1–5 min each. | Check Settings → Billing → Usage monthly. |
 | Old Lead Box job | `leadbox-daily.yml` (session id) is **disabled**; `leadbox-api-daily.yml` replaced it. | Can be deleted later. |
@@ -498,10 +498,11 @@ replace rows; login `vb_bot` can only read views **without** phone, email, GST, 
 The bot's views: `v_all_sales` (VetBuddy + pharmacy, matches the Daily Sales Report), `v_sales_bot`,
 `v_pharmacy_bot`, `v_data_freshness` – see `bot_glossary.yaml`.
 
-### D. Supabase usage and inventory (checked 17–18 Nov 2026)
+### D. Supabase usage and inventory (inventory 17–18 Nov 2026, usage 23 Nov 2026)
 
-**Project:** `ykmgbuooksizjqsyfhut` ("sanchumarketing-tech's Project") · organization on the **Free plan** ·
-region **Northeast Asia (Seoul), ap-northeast-2** · compute **Nano** · disk 2 GB.
+**Project:** `ykmgbuooksizjqsyfhut` ("sanchumarketing-tech's Project") · personal organization (owner signs in with
+GitHub) on the **Free plan**, moving to the company's **Pro** organization (§D.4) · region **Northeast Asia (Seoul),
+ap-northeast-2** · compute **Nano**.
 
 #### Counts
 
@@ -537,7 +538,7 @@ functions, which check the signed-in agent themselves), Supabase Auth sign-ins.
 
 | Caller | How | When (IST) |
 |---|---|---|
-| GitHub Actions (`vb_loader`, pooler) | VetBuddy sales 6:47 · Corefactor 6:53 · Lead Box 7:03 · Camp master 7:11 · Runo 7:13 · Appointments 7:23 + 1:01 PM · Reminders 7:47 · Call Desk build 8:05 · Call Desk Excel log hourly 9:11 AM – 10:11 PM · by hand: Call Desk dry run, history load | mornings + hourly |
+| GitHub Actions (`vb_loader`, pooler) | VetBuddy sales 6:47 · Corefactor 6:53 · Lead Box 7:03 · Camp master 7:11 · Runo 7:13 · Appointments 7:23 + 1:01 PM · Corefactor from DB 7:40 · Reminders 7:47 · Call Desk build 7:55 · Call Desk Excel log 1:07 / 6:07 / 10:17 PM · by hand: Call Desk dry run, history load (GitHub usually starts these 30–60 min late) | mornings + 3 times in the day |
 | Call Desk website (Vercel) | Supabase web API → `cd_*` functions | office hours |
 | Teams bot (`teams-bot` Edge Function, `vb_teams`) | pooler | when asked |
 | Google Sheet dashboard (Apps Script) | web API → `sheet_push` | after the 9 AM import |
@@ -545,10 +546,79 @@ functions, which check the signed-in agent themselves), Supabase Auth sign-ins.
 Database queries since the statistics were last reset: `vb_loader` 71,535 · `postgres` 6,043 ·
 `vb_teams` 3,024 · website (`anon` + `authenticator`) ≈ 5,500 · Supabase internal 11,200.
 
-#### Billable items ("consumables") – billing cycle 4 Nov – 4 Dec 2026
+#### D.1 Billable usage – billing cycle 4 Nov – 4 Dec 2026 (figures as of 23 Nov, 19 days)
 
-| Item | What it is for us | Used | Free plan | Pro plan (per project) | Price above Pro |
-|---|---|---|---|---|---|
+The only item over a limit is **database size**. Supabase does not charge per query or per API call.
+
+| Billed item | Used so far (19 days) | Monthly pace | Free plan | Included on Pro | Price above that | Extra cost on Pro |
+|---|---|---|---|---|---|---|
+| **Database size** | **516 MB** | grows ≈ 250–300 MB a month | 500 MB (read-only when full) | 8 GB | $0.125 per GB | $0 for about 24–27 months |
+| Compute (server) | Nano | — | Nano | Micro (1 GB RAM), $10 – covered by the plan's $10 credit in its own organization | Small $15 (+$5) | see D.3 |
+| Egress (data sent out) | 0.26 GB | ≈ 0.4 GB | 5 GB | 250 GB | $0.09 per GB | $0 (≈ 0.2 % used) |
+| Edge Function calls | 148 | ≈ 250 (more once Corefactor pushes calls) | 500,000 | 2 million | $2 per million | $0 |
+| Supabase logins (MAU) | 1 | 1 | 50,000 | 100,000 | $0.00325 each | $0 |
+| File storage | 0 GB | 0 | 1 GB | 100 GB | $0.0213 per GB | $0 |
+| Realtime connections / messages | 0 | 0 | 200 | included | — | $0 |
+| Log ingestion | 0.018 GB | ≈ 0.03 GB | — | 20 GB (billing starts 2027) | $0.50 per GB | $0 |
+| Log queries | 15 GB | — | — | not billed directly | — | $0 |
+
+#### D.2 Database activity and growth (not billed, but it drives the size)
+
+About **232,000 database statements** since 4 Nov, ≈ 12,000 a day:
+
+| Who | Statements | What |
+|---|---|---|
+| GitHub loaders (`vb_loader`) | 150,659 | daily loads: Lead Box (72k inserts), appointments (49k), call logs, reminders, VoW |
+| Call Desk website (agents, team leads) | 33,424 – of which 14,730 website requests (≈ 775 a day) | lists, KPIs, incentives, saves |
+| Supabase internal | ≈ 31,000 | auth, storage, monitoring |
+| SQL editor (by hand) | 9,506 | fixes and checks |
+| Teams bot (`vb_teams`) | 3,085 | sales bot questions |
+
+Connections: 11 open (4 website, 1 pooler, 6 Supabase internal) of 60. Pro on Micro: 60 direct, 200 through the pooler.
+Logins: 2 Supabase Auth users, 1 active – agents sign in with their own name + PIN, which Supabase does not count.
+
+| Table | Size | Covers | Growth |
+|---|---|---|---|
+| `calldesk.queue` (Call Desk lists, one row per customer per day) | 57 MB | 13–23 Nov | **≈ 5 MB a day – fastest** |
+| `calldesk.leads` (Lead Box, mostly the raw copy of each lead) | 31 MB | 10–22 Nov | ≈ 2.4 MB a day |
+| `calldesk.calls` (Corefactor + Runo) | 44 MB | 3–22 Nov | ≈ 2.2 MB a day |
+| `vetbuddy.sales` | 268 MB | Dec 2025 – Nov 2026 | ≈ 0.8 MB a day |
+| `vetbuddy.pharmacy_sales` | 35 MB | — | small |
+| everything else | ≈ 65 MB | — | small |
+
+Total growth ≈ **8–9 MB a day**: on Pro the 8 GB included lasts until about **2028**; after that each extra GB is
+$0.125 a month (a 12 GB database ≈ +$0.50). If the size ever matters, the first cleanups are: keep ~60 days of
+`calldesk.queue` (older rows are in Call Desk Log.xlsx), drop the raw copy in `calldesk.leads`, drop the one-off VoW
+analysis tables (`calldesk.vow_touch`, `vow_leads`, `vow_attr_phones`, `vow_attr_phones_1101`).
+
+#### D.3 Cost
+
+| | Monthly |
+|---|---|
+| In its own organization on Pro: plan $25 + Micro $10 − $10 credit | **$25 (≈ ₹2,100)** |
+| **Moved into the company's Pro organization (chosen 23 Nov 2026):** the plan fee is already paid there and the $10 credit is used by the company's own projects, so only this project's Micro server is added | **≈ +$10 (≈ ₹850)** – the transfer screen shows the exact amount |
+| Optional: Small server (2 GB RAM) – faster list build, KPIs, incentives | +$5 |
+| Not needed: point-in-time recovery (Pro keeps daily backups for 7 days) | — |
+
+Self-hosting on AWS (EC2 + Docker) was looked at on 23 Nov 2026 and not chosen: after the new-account credits
+(up to $200, at most 6 months) it costs about the same (t4g.medium ≈ $16 + disk + IP + backups ≈ $26/month), and
+backups, patching, HTTPS and outages become ours, with every link (webhook, website, bot, Apps Script) to change.
+
+#### D.4 Moving the project into the company's Pro organization
+
+Supabase: "The project keeps its data, default URL, and API keys" – nothing in GitHub, Vercel, the Apps Script,
+the Teams bot or the Corefactor webhook changes. "A transfer has no undo" (moving back = another transfer).
+
+1. The company organization's Owner invites the project owner's Supabase account (Organization settings → Team →
+   Invite, same email as the GitHub sign-in, role **Administrator** or Owner for the whole organization). Done 23 Nov 2026.
+2. Check blockers: no GitHub connection in Project Settings → Integrations, no unpaid invoice in the personal organization.
+3. Project Settings → General → **Transfer project** → company organization → read the warnings (server size, cost) → confirm.
+   Do it after 10:30 PM or on a Sunday afternoon – never 6:45–9:30 AM (a server-size change can restart the database for a minute or two).
+4. Afterwards: the project shows in the company organization's list; check the Call Desk website, the Teams bot,
+   the Corefactor webhook (GET with the key answers `{"ok": true}`) and the next morning's loads and 9 AM report.
+   Update this section with the date and the new plan.
+
+---|---|---|---|---|---|
 | **Compute** (the Postgres server) | runs everything | Nano, always on | Nano | Micro (1 GB RAM) – **$10/month**; the plan's $10 credit covers one server per organization | Small $15, Medium $60 … |
 | **Database size / disk** | our data | **0.41 GB** (86 % of Free) | 0.5 GB (read-only when full) | 8 GB | $0.125 per GB / month |
 | **Egress** | data sent out (website, bot, job reads) | 0.13 GB | 5 GB | 250 GB | $0.09 per GB |
