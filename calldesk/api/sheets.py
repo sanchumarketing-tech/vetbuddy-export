@@ -139,6 +139,19 @@ def write_deceased(tok, items):
 
 
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Health check: are the Microsoft keys set and do they sign in? (no data shown)"""
+        keys = all(os.environ.get(k) for k in ("SP_TENANT_ID", "SP_CLIENT_ID", "SP_CLIENT_SECRET"))
+        res = {"keys_set": keys}
+        if keys:
+            try:
+                tok = graph_token()
+                http("GET", f"{GRAPH}/sites/{DEC_HOST}:{DEC_SITE_PATH}?$select=id", tok)
+                res["microsoft"] = "ok"
+            except Exception as e:  # noqa: BLE001
+                res["microsoft"] = re.sub(r"[A-Za-z0-9_\-~.]{30,}", "...", str(e))[:200]
+        send(self, 200, res)
+
     def do_POST(self):
         token = read_cookie(self)
         if not token:
