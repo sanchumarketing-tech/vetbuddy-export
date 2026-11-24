@@ -484,7 +484,7 @@ function Customer({ row, onSaved, onNext, onSkip }) {
           <p className="muted small">At that time this customer moves to the top of your list.</p>
         </div>
       )}
-      <div className="muted small">{row.last_call ? `Last logged call: ${row.last_call}.` : "Calls show here the next morning, from the Corefactor and Runo logs."}</div>
+      <div className="muted small">{row.last_call ? `Last logged call: ${row.last_call}.` : "Corefactor calls show here within a minute; Runo calls the next morning."}</div>
 
       <section className="purpose">
         <h3>Purpose of calling</h3>
@@ -602,6 +602,30 @@ function CallList({ me, agentId, agents, day, setDay }) {
     } catch (e) { setErr(e.message); setRows([]); }
   }, [day, agentId, isLead]);
   useEffect(() => { setRows(null); setPicked(new Set()); load(); }, [load]);
+  // live Corefactor calls: every 30 s (only while this tab is on screen) fetch just the rows a call changed
+  useEffect(() => {
+    if (day !== todayISO()) return undefined;
+    let since = null, busy = false;
+    const tick = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        const args = { p_day: day, p_since: since };
+        if (isLead) args.p_agent = agentId;
+        const r = await rpc("cd_list_live", args);
+        since = r.now;
+        if (r.rows?.length) {
+          const m = new Map(r.rows.map((x) => [x.id, x]));
+          setRows((rs) => (rs ? rs.map((x) => (m.has(x.id) ? { ...x, ...m.get(x.id) } : x)) : rs));
+        }
+      } catch { /* next tick */ } finally { busy = false; }
+    };
+    tick();
+    const t = setInterval(tick, 30000);
+    const vis = () => { if (!document.hidden) tick(); };
+    document.addEventListener("visibilitychange", vis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", vis); };
+  }, [day, agentId, isLead]);
 
   const [reason, setReason] = useState("");
   const reasonCounts = useMemo(() => {
@@ -783,7 +807,7 @@ function Team({ day, setDay, openAgent }) {
         <div><span>{sum("connected")}</span>answered (logs)</div>
         
       </div>
-      <p className="muted small">"Called" and "answered" come from the Corefactor and Runo logs, loaded each morning (latest call loaded: {fmtDT(t.last_call_loaded) || "none yet"}).</p>
+      <p className="muted small">"Called" and "answered": Corefactor calls arrive live (each call within a minute), Runo calls each morning (latest call: {fmtDT(t.last_call_loaded) || "none yet"}).</p>
       <table className="grid">
         <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>First call</th><th>Last call</th><th>Marked called</th><th>Rescheduled</th><th>Called (logs)</th><th>Answered (logs)</th><th>Done %</th></tr></thead>
         <tbody>
