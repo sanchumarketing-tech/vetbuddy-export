@@ -15,6 +15,19 @@
  * ⚙ Runo MIS (owner) → ① Turn on automatic updates → Allow. ③ brings every number called before that day into Old leads.
  */
 
+/** OWNER (one time, 24 Nov 2026): adds the “Called” comment to Settings (→ Old leads, connected) and rewrites the tabs. */
+function addCalledComment() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), st = ss.getSheetByName(T.SET);
+  var coms = st.getRange(SC.COM_ROW, 2, SC.COM_ROWS, 1).getValues().map(function (x) { return clean_(x[0]); });
+  if (coms.indexOf('Called') < 0) {
+    var free = coms.indexOf('');
+    st.getRange(SC.COM_ROW + free, 2, 1, 4).setValues([['Called', GOES.OLD, REMIND.none, 'Yes']]);
+  }
+  var cfg = readCfg_(ss);
+  CALL_TABS.forEach(function (n) { var sh = ss.getSheetByName(n); if (sh) rowFormats_(sh, n, FIRST, sh.getMaxRows() - FIRST + 1, cfg); });
+  return 'Called added';
+}
+
 var FAMILY = 'runo-mis';
 var REV = '1';
 var TZ = 'Asia/Kolkata';
@@ -23,21 +36,21 @@ var FONT = 'Arial';
 var T = {
   LIVE: 'Live leads', FU: 'Followup/Callback', BOOK: 'Booked leads', VISC: 'Visited customers', JUNK: 'Junk leads', OLD: 'Old leads',
   SUM: 'Summary', QUAL: 'Lead quality',
-  HELP: 'How to Use', SET: 'Settings', LEADS: 'Leads', LOG: 'Call Log', VIS: 'Visits', SF: 'Runo calls', UP: 'Uploads read'
+  HELP: 'How to Use', SET: 'Settings', LEADS: 'Leads', LOG: 'Call Log', VIS: 'Visits', SF: 'Runo calls', UP: 'Uploads read', CFC: 'Corefactor calls'
 };
-var ORDER = [T.LIVE, T.FU, T.JUNK, T.OLD, T.SUM, T.QUAL, T.HELP, T.SET, T.LEADS, T.LOG, T.VIS, T.SF, T.UP];
+var ORDER = [T.LIVE, T.FU, T.JUNK, T.OLD, T.SUM, T.QUAL, T.HELP, T.SET, T.LEADS, T.LOG, T.VIS, T.SF, T.UP, T.CFC];
 var WORK_TABS = [T.LIVE, T.FU, T.JUNK];
 var CALL_TABS = [T.LIVE, T.FU, T.JUNK, T.OLD];
-var HIDDEN_TABS = [T.LEADS, T.LOG, T.VIS, T.SF, T.UP];
+var HIDDEN_TABS = [T.LEADS, T.LOG, T.VIS, T.SF, T.UP, T.CFC];
 
 // Live leads / Followup-Callback / Booked leads / Visited customers / Junk leads — the same columns (21–24 are the sheet's own).
 // Visited / Not visited is shown on Booked leads and Visited customers only.
 var W = { DATE: 1, CALLDATE: 2, CAMP: 3, ADSET: 4, PHONE: 5, CPHONE: 6, NAME: 7, COM: 8, NOTES: 9, DEPT: 10, WA: 11, VISITED: 12, CBD: 13, CBT: 14,
-  F1: 15, TICK: 20, NEXT: 21, ID: 22, STATE: 23, ROW: 24, ALERT: 25 };     // ALERT: shown right after Next call (id/state/row are hidden)
-var WN = 25, BOXES = 5;
+  F1: 15, TICK: 20, NEXT: 21, ID: 22, STATE: 23, ROW: 24, ALERT: 25, CF: 26 };     // ALERT: shown right after Next call (id/state/row are hidden)
+var WN = 26, BOXES = 5;
 var W_HEADERS = ['Lead date & time', 'Call date', 'Runo line (branch)', 'Runo calls', 'Phone number', 'Correct number', 'Client name', 'Comments', 'Notes',
   'Department', 'WhatsApp', 'Visited / Not visited', 'Callback / Booked date', 'Callback / Booked time', 'Followup 1', 'Followup 2', 'Followup 3',
-  'Followup 4', 'Followup 5', '✔ Done', 'Next call', 'id', 'state', 'row', '⚠ Overdue'];
+  'Followup 4', 'Followup 5', '✔ Done', 'Next call', 'id', 'state', 'row', '⚠ Overdue', 'Called on Corefactor'];
 var NOSHOW = 'No show';
 // Old leads
 var O = { DATE: 1, LASTCALL: 2, CAMP: 3, ADSET: 4, PHONE: 5, CPHONE: 6, NAME: 7, VISIT: 8, COM: 9, NOTES: 10, TICK: 11, ID: 12, ROW: 13 };
@@ -49,14 +62,15 @@ var HEAD_ROW = 3, FIRST = 4;
 // Leads — one record per lead (hidden)
 var L = { ID: 1, DATE: 2, CITY: 3, CAMP: 4, ADSET: 5, PHONE: 6, NAME: 7, SOURCE: 8, TAB: 9, COM: 10, NOTES: 11, DEPT: 12, WA: 13,
   CBD: 14, CBT: 15, F1: 16, TC: 21, TF1: 22, LAST: 27, NEXT: 28, STATE: 29, VISIT: 30, FROM: 31, MOVED: 32, TIDY: 33, OLDRES: 34,
-  OLDTIME: 35, ROUND: 36, ADDED: 37, WORKED: 38, PREV: 39, RAW: 40, RN: 41, RLAST: 42, RTYPE: 43 };
-var NL = 43;
+  OLDTIME: 35, ROUND: 36, ADDED: 37, WORKED: 38, PREV: 39, RAW: 40, RN: 41, RLAST: 42, RTYPE: 43, CFN: 44, CFFIRST: 45, CFLAST: 46, CFANS: 47 };
+var NL = 47;
 var L_HEADERS = ['Lead ID', 'Lead date & time', 'City', 'Campaign name', 'Adset name', 'Phone number', 'Client name', 'Source', 'Tab',
   'Comments', 'Notes', 'Department', 'WhatsApp', 'Callback / Booked date', 'Callback / Booked time', 'Followup 1', 'Followup 2',
   'Followup 3', 'Followup 4', 'Followup 5', 'Comments time', 'Followup 1 time', 'Followup 2 time', 'Followup 3 time',
   'Followup 4 time', 'Followup 5 time', 'Last called', 'Next call', 'State', 'Last visit', 'Came from tab', 'Moved at',
   'Move down after', 'Old leads comment', 'Old leads comment time', 'This round started', 'Added on', 'Worked in this sheet',
-  'Before this round', 'Phone as given', 'Runo calls (count)', 'Last Runo call', 'First Runo call type'];
+  'Before this round', 'Phone as given', 'Runo calls (count)', 'Last Runo call', 'First Runo call type',
+  'Corefactor calls after', 'First Corefactor call', 'Last Corefactor call', 'Corefactor answered'];
 var LOG_HEADERS = ['Time', 'Lead ID', 'Phone number', 'Comment', 'Connected', 'Box', 'Tab', 'Round'];
 var BOX_NAMES = ['Comments', 'Followup 1', 'Followup 2', 'Followup 3', 'Followup 4', 'Followup 5'];
 
@@ -877,7 +891,7 @@ function workCells_(r, lr, tab) {
     r[L.CBT - 1] instanceof Date ? Utilities.formatDate(r[L.CBT - 1], TZ, 'h:mm a') : r[L.CBT - 1]];
   for (var k = 0; k < BOXES; k++) out.push(r[L.F1 - 1 + k]);
   out.push(tab !== T.LIVE);
-  out.push(asDate_(r[L.NEXT - 1]) || '', r[L.ID - 1], r[L.STATE - 1], lr, tab === T.FU || tab === T.BOOK ? alertFormula_() : '');
+  out.push(asDate_(r[L.NEXT - 1]) || '', r[L.ID - 1], r[L.STATE - 1], lr, tab === T.FU || tab === T.BOOK ? alertFormula_() : '', cfText_(r));
   return out;
 }
 /** Followup/Callback “⚠ Overdue”: a call still to make whose time passed more than 3 days ago (the same formula on every row). */
@@ -1245,7 +1259,8 @@ function buildWorkTab_(ss, sh, cfg) {
   var tab = tabOf_(sh);
   ensureCols_(sh, WN);
   sh.setTabColor(tab === T.LIVE ? '#cc0000' : tab === T.FU ? '#e69138' : tab === T.BOOK ? '#38761d' : tab === T.VISC ? '#6aa84f' : '#999999');
-  widths_(sh, [118, 74, 150, 150, 110, 94, 110, 100, 170, 92, 74, 104, 96, 92, 86, 86, 86, 86, 86, 56, 104, 40, 40, 40, 210]);
+  widths_(sh, [118, 74, 150, 150, 110, 94, 110, 100, 170, 92, 74, 104, 96, 92, 86, 86, 86, 86, 86, 56, 104, 40, 40, 40, 210, 210]);
+  sh.getRange(HEAD_ROW, W.CF).setBackground('#0b5394');
   sh.getRange('A1').setValue(TAB_TITLE[tab] || tab).setFontFamily(FONT).setFontSize(15).setFontWeight('bold').setFontColor(COL.navy);
   sh.getRange('A2').setValue(TAB_SUB[tab] || '').setFontFamily(FONT).setFontSize(9).setFontColor(COL.grey);
   topLine_(sh, tab, cfg);
@@ -1400,6 +1415,11 @@ function applyColours_(ss, sh, cfg) {
     rule('=ISNUMBER(' + $(O.VISIT) + ')', [rng(O.VISIT)], COL.green);
     rule('=' + $(O.TICK) + '=TRUE', [rng(1, O.TICK)], '#e8f0fe');
   }
+  if (tab !== T.OLD) {                                                                   // Called on Corefactor: red = not called, green = called
+    rule('=REGEXMATCH(' + $(W.CF) + ',"^✖")', [rng(W.CF)], '#f4cccc', COL.red, true);
+    rule('=REGEXMATCH(' + $(W.CF) + ',"answered$")', [rng(W.CF)], '#b6d7a8', '#274e13', true);
+    rule('=REGEXMATCH(' + $(W.CF) + ',"^✔")', [rng(W.CF)], '#fff2cc', '#7f6000', true);
+  }
   sh.setConditionalFormatRules(rules);
 }
 
@@ -1453,12 +1473,13 @@ function setUp_(ss, set) {
   try { ss.setRecalculationInterval(SpreadsheetApp.RecalculationInterval.ON_CHANGE_AND_MINUTE); } catch (err) { }
   if (!set) { set = ss.insertSheet(T.SET); buildSettings_(ss, set); }
   var cfg = readCfg_(ss);
-  [T.LEADS, T.LOG, T.VIS, T.SF, T.UP].forEach(function (n) {
+  [T.LEADS, T.LOG, T.VIS, T.SF, T.UP, T.CFC].forEach(function (n) {
     if (ss.getSheetByName(n)) return;
     var sh = ss.insertSheet(n);
     if (n === T.LEADS) headerTab_(sh, L_HEADERS, [2, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 35, 37], 6);
     if (n === T.LOG) headerTab_(sh, LOG_HEADERS, [1], 3);
     if (n === T.VIS) headerTab_(sh, ['Phone number', 'Last visit', 'Clinic', 'Client'], [2], 1);
+    if (n === T.CFC) headerTab_(sh, ['Phone number', 'Call time', 'Direction', 'Call status', 'Answered', 'Talk time (s)', 'Agent number', 'key'], [2], 1);
     if (n === T.SF) headerTab_(sh, ['Phone number', 'Call time', 'Call type', 'Connected', 'Talk time (s)', 'Runo line', 'key'], [2], 1);
     if (n === T.UP) headerTab_(sh, ['Read at', 'File', 'Folder', 'What it was', 'Result', 'File id'], [1], 0);
     sh.hideSheet();
@@ -1822,11 +1843,12 @@ function runoText_(r) {
  */
 function addRunoCalls_(ss, cfg, calls, now, toOld) {
   var sf = ss.getSheetByName(T.SF), lastSf = sf.getLastRow(), keys = {};
-  var from = Math.max(2, lastSf - (toOld ? lastSf : 1500));
+  var from = Math.max(2, lastSf - (toOld ? lastSf : 3000));
   if (lastSf >= 2) sf.getRange(from, 7, lastSf - from + 1, 1).getValues().forEach(function (x) { keys[clean_(x[0])] = 1; });
   calls = calls.filter(function (c) { if (keys[c.key]) return false; keys[c.key] = 1; return true; });
   if (!calls.length) return { calls: 0, added: 0, back: 0, upd: 0 };
   calls.sort(function (a, b) { return a.t - b.t; });
+  if (!toOld) return addCallRows_(ss, cfg, calls, now, sf, lastSf);
   var leads = ss.getSheetByName(T.LEADS), lastL = leads.getLastRow(), nL = Math.max(lastL - 1, 0);
   var head = nL ? leads.getRange(2, 1, nL, L.TAB).getValues() : [];
   var tail = nL ? leads.getRange(2, L.LAST, nL, 1).getValues() : [];
@@ -2724,8 +2746,8 @@ function turnOnAutomatic() {
   set.getRange('E3').clearContent();
   // this one, and the every-minute check of the earlier one-file version (if this file was that sheet)
   ScriptApp.getProjectTriggers().forEach(function (t) { if (/^(everyMinute|importNewLeads)$/.test(t.getHandlerFunction())) ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('everyMinute').timeBased().everyMinutes(1).create();
-  PropertiesService.getDocumentProperties().setProperties({ PACE: '1', BEAT: String(Date.now()) });
+  ScriptApp.newTrigger('everyMinute').timeBased().everyMinutes(5).create();
+  PropertiesService.getDocumentProperties().setProperties({ PACE: '5', BEAT: String(Date.now()) });
   var res = everyMinute(true);
   ss.toast('Automatic updates are on: new Runo numbers every minute in working hours (every 5 minutes at night). ' +
     (res || ''), 'Runo MIS', 12);
@@ -2750,15 +2772,17 @@ function everyMinute(force) {
     if (!force) pace_(props, working);
     if (!force && !working && props.getProperty('PACE') !== '5' && mins % 5 !== 0 && props.getProperty('REV_DONE') === REV) return 'night';   // timer not switched
     props.setProperty('BEAT', String(now.getTime()));
-    ensureSetup_(ss, true);
+    var T0 = Date.now(), tm = function (k) { console.log('⏱ ' + k + ' ' + (Date.now() - T0) + ' ms'); };
+    ensureSetup_(ss, true); tm('setup');
     if (props.getProperty('REV_DONE') !== REV && clean_(ss.getSheetByName(T.SET).getRange(SC.REV).getValue()) === REV) props.setProperty('REV_DONE', REV);
     var cfg = readCfg_(ss);
     props.setProperties({ OPEN: String(cfg.open), CLOSE: String(cfg.close) });
     var out = [];
-    var n = importNewLeads_(ss, cfg, force, now);
+    var n = importNewLeads_(ss, cfg, force, now); tm('import');
     if (n) out.push(n);
     var cu = catchUp_(ss, cfg, now, props);                                       // ticks / picks the busy sheet could not finish
     if (cu) out.push(cu);
+    tm('catchUp');
     if (force || now.getTime() - +(props.getProperty('UP_AT') || 0) >= (working ? 5 : 30) * 60000 - 30000) {
       props.setProperty('UP_AT', String(now.getTime()));
       var u = readUploads_(ss, cfg, now, force);
@@ -2776,7 +2800,7 @@ function everyMinute(force) {
       var bk = bookedSweep_(ss, cfg, now);
       if (bk) out.push(bk);
     }
-    if (working || force) promoteCallbacks_(ss, cfg, now);                       // a callback whose time came → top of Followup/Callback
+    if (working || force) promoteCallbacks_(ss, cfg, now); tm('promote');                       // a callback whose time came → top of Followup/Callback
     if (props.getProperty('TIDY') === '1') {                                   // rows waiting to move (one column read to see if any is due)
       var td = tidyState_(ss, now);
       if (!td.any) props.deleteProperty('TIDY');
@@ -2791,6 +2815,7 @@ function everyMinute(force) {
     if (props.getProperty('DAILY') !== day && mins >= 6 * 60) { out.push(dailyRun_(ss, cfg, now)); props.setProperty('DAILY', day); props.setProperty('REPORT_HOUR', Utilities.formatDate(now, TZ, 'yyyyMMddHH')); }
     var hour = Utilities.formatDate(now, TZ, 'yyyyMMddHH');
     if (props.getProperty('REPORT_HOUR') !== hour && (working || force)) { refreshReports_(ss, cfg); props.setProperty('REPORT_HOUR', hour); }
+    tm('end');
     return out.join(' · ');
   } finally {
     run.releaseLock();
@@ -2881,7 +2906,7 @@ function bookedSweep_(ss, cfg, now) {
 
 /** Every minute in working hours, every 5 minutes at night: the run switches its own timer when the time comes. */
 function pace_(props, working) {
-  var want = working ? '1' : '5';
+  var want = working ? '5' : '30';                                             // calls are pushed live (doPost); this is only a backup
   if (props.getProperty('PACE') === want) return;
   try {
     var old = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'everyMinute'; });
@@ -3411,4 +3436,266 @@ function writeReport_(sh, n, total, rows) {
   sh.getRange(RP.TOTAL, 1, 1, n).setValues([total]).setFontWeight('bold').setBackground('#e8eef4');
   if (rows.length) sh.getRange(RP.FIRST, 1, rows.length, n).setValues(rows).setFontFamily(FONT);
   sh.getRange(RP.TOTAL, 2, rows.length + 1, n - 1).setHorizontalAlignment('center');
+}
+
+/* ========================================================================= */
+/*  Live pushes (web app): every Runo call and every Corefactor call         */
+/* ========================================================================= */
+
+var PUSH_TOKEN = '<PUSH_TOKEN — in the live script only>';
+
+/**
+ * POST { token, kind: 'runo', headers, rows } — the rows the “Runo Live Call Log” webhook just wrote (one per call), or
+ * { token, kind: 'cf', body } — one Corefactor call as Corefactor sent it to the Supabase webhook.
+ */
+function doPost(e) {
+  var body = {};
+  try { body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); } catch (err) { body = {}; }
+  if (!body || body.token !== PUSH_TOKEN) return jsonOut_({ ok: false, error: 'unauthorized' });
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), now = new Date();
+  try {
+    var cfg = readCfg_(ss), res;
+    if (body.kind === 'runo') {
+      var cols = runoCols_(body.headers || []), calls = [];
+      if (!cols) return jsonOut_({ ok: false, error: 'no Phone / Call Start Date in headers' });
+      runoCalls_(body.rows || [], cols, cfg, calls);
+      calls = calls.filter(function (c) { return !cfg.from || c.t >= cfg.from; });
+      var lock = LockService.getDocumentLock();
+      if (!lock.tryLock(25000)) return jsonOut_({ ok: false, error: 'busy' });           // the 5-minute backup picks it up
+      try { res = calls.length ? addRunoCalls_(ss, cfg, calls, now, false) : { calls: 0 }; } finally { lock.releaseLock(); }
+      if (res.added) PropertiesService.getDocumentProperties().setProperty('LAST_NEW', '🆕 ' + res.added + ' new call' + (res.added === 1 ? '' : 's') + ' at ' + Utilities.formatDate(now, TZ, 'HH:mm'));
+      checked_(ss, now, 'pushed: ' + (res.calls || 0) + ' Runo call(s)');
+    } else if (body.kind === 'cfrows') {                                         // a batch of earlier Corefactor calls (backfill)
+      var lock3 = LockService.getDocumentLock();
+      if (!lock3.tryLock(60000)) return jsonOut_({ ok: false, error: 'busy' });
+      try {
+        res = cfAddRows_(ss, body.rows || []);
+        if (body.final) { res.marked = cfRecompute_(ss); rebuildTabs_(ss, cfg, now); }
+      } finally { lock3.releaseLock(); }
+    } else if (body.kind === 'cf') {
+      var lock2 = LockService.getDocumentLock();
+      if (!lock2.tryLock(25000)) return jsonOut_({ ok: false, error: 'busy' });
+      try { res = cfAdd_(ss, cfg, body.body || {}, now); } finally { lock2.releaseLock(); }
+    } else return jsonOut_({ ok: false, error: 'kind?' });
+    return jsonOut_({ ok: true, res: res });
+  } catch (err) {
+    console.error(err);
+    return jsonOut_({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+function doGet() { return jsonOut_({ ok: true, message: 'RUNO MIS push receiver' }); }
+function jsonOut_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+
+/** Each Runo call → its own lead on Live leads (nothing merged), with its Corefactor callback status. */
+function addCallRows_(ss, cfg, calls, now, sf, lastSf) {
+  var cfMap = cfCallsFor_(ss, calls.map(function (c) { return c.phone; }));
+  var fresh = calls.map(function (c) {
+    var x = newLead_();
+    x[L.ID - 1] = 'runo:' + c.key;
+    x[L.DATE - 1] = c.t; x[L.CITY - 1] = cfg.city; x[L.CAMP - 1] = c.line; x[L.PHONE - 1] = c.phone; x[L.RAW - 1] = c.raw;
+    x[L.NAME - 1] = c.name; x[L.SOURCE - 1] = 'Runo ' + c.type; x[L.TAB - 1] = T.LIVE; x[L.ADDED - 1] = now;
+    x[L.RN - 1] = 1; x[L.RLAST - 1] = c.t; x[L.RTYPE - 1] = c.type;
+    x[L.ADSET - 1] = c.type + (c.conn ? ' · ' + c.dur + ' s' : ' · not connected');
+    (cfMap[c.phone] || []).forEach(function (k) { if (k.t.getTime() >= c.t.getTime() - 60000) cfBump_(x, k.t, k.ans); });
+    computeLead_(x, cfg, now);
+    return x;
+  });
+  var leads = ss.getSheetByName(T.LEADS), lr = appendLeads_(leads, fresh);
+  leads.getRange(lr, L.RAW, fresh.length, 1).setNumberFormat('@');
+  var live = ss.getSheetByName(T.LIVE), row = Math.max(live.getLastRow(), HEAD_ROW) + 1;
+  growRows_(ss, live, row + fresh.length, cfg);
+  live.getRange(row, W.CBT, fresh.length, 1).setNumberFormat('@');
+  live.getRange(row, 1, fresh.length, WN).setValues(fresh.map(function (x, k) { return workCells_(x, lr + k, T.LIVE); }));
+  live.getRange(row, W.TICK, fresh.length, 1).insertCheckboxes();
+  var add = calls.map(function (c) { return [c.phone, c.t, c.type, c.conn ? 'Yes' : 'No', c.dur, c.line, c.key]; });
+  var at = Math.max(lastSf, 1) + 1;
+  ensureRows_(sf, at + add.length);
+  sf.getRange(at, 1, add.length, 1).setNumberFormat('@');
+  sf.getRange(at, 7, add.length, 1).setNumberFormat('@');
+  sf.getRange(at, 1, add.length, 7).setValues(add);
+  return { calls: calls.length, added: fresh.length, back: 0, upd: 0 };
+}
+
+/** “✔ Called 24-Nov 15:42 · 2 calls · answered” / “✖ Not called” (Corefactor calls to the number after this lead came in). */
+function cfText_(r) {
+  var n = +r[L.CFN - 1] || 0, f = asDate_(r[L.CFFIRST - 1]);
+  if (!n || !f) return '✖ Not called';
+  return '✔ Called ' + Utilities.formatDate(f, TZ, 'dd-MMM HH:mm') + (n > 1 ? ' · ' + n + ' calls' : '') + (r[L.CFANS - 1] === 'Yes' ? ' · answered' : ' · not answered');
+}
+function cfBump_(r, t, ans) {
+  r[L.CFN - 1] = (+r[L.CFN - 1] || 0) + 1;
+  if (!asDate_(r[L.CFFIRST - 1]) || t < r[L.CFFIRST - 1]) r[L.CFFIRST - 1] = t;
+  if (!asDate_(r[L.CFLAST - 1]) || t > r[L.CFLAST - 1]) r[L.CFLAST - 1] = t;
+  if (ans) r[L.CFANS - 1] = 'Yes';
+}
+
+/** Outgoing Corefactor calls of these numbers (the hidden Corefactor calls tab, last 4000) → { phone: [{ t, ans }] }. */
+function cfCallsFor_(ss, phones) {
+  var sh = ss.getSheetByName(T.CFC), last = sh ? sh.getLastRow() : 0, want = {}, out = {};
+  phones.forEach(function (p) { want[p] = 1; });
+  if (last < 2) return out;
+  var from = Math.max(2, last - 4000);
+  sh.getRange(from, 1, last - from + 1, 5).getValues().forEach(function (x) {
+    var p = clean_(x[0]), t = asDate_(x[1]);
+    if (!want[p] || !t || !/^out/i.test(clean_(x[2]))) return;
+    (out[p] = out[p] || []).push({ t: t, ans: x[4] === 'Yes' });
+  });
+  return out;
+}
+
+/**
+ * One Corefactor call (Tata format) → Corefactor calls tab; an outgoing call marks every lead of that number on Live leads /
+ * Followup/Callback / Junk leads that came in before it (Called on Corefactor).
+ */
+function cfAdd_(ss, cfg, b, now) {
+  var dir = clean_(b.direction), out = /^out/i.test(dir);
+  var ph = normPhone_(out ? (clean_(b.to_number) || clean_(b.lead_mobile)) : clean_(b.from_number));
+  if (!ph.ok) return { skipped: 'no mobile' };
+  var m = clean_(b.start_time).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  var t = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) - 330 * 60000) : now;
+  var talk = num_(b.talktime_duration), status = clean_(b.call_status);
+  var ans = /answer/i.test(status) && !/unanswer|not ?answer/i.test(status) && talk > 0;
+  var key = 'cf:' + (clean_(b.unique_id) || ph.phone + '|' + t.getTime());
+  var sh = ss.getSheetByName(T.CFC), last = sh.getLastRow();
+  if (last >= 2) {
+    var from = Math.max(2, last - 500), keys = sh.getRange(from, 8, last - from + 1, 1).getValues();
+    for (var i = 0; i < keys.length; i++) if (keys[i][0] === key) return { skipped: 'already here' };
+  }
+  ensureRows_(sh, last + 2);
+  sh.getRange(last + 1, 1).setNumberFormat('@');
+  sh.getRange(last + 1, 1, 1, 8).setValues([[ph.phone, t, out ? 'out' : 'in', status, ans ? 'Yes' : 'No', talk, clean_(out ? b.from_number : b.to_number), key]]);
+  if (!out) return { saved: 'incoming' };
+  var leads = ss.getSheetByName(T.LEADS), lastL = leads.getLastRow();
+  if (lastL < 2) return { saved: 'out', marked: 0 };
+  var phones = leads.getRange(2, L.PHONE, lastL - 1, 1).getValues(), marked = 0;
+  for (var k = phones.length - 1; k >= 0; k--) {
+    if (clean_(phones[k][0]) !== ph.phone) continue;
+    var lr = k + 2, r = readLead_(leads, lr);
+    if (WORK_TABS.indexOf(r[L.TAB - 1]) < 0 || time_(r[L.DATE - 1]) > t.getTime() + 60000) continue;
+    cfBump_(r, t, ans);
+    leads.getRange(lr, L.CFN, 1, 4).setValues([[r[L.CFN - 1], r[L.CFFIRST - 1], r[L.CFLAST - 1], r[L.CFANS - 1]]]);
+    var tab = ss.getSheetByName(r[L.TAB - 1]), at = tab ? findOnTab_(tab, r[L.ID - 1]) : 0;
+    if (at) tab.getRange(at, W.CF).setValue(cfText_(r));
+    marked++;
+  }
+  return { saved: 'out', marked: marked };
+}
+
+/** OWNER (one time): the Called on Corefactor column on the calling tabs. */
+function addCorefactorColumn() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSetup_(ss, true);
+  var cfg = readCfg_(ss);
+  ensureCols_(ss.getSheetByName(T.LEADS), NL);
+  ss.getSheetByName(T.LEADS).getRange(1, 1, 1, NL).setValues([L_HEADERS]).setFontFamily(FONT).setFontWeight('bold').setFontColor('#ffffff').setBackground(COL.head);
+  WORK_TABS.forEach(function (n) {
+    var sh = ss.getSheetByName(n);
+    ensureCols_(sh, WN);
+    sh.getRange(HEAD_ROW, W.CF).setValue(W_HEADERS[W.CF - 1]).setFontFamily(FONT).setFontWeight('bold').setFontColor('#ffffff')
+      .setBackground('#0b5394').setWrap(true).setVerticalAlignment('middle');
+    sh.setColumnWidth(W.CF, 210);
+    sh.showColumns(W.CF);
+    applyColours_(ss, sh, cfg);
+  });
+  return 'ok';
+}
+
+/** Backfill: rows [phone, time ms, 'out'|'in', status, 'Yes'|'No', talk, agent, key] → Corefactor calls tab (once each). */
+function cfAddRows_(ss, rows) {
+  var sh = ss.getSheetByName(T.CFC), last = sh.getLastRow(), keys = {};
+  if (last >= 2) sh.getRange(2, 8, last - 1, 1).getValues().forEach(function (x) { keys[x[0]] = 1; });
+  var add = [];
+  rows.forEach(function (x) {
+    var p = normPhone_(x[0]);
+    if (!p.ok || keys[x[7]]) return;
+    keys[x[7]] = 1;
+    add.push([p.phone, new Date(+x[1]), x[2], x[3], x[4], +x[5] || 0, x[6] || '', x[7]]);
+  });
+  if (add.length) {
+    ensureRows_(sh, last + add.length + 2);
+    sh.getRange(last + 1, 1, add.length, 1).setNumberFormat('@');
+    sh.getRange(last + 1, 1, add.length, 8).setValues(add);
+  }
+  return { added: add.length };
+}
+
+/** Called on Corefactor worked out again for every lead on Live / Followup / Junk from the whole Corefactor calls tab. */
+function cfRecompute_(ss) {
+  var sh = ss.getSheetByName(T.CFC), last = sh.getLastRow(), by = {};
+  if (last >= 2) sh.getRange(2, 1, last - 1, 5).getValues().forEach(function (x) {
+    var t = asDate_(x[1]);
+    if (!t || !/^out/i.test(clean_(x[2]))) return;
+    (by[clean_(x[0])] = by[clean_(x[0])] || []).push({ t: t, ans: x[4] === 'Yes' });
+  });
+  var leads = ss.getSheetByName(T.LEADS), lastL = leads.getLastRow();
+  if (lastL < 2) return 0;
+  var n = lastL - 1, head = leads.getRange(2, 1, n, L.TAB).getValues(), cf = leads.getRange(2, L.CFN, n, 4).getValues(), marked = 0;
+  head.forEach(function (r, i) {
+    if (WORK_TABS.indexOf(r[L.TAB - 1]) < 0) return;
+    var d = time_(r[L.DATE - 1]), x = { };
+    var row = ['', '', '', ''];
+    (by[clean_(r[L.PHONE - 1])] || []).forEach(function (k) {
+      if (k.t.getTime() < d - 60000) return;
+      row[0] = (+row[0] || 0) + 1;
+      if (!row[1] || k.t < row[1]) row[1] = k.t;
+      if (!row[2] || k.t > row[2]) row[2] = k.t;
+      if (k.ans) row[3] = 'Yes';
+    });
+    cf[i] = row;
+    if (row[0]) marked++;
+  });
+  leads.getRange(2, L.CFN, n, 4).setValues(cf);
+  return marked;
+}
+
+/**
+ * OWNER (one time, 24 Nov 2026): today's Live leads made one row per number before the change → one row per Runo call.
+ * Rows an agent already worked on (a comment) stay as they are. Then the Corefactor column is filled and the tabs rewritten.
+ */
+function rebuildTodayPerCall() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSetup_(ss, true);
+  var cfg = readCfg_(ss), now = new Date(), props = PropertiesService.getDocumentProperties();
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(60000);
+  var removed = 0, res = null;
+  try {
+    syncTab_(ss, cfg, T.LIVE, now);
+    var data = leadsAll_(ss);
+    var keep = data.rows.filter(function (r) {
+      var old = r[L.TAB - 1] === T.LIVE && /^runo:\d{10}:\d{12}$/.test(clean_(r[L.ID - 1])) && !latest_(r);
+      if (old) removed++;
+      return !old;
+    });
+    if (removed) {
+      data.sh.getRange(2, 1, data.rows.length, NL).clearContent();
+      if (keep.length) data.sh.getRange(2, 1, keep.length, NL).setValues(keep);
+      var sf = ss.getSheetByName(T.SF), lastSf = sf.getLastRow();                         // today's Runo calls read again, one lead each
+      if (lastSf >= 2) {
+        var v = sf.getRange(2, 1, lastSf - 1, 7).getValues(), from = cfg.from ? cfg.from.getTime() : 0;
+        var k2 = v.filter(function (x) { return time_(x[1]) < from; });
+        sf.getRange(2, 1, v.length, 7).clearContent();
+        if (k2.length) sf.getRange(2, 1, k2.length, 7).setValues(k2);
+      }
+      props.deleteProperty('RUNO_T'); props.deleteProperty('RUNO_TABS');
+    }
+    var cols = null, calls = [];
+    cfg.runoTabs.slice(0, 1).forEach(function (name) {
+      var tab = ss.getSheetByName(name);
+      if (!tab || tab.getLastRow() < 2) return;
+      var vals = tab.getDataRange().getValues();
+      cols = runoCols_(vals[0]);
+      if (cols) runoCalls_(vals.slice(1), cols, cfg, calls);
+    });
+    calls = calls.filter(function (c) { return !cfg.from || c.t >= cfg.from; });
+    var live = ss.getSheetByName(T.LIVE), lastLive = live.getLastRow();
+    if (lastLive >= FIRST) live.getRange(FIRST, 1, lastLive - FIRST + 1, WN).clearContent();
+    if (calls.length) res = addRunoCalls_(ss, cfg, calls, now, false);
+    props.setProperty('RUNO_T', String(now.getTime()));
+    cfRecompute_(ss);
+    rebuildTabs_(ss, cfg, now);
+  } finally {
+    lock.releaseLock();
+  }
+  return 'removed ' + removed + ' merged rows; ' + (res ? res.added : 0) + ' calls added one row each';
 }

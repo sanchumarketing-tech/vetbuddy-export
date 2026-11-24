@@ -7,6 +7,8 @@
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SHEET_URL = Deno.env.get("SHEET_PUSH_URL") ?? "";
+const SHEET_TOKEN = Deno.env.get("SHEET_PUSH_TOKEN") ?? "";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -49,5 +51,16 @@ Deno.serve(async (req) => {
 
   const r = await rpc(fn, { p_key: key, p_body: body });
   if (r.status !== 200) return json(502, { ok: false, message: "database error" });
+  // 24 Nov 2026: a saved call is also pushed to the RUNO MIS Google Sheet (Called on Corefactor), in the background —
+  // nothing is read from the database for it. SHEET_PUSH_URL / SHEET_PUSH_TOKEN are Edge Function secrets.
+  if (r.body?.ok && SHEET_URL && SHEET_TOKEN) {
+    const push = fetch(SHEET_URL, {
+      method: "POST", redirect: "manual", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: SHEET_TOKEN, kind: "cf", body }),
+    }).catch(() => null);
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(push); else await push;
+  }
   return json(r.body?.ok ? 200 : 401, r.body);
 });
