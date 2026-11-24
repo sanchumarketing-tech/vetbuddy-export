@@ -145,3 +145,29 @@ def sales_unit(is_vow: bool, billed_clinic) -> str:
     if is_vow:
         return vow_unit or UNMAPPED_VOW
     return clinic_unit or UNMAPPED_CLINIC
+
+
+# ---------------------------------------------------------------- customers (24 Nov 2026)
+# A Gofrugal bill follows its CUSTOMER's VetBuddy invoices of the same date and clinic (same rule as the
+# Daily Sales Report's CoreFactory): phone (any of Telephone / Phone1 / Mobile / Mobile2 vs Primary Phone) or
+# customer name (Cust Name vs Client). Only VOW invoices -> VOW; only clinic -> clinic; both / none -> doctor rule.
+# A phone or name on more than SHARED_MAX bills of that outlet that day, and doctors' own numbers, are not used.
+SHARED_MAX = 3
+_CSTOP = {"mr", "mrs", "ms", "dr", "miss", "sir", "madam"}
+_CNONE = {"walk in", "walkin", "cash", "customer", "cash customer", "doctor", "test", "general", "na", "nil"}
+
+
+def phone10(v):
+    d = re.sub(r"\D", "", str(int(v)) if isinstance(v, float) else str(v or ""))
+    return d[-10:] if len(d) >= 10 and d[-10] in "6789" else ""
+
+
+def cust_name(v):
+    s = " ".join(w for w in re.sub(r"[^a-z ]", " ", str(v or "").lower()).split() if w not in _CSTOP)
+    return s if len(s) >= 3 and s not in _CNONE else ""
+
+
+def customer_keys(phones=(), names=()):
+    keys = {"p:" + p for p in map(phone10, phones) if p}
+    keys |= {"n:" + n for n in map(cust_name, names) if n}
+    return keys

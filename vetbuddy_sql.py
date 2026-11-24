@@ -314,6 +314,22 @@ def vow_doctors(cur, d_from, d_to):
     return out
 
 
+def vow_customers(cur, d_from, d_to):
+    """{(date, clinic_unit, "p:phone" / "n:name"): {"v": first VOW invoice, "c": clinic invoice?}} from VetBuddy."""
+    import vow
+    cur.execute("SELECT DISTINCT sale_date, clinic_unit, invoice_no, is_vow, client_phone, client_name FROM vetbuddy.sales "
+                "WHERE sale_date BETWEEN %s AND %s AND clinic_unit IS NOT NULL", (d_from, d_to))
+    out = {}
+    for d, cu, inv, isv, ph, nm in cur.fetchall():
+        for k in vow.customer_keys([ph], [nm]):
+            e = out.setdefault((d, cu, k), {"v": "", "c": False})
+            if isv:
+                e["v"] = e["v"] or inv
+            else:
+                e["c"] = True
+    return out
+
+
 def replace_pharmacy(recs, d_from, d_to):
     """Replace pharmacy rows of [d_from, d_to] with recs (after the VOW split), all or nothing."""
     import gofrugal
@@ -322,7 +338,7 @@ def replace_pharmacy(recs, d_from, d_to):
         raise RuntimeError(f"{len(bad)} pharmacy rows are outside {d_from}..{d_to} - database NOT changed")
     with connect() as conn:
         with conn.cursor() as cur:
-            gofrugal.apply_vow(recs, vow_doctors(cur, d_from, d_to))
+            gofrugal.apply_vow(recs, vow_doctors(cur, d_from, d_to), vow_customers(cur, d_from, d_to))
             cur.execute("DELETE FROM vetbuddy.pharmacy_sales WHERE sale_date BETWEEN %s AND %s",
                         (d_from, d_to))
             deleted = cur.rowcount

@@ -178,6 +178,10 @@ def sales_records(rows):
             "tax_amount": round(_num(r.get("GST Amount")), 2),
             "net_amount": round(_num(r.get("Item Net Amt")), 2),
             "doctor": doctor.strip() or None, "salesman": r.get("SalesMan Name") or None,
+            # 24 Nov 2026: customer columns, only to decide VOW (not stored)
+            "_keys": vow.customer_keys([r.get(c) for c in ("Telephone", "Phone1", "Mobile No/SMS Alerts", "Mobile2")],
+                                       [r.get(c) for c in ("Cust Name(During Billing)", "Cust. Name")]),
+            "_dph": {p for p in (vow.phone10(r.get(c)) for c in ("Telephone (Doctor)", "Mobile No (Doctor)")) if p},
         })
     return recs
 
@@ -203,13 +207,37 @@ def return_records(rows):
     return recs
 
 
-def apply_vow(recs, vow_doctors):
-    """vow_doctors: {(date, clinic_unit): [VetBuddy doctor names on VOW invoices]}"""
+def apply_vow(recs, vow_doctors, customers=None):
+    """vow_doctors: {(date, clinic_unit): [VetBuddy doctor names on VOW invoices]}
+    customers: {(date, clinic_unit, key): {"v": first VOW invoice or "", "c": True if a clinic invoice}} (24 Nov 2026:
+    the customer decides first - see vow.py "customers"; the doctor rule when the customer is not found / mixed)."""
+    customers = customers or {}
+    bills, use, docph = {}, {}, set()
     for r in recs:
-        clinic_unit, vow_unit = vow.units_for_clinic(r["outlet"])
+        r["clinic_unit"], r["vow_unit"] = vow.units_for_clinic(r["outlet"])
+        if r["kind"] == "sale":
+            b = bills.setdefault((r["sale_date"], r["outlet"], r["bill_no"]), {"u": r["clinic_unit"], "keys": set()})
+            b["keys"] |= r.get("_keys", set())
+            docph |= r.get("_dph", set())
+    for (d, _o, _b), b in bills.items():
+        for k in b["keys"]:
+            use[(d, b["u"], k)] = use.get((d, b["u"], k), 0) + 1
+    decided = {}
+    for (d, o, bn), b in bills.items():
+        v, c = "", False
+        for k in b["keys"]:
+            if use[(d, b["u"], k)] > vow.SHARED_MAX or (k.startswith("p:") and k[2:] in docph):
+                continue
+            e = customers.get((d, b["u"], k))
+            if e:
+                v = v or e["v"]
+                c = c or e["c"]
+        decided[(d, o, bn)] = True if v and not c else False if c and not v else None
+    for r in recs:
         r["doctor_code"] = vow.doctor_code(r["doctor"])
-        r["clinic_unit"], r["vow_unit"] = clinic_unit, vow_unit
-        r["is_vow"] = vow.doctor_matches(r["doctor"], vow_doctors.get((r["sale_date"], clinic_unit), ()))
+        by_doc = vow.doctor_matches(r["doctor"], vow_doctors.get((r["sale_date"], r["clinic_unit"]), ()))
+        cd = decided.get((r["sale_date"], r["outlet"], r["bill_no"])) if r["kind"] == "sale" else None
+        r["is_vow"] = by_doc if cd is None else cd
         r["sales_unit"] = vow.sales_unit(r["is_vow"], r["outlet"])
     return recs
 
