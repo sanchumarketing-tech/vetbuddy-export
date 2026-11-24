@@ -29,7 +29,14 @@ begin
              count(v.id) filter (where v.outcome = 'callback') callbacks,
              count(v.id) filter (where v.dialed_at is not null) dialed, count(v.id) filter (where v.called_at is not null) marked_called,
              count(v.id) filter (where v.outcome = 'callback') rescheduled,
-             count(v.id) filter (where v.rank < 12) must_call
+             count(v.id) filter (where v.rank < 12) must_call,
+             -- 24 Nov 2026: first call = first dial in Call Desk or first Corefactor call to one of the agent's numbers; last call = latest Corefactor call (IST)
+             (select to_char(least(min(q1.dialed_at at time zone 'Asia/Kolkata'), min(k.call_at)), 'YYYY-MM-DD"T"HH24:MI:SS')
+                from calldesk.queue q1 left join calldesk.calls k on k.phone = q1.phone and k.call_at >= d::timestamp and k.call_at < (d + 1)::timestamp and k.source = 'Corefactor' and coalesce(k.direction, 'out') <> 'in'
+               where q1.list_date = d and q1.agent_id = a.id) first_call,
+             (select to_char(max(k.call_at), 'YYYY-MM-DD"T"HH24:MI:SS')
+                from calldesk.queue q1 join calldesk.calls k on k.phone = q1.phone and k.call_at >= d::timestamp and k.call_at < (d + 1)::timestamp and k.source = 'Corefactor' and coalesce(k.direction, 'out') <> 'in'
+               where q1.list_date = d and q1.agent_id = a.id) last_call
         from calldesk.agents a left join v on v.agent_id = a.id
        where a.deleted_at is null   -- 24 Nov 2026: deleted agents are not listed
        group by a.id) x), '[]'),
