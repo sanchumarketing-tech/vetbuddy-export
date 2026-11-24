@@ -1,0 +1,10 @@
+-- 24 Nov 2026 (applied live)
+-- 1. Corefactor live webhook: public.cf_webhook now reads the Corefactor/Tata push format
+--    (unique_id, direction, to_number / lead_mobile, from_number = agent phone, start_time,
+--    call_status, call_duration, talktime_duration). call_key = 'live:' || unique_id.
+-- 2. calldesk.cf_live_mark(): AFTER INSERT trigger on calldesk.calls. A live push marks the customer's
+--    list rows straight away (call_count, attempted_at, connected_at, last_call), same fields as refresh_status.
+-- 3. public.cd_team: Must-call replaced by first_call (first Call Desk dial or first Corefactor call to one of
+--    the agent's numbers, IST) and last_call (latest Corefactor call to one of the agent's numbers, IST).
+-- 4. public.cd_agent_logs(p_day): 12-minute warnings from calldesk.card_time, team leads only.
+-- The live definitions are kept in the function dump (db-dump-functions workflow).

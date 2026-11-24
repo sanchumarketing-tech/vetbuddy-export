@@ -93,13 +93,16 @@ function SkipCalled({ s, hidden, onChange }) {
 
 const PITCH = ["Grooming", "Vaccination", "Consultation", "Clinical"];
 
-// vaccination details typed by the agent for one pet (saved when the box loses focus or on Enter; empty = removed)
+// vaccination date picked by the agent for one pet (saved as YYYY-MM-DD when a date is picked; cleared = removed).
+// Older typed notes that are not a date are still shown under the calendar.
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 function VaccNote({ phone, pet, v, onSaved }) {
-  const [t, setT] = useState(v?.note || "");
+  const isDay = ISO_DAY.test(v?.note || "");
+  const [t, setT] = useState(isDay ? v.note : "");
   const [st, setSt] = useState("");
-  useEffect(() => { setT(v?.note || ""); }, [v?.note, pet.pet_id]);
-  const save = async () => {
-    if (t.trim() === (v?.note || "")) return;
+  useEffect(() => { setT(ISO_DAY.test(v?.note || "") ? v.note : ""); }, [v?.note, pet.pet_id]);
+  const save = async (t) => {
+    if (t === (v?.note || "") || (!t && !v?.note)) return;
     setSt("Saving…");
     try {
       const r = await rpc("cd_vacc_note_save", { p_phone: phone, p_pet_id: String(pet.pet_id), p_note: t, p_pet_name: pet.name || null });
@@ -108,9 +111,11 @@ function VaccNote({ phone, pet, v, onSaved }) {
   };
   return (
     <div className="vaccnote" onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
-      <input placeholder="Type vaccination details" value={t} maxLength={500} style={{ width: "100%", boxSizing: "border-box" }}
-        onChange={(e) => setT(e.target.value)} onBlur={save}
-        onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }} />
+      <label className="muted small">Vaccinated on </label>
+      <input type="date" value={t} max={todayISO()} aria-label="Vaccination date"
+        onChange={(e) => { setT(e.target.value); if (!e.target.value || ISO_DAY.test(e.target.value)) save(e.target.value); }}
+        onKeyDown={(e) => e.stopPropagation()} />
+      {v?.note && !isDay && <div className="muted small">Earlier note: {v.note}</div>}
       {(st || v?.by) && <div className="muted small">{st || `by ${v.by}`}</div>}
     </div>
   );
@@ -780,17 +785,17 @@ function Team({ day, setDay, openAgent }) {
       </div>
       <p className="muted small">"Called" and "answered" come from the Corefactor and Runo logs, loaded each morning (latest call loaded: {fmtDT(t.last_call_loaded) || "none yet"}).</p>
       <table className="grid">
-        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>Must-call</th><th>Marked called</th><th>Rescheduled</th><th>Called (logs)</th><th>Answered (logs)</th><th>Done %</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Units</th><th>On list</th><th>First call</th><th>Last call</th><th>Marked called</th><th>Rescheduled</th><th>Called (logs)</th><th>Answered (logs)</th><th>Done %</th></tr></thead>
         <tbody>
           {t.agents.filter((a) => a.role === "agent" && a.calls).map((a) => (
             <tr key={a.id} className="click" onClick={() => openAgent(a.id)}>
               <td>{a.name}{!a.active && <span className="muted"> (off)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td>
-              <td>{a.assigned}</td><td>{a.must_call}</td><td>{a.marked_called}</td><td>{a.rescheduled}</td><td>{a.attempted}</td><td>{a.connected}</td>
+              <td>{a.assigned}</td><td>{fmtTime(a.first_call) || "—"}</td><td>{fmtTime(a.last_call) || "—"}</td><td>{a.marked_called}</td><td>{a.rescheduled}</td><td>{a.attempted}</td><td>{a.connected}</td>
               <td>{a.assigned ? Math.round((Math.max(a.attempted, a.marked_called) / a.assigned) * 100) : 0}%</td>
             </tr>
           ))}
-          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={7} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
+          {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={8} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
         </tbody>
       </table>
       <h3>By reason</h3>
@@ -888,6 +893,50 @@ function Agents({ me, agents, depts = [], reload }) {
         <div className="actions"><button className="primary">Save</button><button type="button" className="link" onClick={() => setF(blank)}>Clear</button></div>
         {msg && <p className="note">{msg}</p>}
       </form>
+    </div>
+  );
+}
+
+// 12-minute warnings: a customer card left open too long (from the card timer), for team leads
+function AgentLogs({ day, setDay }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [who, setWho] = useState("");
+  const load = useCallback(() => { setErr(""); rpc("cd_agent_logs", { p_day: day }).then(setD).catch((e) => setErr(e.message)); }, [day]);
+  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
+  const rows = (d?.rows || []).filter((r) => !who || r.agent === who);
+  return (
+    <div className="page">
+      <div className="page-head" style={{ gap: 8, alignItems: "center" }}>
+        <h2>Agent logs</h2>
+        <input type="date" value={day} max={todayISO()} onChange={(e) => e.target.value && setDay(e.target.value)} />
+        <select value={who} onChange={(e) => setWho(e.target.value)}>
+          <option value="">All agents</option>
+          {(d?.summary || []).map((s) => <option key={s.agent} value={s.agent}>{s.agent}</option>)}
+        </select>
+        <button onClick={load}>Refresh</button>
+      </div>
+      {err && <p className="note warn">{err}</p>}
+      <p className="muted small">A warning is raised when one customer stays open for more than 12 minutes.</p>
+      {d && <div className="kpis">
+        <div><span>{d.rows.length}</span>warnings</div>
+        {d.summary.map((s) => <div key={s.agent}><span>{s.warnings}</span>{s.agent} ({s.minutes} min)</div>)}
+      </div>}
+      <table className="grid">
+        <thead><tr><th>Agent</th><th>Customer</th><th>Opened</th><th>Warned</th><th>Closed</th><th>Minutes</th><th>Seen by</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td>{r.agent || "—"}</td><td>{r.client || "—"}<div className="muted small">{r.phone}</div></td>
+              <td>{fmtTime(r.opened_at)}</td><td>{fmtTime(r.alerted_at)}</td>
+              <td>{r.open ? <span className="muted">still open</span> : fmtTime(r.closed_at)}</td>
+              <td>{r.minutes}</td>
+              <td>{r.acked_by ? `${r.acked_by} ${fmtTime(r.acked_at)}` : <span className="muted">not yet</span>}</td>
+            </tr>
+          ))}
+          {d && !rows.length && <tr><td colSpan={7} className="muted">No warnings on this day.</td></tr>}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1111,7 +1160,7 @@ export default function App() {
         <div className="brand"><span className="logo" /> Call Desk</div>
         {isLead && (
           <nav>
-            {[["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"]].map(([k, v]) => (
+            {[["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"], ["logs", "Agent logs"]].map(([k, v]) => (
               <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{v}</button>
             ))}
           </nav>
@@ -1137,6 +1186,7 @@ export default function App() {
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
+      {tab === "logs" && isLead && <AgentLogs day={day} setDay={setDay} />}
       {tab === "kpi" && <Kpis />}
       {tab === "incentives" && <Incentives me={me} />}
     </div>
