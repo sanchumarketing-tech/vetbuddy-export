@@ -93,6 +93,29 @@ def answered(status, dur):
 
 
 # ----------------------------------------------------------------------------- 1. call logs
+def corefactor_line(r, seen):
+    """One row of a Corefactor call-log export -> a calldesk.calls tuple (None when it has no phone / time)."""
+    ph = norm_phone(rc.pick(r, "Customer Number", "Phone", "Caller Number"))
+    when = cf.parse_dt(rc.pick(r, "Start Time", "Call Date")) or cf.parse_dt(rc.pick(r, "Call Date"))
+    if not ph or not when:
+        return None
+    kind = str(rc.pick(r, "Call Type") or "")
+    status = str(rc.pick(r, "Call Status") or "")
+    dur = seconds(rc.pick(r, "Total Time", "Duration", "Talk Time"))
+    talk = seconds(rc.pick(r, "Talk Time"))          # the conversation itself (Total Time includes ringing)
+    agent = str(rc.pick(r, "Agent Name") or "")
+    seen[("Corefactor", kind, status)] += 1
+    txt = lambda *names: (str(rc.pick(r, *names) or "").strip()[:200] or None)   # noqa: E731
+    line = txt("DID Number", "DID", "Virtual Number", "Did Number")
+    if line and re.fullmatch(r"\d+\.0", line):
+        line = line[:-2]
+    return ("Corefactor", key(when, ph, kind, status, agent, dur), when, ph, direction(kind, status),
+            kind, status, answered(status, talk if talk is not None else dur), dur, agent,
+            txt("Customer Name"), line, txt("DTMF", "IVR Input", "Dtmf"), txt("Notes", "Remarks"),
+            txt("Call Disposition", "Disposition"), txt("Campaign Name", "Campaign"), talk,
+            txt("Recording", "Recording URL"))
+
+
 def corefactor_rows(sp, first, last, seen):
     out = []
     d = first
@@ -108,26 +131,10 @@ def corefactor_rows(sp, first, last, seen):
             if table and d == last:
                 log.info("Corefactor columns: %s", ", ".join(table[0].keys()))
             for r in table:
-                ph = norm_phone(rc.pick(r, "Customer Number", "Phone", "Caller Number"))
-                when = cf.parse_dt(rc.pick(r, "Start Time", "Call Date")) or cf.parse_dt(rc.pick(r, "Call Date"))
-                if not ph or not when:
-                    continue
-                kind = str(rc.pick(r, "Call Type") or "")
-                status = str(rc.pick(r, "Call Status") or "")
-                dur = seconds(rc.pick(r, "Total Time", "Duration", "Talk Time"))
-                talk = seconds(rc.pick(r, "Talk Time"))          # the conversation itself (Total Time includes ringing)
-                agent = str(rc.pick(r, "Agent Name") or "")
-                seen[("Corefactor", kind, status)] += 1
-                txt = lambda *names: (str(rc.pick(r, *names) or "").strip()[:200] or None)   # noqa: E731
-                line = txt("DID Number", "DID", "Virtual Number", "Did Number")
-                if line and re.fullmatch(r"\d+\.0", line):
-                    line = line[:-2]
-                out.append(("Corefactor", key(when, ph, kind, status, agent, dur), when, ph, direction(kind, status),
-                            kind, status, answered(status, talk if talk is not None else dur), dur, agent,
-                            txt("Customer Name"), line, txt("DTMF", "IVR Input", "Dtmf"), txt("Notes", "Remarks"),
-                            txt("Call Disposition", "Disposition"), txt("Campaign Name", "Campaign"), talk,
-                            txt("Recording", "Recording URL")))
-                n += 1
+                line = corefactor_line(r, seen)
+                if line:
+                    out.append(line)
+                    n += 1
             log.info("Corefactor %s: %d calls", d, n)
             break
         else:
@@ -189,6 +196,12 @@ def load_calls(cur, today, days, source=None):
         log.info("  %-10s type=%-22s status=%-28s %6d -> %s", src, kind[:22], status[:28], n, direction(kind, status))
     if not rows:
         return 0
+    return insert_calls(cur, rows, first, last)
+
+
+def insert_calls(cur, rows, first, last):
+    """Upsert call rows; then drop the live webhook copies (call_key 'live:...') of calls the export now has,
+    so a call is never counted twice (the export has the agent's name, disposition and notes)."""
     cur.execute("create temp table t_calls (like calldesk.calls including defaults) on commit drop")
     with cur.copy("copy t_calls (source, call_key, call_at, phone, direction, call_type, status, answered, duration_s, agent,"
                   " customer_name, line, dtmf, notes, disposition, campaign, talk_s, recording) from stdin") as cp:
@@ -205,8 +218,11 @@ def load_calls(cur, today, days, source=None):
                           customer_name = excluded.customer_name, line = excluded.line, dtmf = excluded.dtmf,
                           notes = excluded.notes, disposition = excluded.disposition, campaign = excluded.campaign,
                           talk_s = excluded.talk_s, recording = excluded.recording""")
-    log.info("Call logs: %d rows loaded (%s .. %s)", cur.rowcount, first, last)
-    return cur.rowcount
+    n = cur.rowcount
+    cur.execute("select calldesk.cf_live_dedup(%s, %s)", (first, last))
+    log.info("Call logs: %d rows loaded (%s .. %s); %d live webhook copies replaced by the export", n, first, last,
+             cur.fetchone()[0])
+    return n
 
 
 # ----------------------------------------------------------------------------- 2. reminders
