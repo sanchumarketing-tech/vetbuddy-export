@@ -817,6 +817,15 @@ function Agents({ me, agents, depts = [], reload }) {
   const shown = agents.filter((a) =>
     (!fDept || (fDept === "-" ? !a.department : a.department === fDept)) &&
     (!fUnit || (fUnit === "-" ? !a.units?.length : (a.units || []).includes(fUnit))));
+  const remove = async (a) => {
+    setMsg("");
+    if (!window.confirm(`Delete ${a.name}?\n\nThey are signed out and can no longer sign in, and today's numbers on their list go back to the other agents. Their past calls stay in the KPIs, call log and incentives.`)) return;
+    try {
+      const r = await rpc("cd_agent_delete", { p_id: a.id });
+      setMsg(`${a.name} deleted.`); if (f.id === a.id) setF(blank); reload();
+      return r;
+    } catch (e2) { setMsg(e2.message); }
+  };
   const save = async (e) => {
     e.preventDefault(); setMsg("");
     try {
@@ -850,7 +859,8 @@ function Agents({ me, agents, depts = [], reload }) {
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
               <td>{a.department || <span className="muted">–</span>}{a.department && !a.calls && <span className="muted small"> (no calls yet)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
-              <td><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button></td>
+              <td className="nowrap"><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button>
+                {a.id !== me?.id && <> · <button className="link warntext" onClick={() => remove(a)} title="Delete this agent (past calls are kept)">Delete</button></>}</td>
             </tr>
           ))}
         </tbody>
