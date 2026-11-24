@@ -1,0 +1,8 @@
+-- 24 Nov 2026 (applied live)
+-- Live Corefactor status on open lists: queue.cf_at (set by calldesk.cf_live_mark) + public.cd_list_live(p_day, p_agent, p_since)
+--   returns only rows a call changed since the last check; the app asks every 30 s while the tab is on screen.
+-- Week offs: calldesk.agent_off(agent_id, day), calldesk.is_off(agent, day). build_list, balance_lists and rebalance_today
+--   skip agents who are off on day d. public.cd_agent_off(p_id, p_day, p_off): lead only; marking today off sends the
+--   agent's untouched numbers to the others (rebalance_today). cd_team returns off_days and off_today.
+-- Active / inactive: public.cd_agent_active(p_id, p_active): lead only; inactive = signed out, cannot sign in, no numbers,
+--   today's untouched numbers go to the others. Replaces the Delete button (cd_agent_delete stays, unused).

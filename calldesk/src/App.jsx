@@ -200,6 +200,7 @@ const STATUS = {
 };
 
 const fmtDate = (d) => (d ? new Date(d.length === 10 ? d + "T00:00:00" : d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" }) : "");
+const fmtDay = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" }) : "");
 const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "");
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }) : "");
 const rs = (n) => (n == null ? "" : "Rs " + Number(n).toLocaleString("en-IN"));
@@ -846,14 +847,25 @@ function Agents({ me, agents, depts = [], reload }) {
   const shown = agents.filter((a) =>
     (!fDept || (fDept === "-" ? !a.department : a.department === fDept)) &&
     (!fUnit || (fUnit === "-" ? !a.units?.length : (a.units || []).includes(fUnit))));
-  const remove = async (a) => {
+  // active / inactive switch (inactive: signed out, cannot sign in, no numbers; past calls are kept)
+  const [busy, setBusy] = useState(null);
+  const setActive = async (a, on) => {
     setMsg("");
-    if (!window.confirm(`Delete ${a.name}?\n\nThey are signed out and can no longer sign in, and today's numbers on their list go back to the other agents. Their past calls stay in the KPIs, call log and incentives.`)) return;
+    if (!on && !window.confirm(`Make ${a.name} inactive?\n\nThey are signed out, cannot sign in and get no numbers. Today's numbers they have not touched go to the other agents. You can make them active again any time.`)) return;
+    setBusy(a.id);
+    try { await rpc("cd_agent_active", { p_id: a.id, p_active: on }); setMsg(`${a.name} is now ${on ? "active" : "inactive"}.`); reload(); }
+    catch (e2) { setMsg(e2.message); } finally { setBusy(null); }
+  };
+  // week off: no numbers on that day (they can still sign in)
+  const [offFor, setOffFor] = useState(null);
+  const [offDay, setOffDay] = useState(todayISO());
+  const setOff = async (a, day, off) => {
+    setMsg(""); setBusy(a.id);
     try {
-      const r = await rpc("cd_agent_delete", { p_id: a.id });
-      setMsg(`${a.name} deleted.`); if (f.id === a.id) setF(blank); reload();
-      return r;
-    } catch (e2) { setMsg(e2.message); }
+      await rpc("cd_agent_off", { p_id: a.id, p_day: day, p_off: off });
+      setMsg(off ? `${a.name} is off on ${fmtDay(day)}${day === todayISO() ? " - their untouched numbers today went to the other agents" : ""}.` : `${a.name} is back on ${fmtDay(day)}.`);
+      setOffFor(null); reload();
+    } catch (e2) { setMsg(e2.message); } finally { setBusy(null); }
   };
   const save = async (e) => {
     e.preventDefault(); setMsg("");
@@ -878,7 +890,7 @@ function Agents({ me, agents, depts = [], reload }) {
         </select></label>
         {(fDept || fUnit) && <button className="ghost" onClick={() => { setFDept(""); setFUnit(""); }}>Show all</button>}
       </div>
-      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent switched off or made a team lead gives theirs back. Team leads never get numbers. Only agents of a department with call lists (Sharpshooting for now) get numbers; the other departments are listed but get no calls until their process is set up.</p>
+      <p className="muted small">Each agent signs in with their name or email and a PIN you set here (4 to 8 digits). Changing a PIN does not show the old one. Agents with units get those units' customers first; "Any" takes the rest. Saving a change updates today's list straight away: a new agent gets numbers of their units, and an agent made inactive or a team lead gives theirs back. "Off" marks a week off: no numbers on that day (marking today sends their untouched numbers to the others). Team leads never get numbers. Only agents of a department with call lists (Sharpshooting for now) get numbers; the other departments are listed but get no calls until their process is set up.</p>
       <table className="grid">
         <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Units</th><th>Daily target</th><th>Active</th><th>PIN</th><th /></tr></thead>
         <tbody>
@@ -887,9 +899,22 @@ function Agents({ me, agents, depts = [], reload }) {
             <tr key={a.id}>
               <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
               <td>{a.department || <span className="muted">–</span>}{a.department && !a.calls && <span className="muted small"> (no calls yet)</span>}</td>
-              <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td><td>{a.active ? "Yes" : "No"}</td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
+              <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td>
+              <td><label className="check" title={a.active ? "Active: can sign in and gets numbers" : "Inactive: cannot sign in, gets no numbers"}>
+                <input type="checkbox" checked={!!a.active} disabled={busy === a.id || (a.id === me?.id)} onChange={(e) => setActive(a, e.target.checked)} /> {a.active ? "Active" : <span className="warntext">Inactive</span>}</label></td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
               <td className="nowrap"><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button>
-                {a.id !== me?.id && <> · <button className="link warntext" onClick={() => remove(a)} title="Delete this agent (past calls are kept)">Delete</button></>}</td>
+                {a.role === "agent" && <> · <button className="link" onClick={() => { setOffFor(offFor === a.id ? null : a.id); setOffDay(todayISO()); }} title="Week off: no numbers on that day">Off</button></>}
+                {a.off_today && <> <Chip tone="warn">Off today</Chip></>}
+                {(a.off_days || []).filter((d) => d !== todayISO()).map((d) => <span key={d}> <Chip>Off {fmtDay(d)}</Chip></span>)}
+                {offFor === a.id && (
+                  <div className="offbox" style={{ marginTop: 6 }}>
+                    <input type="date" value={offDay} min={todayISO()} onChange={(e) => setOffDay(e.target.value)} />{" "}
+                    {(a.off_days || []).includes(offDay)
+                      ? <button disabled={busy === a.id} onClick={() => setOff(a, offDay, false)}>Remove off</button>
+                      : <button disabled={busy === a.id || !offDay} onClick={() => setOff(a, offDay, true)}>Mark off</button>}
+                    {" "}<button className="ghost" onClick={() => setOffFor(null)}>Close</button>
+                  </div>
+                )}</td>
             </tr>
           ))}
         </tbody>
