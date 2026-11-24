@@ -29,7 +29,7 @@ begin
     insert into calldesk.agents (email, name, role, units, daily_target, active, department, pin_hash)
     values (v_email, trim(p_name), p_role, coalesce(p_units, '{}'), p_target, p_active, v_dept,
             case when coalesce(p_pin, '') <> '' then crypt(p_pin, gen_salt('bf')) end)
-    on conflict (email) do update set name = excluded.name, role = excluded.role, units = excluded.units,
+    on conflict (email) do update set deleted_at = null, name = excluded.name, role = excluded.role, units = excluded.units,
                                       daily_target = excluded.daily_target, active = excluded.active,
                                       department = coalesce(excluded.department, calldesk.agents.department),
                                       pin_hash = coalesce(excluded.pin_hash, calldesk.agents.pin_hash),

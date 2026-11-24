@@ -31,6 +31,7 @@ begin
              count(v.id) filter (where v.outcome = 'callback') rescheduled,
              count(v.id) filter (where v.rank < 12) must_call
         from calldesk.agents a left join v on v.agent_id = a.id
+       where a.deleted_at is null   -- 24 Nov 2026: deleted agents are not listed
        group by a.id) x), '[]'),
     'unassigned', (select count(*) from v where v.agent_id is null),
     'skip_called', (select value || jsonb_build_object('by', set_by, 'at', set_at) from calldesk.settings where key = 'skip_called'),
