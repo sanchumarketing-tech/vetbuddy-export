@@ -77,7 +77,8 @@ var DEFAULT_COMMENTS = [
   ['No pet', GOES.JUNK, REMIND.none, 'Yes'],
   ['Hindi person', GOES.JUNK, REMIND.none, 'Yes'],
   ['Other', GOES.JUNK, REMIND.none, 'Yes'],
-  ['Junk', GOES.JUNK, REMIND.none, 'Yes']
+  ['Junk', GOES.JUNK, REMIND.none, 'Yes'],
+  ['Called', GOES.OLD, REMIND.none, 'Yes']
 ];
 var DEFAULT_CITIES = [['All branches', '']];
 var DEFAULT_CRM = 'https://docs.google.com/spreadsheets/d/16gHKURpESLqS_WZ5ilFUNTApo0xC7UdtsM5R7qxXqjk/edit';
@@ -1821,7 +1822,7 @@ function runoText_(r) {
  */
 function addRunoCalls_(ss, cfg, calls, now, toOld) {
   var sf = ss.getSheetByName(T.SF), lastSf = sf.getLastRow(), keys = {};
-  var from = Math.max(2, lastSf - (toOld ? lastSf : 5000));
+  var from = Math.max(2, lastSf - (toOld ? lastSf : 1500));
   if (lastSf >= 2) sf.getRange(from, 7, lastSf - from + 1, 1).getValues().forEach(function (x) { keys[clean_(x[0])] = 1; });
   calls = calls.filter(function (c) { if (keys[c.key]) return false; keys[c.key] = 1; return true; });
   if (!calls.length) return { calls: 0, added: 0, back: 0, upd: 0 };
@@ -1866,23 +1867,24 @@ function addRunoCalls_(ss, cfg, calls, now, toOld) {
   // the Runo calls of the numbers already here: Leads record + the cell on their tab
   var idx = Object.keys(changed).map(Number);
   if (idx.length) {
-    leads.getRange(2, L.RN, nL, 3).setValues(runo);
-    var adset = leads.getRange(2, L.ADSET, nL, 1).getValues(), onTab = {};
+    var onTab = {}, many = idx.length > 40, adset = many ? leads.getRange(2, L.ADSET, nL, 1).getValues() : null;
+    if (many) leads.getRange(2, L.RN, nL, 3).setValues(runo);
     idx.forEach(function (i) {
       var r = head[i].slice();
       while (r.length < NL) r.push('');
       r[L.RN - 1] = runo[i][0]; r[L.RLAST - 1] = runo[i][1]; r[L.RTYPE - 1] = runo[i][2];
-      adset[i][0] = runoText_(r);
-      (onTab[head[i][L.TAB - 1]] = onTab[head[i][L.TAB - 1]] || {})[head[i][L.ID - 1]] = adset[i][0];
+      var txt = runoText_(r);
+      if (many) adset[i][0] = txt;
+      else { leads.getRange(i + 2, L.RN, 1, 3).setValues([runo[i]]); leads.getRange(i + 2, L.ADSET).setValue(txt); }   // only the rows that changed
+      (onTab[head[i][L.TAB - 1]] = onTab[head[i][L.TAB - 1]] || {})[head[i][L.ID - 1]] = txt;
     });
-    leads.getRange(2, L.ADSET, nL, 1).setValues(adset);
+    if (many) leads.getRange(2, L.ADSET, nL, 1).setValues(adset);
     Object.keys(onTab).forEach(function (tn) {
       var sh = ss.getSheetByName(tn), last = sh ? sh.getLastRow() : 0;
       if (last < FIRST) return;
       var isOld = tn === T.OLD, ids = sh.getRange(FIRST, isOld ? O.ID : W.ID, last - FIRST + 1, 1).getValues();
-      var col = isOld ? O.ADSET : W.ADSET, cells = sh.getRange(FIRST, col, ids.length, 1).getValues(), any = false;
-      ids.forEach(function (x, k) { var v = onTab[tn][clean_(x[0])]; if (v !== undefined && cells[k][0] !== v) { cells[k][0] = v; any = true; } });
-      if (any) sh.getRange(FIRST, col, cells.length, 1).setValues(cells);
+      var col = isOld ? O.ADSET : W.ADSET;
+      ids.forEach(function (x, k) { var v = onTab[tn][clean_(x[0])]; if (v !== undefined) sh.getRange(FIRST + k, col).setValue(v); });   // only those cells
     });
   }
   // new leads: Leads record, then the bottom of Live leads (Old leads are written by the rebuild)
