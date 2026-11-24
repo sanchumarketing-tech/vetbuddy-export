@@ -79,6 +79,21 @@ begin
     end loop;
   end loop;
 
+  -- 2c. (24 Nov 2026) Vet on Wheels agents still under target: unassigned customers of their parent clinic
+  --     (calldesk.vow_parent) with a reason that can be done at home (calldesk.home_visit_reasons), most urgent first.
+  --     Clinic agents get their unit's rows first (step 2), so this only takes what is left.
+  for ag in select * from t_bal where n < target and exists (select 1 from calldesk.vow_parent v where v.vow_unit = any (units)) order by n::numeric / target, id loop
+    need := ag.target - ag.n;
+    with pick as (
+      select q.id from calldesk.queue q
+       where q.list_date = d and q.agent_id is null and q.id in (select id from t_vis)
+         and calldesk.home_ok(ag.units, q.unit, q.reasons)
+       order by q.rank, q.score desc nulls last, q.id limit need),
+    upd as (update calldesk.queue q set agent_id = ag.id from pick where q.id = pick.id returning 1)
+    select count(*) into extra from upd;
+    update t_bal set n = n + extra where id = ag.id;
+  end loop;
+
   -- 3. still under target: "Check-in" calls - active customers of their units, not on a list for 14 days, no call for 7 days
   if exists (select 1 from t_bal where n < target) and not exists (select 1 from calldesk.reason_off o where o.type = 'checkin') then
     create temp table if not exists t_chk (phone text primary key, client text, unit text, last date, spend numeric, used boolean default false) on commit drop;
@@ -95,10 +110,12 @@ begin
       and not exists (select 1 from calldesk.followups f where f.phone = z.phone)
       and not exists (select 1 from calldesk.calls k where k.phone = z.phone and k.call_at >= (d - 7)::timestamp)
       and not calldesk.omitted(z.phone);
-    for ag in select * from t_bal where n < target order by (units = '{}') loop
+    -- (24 Nov 2026) clinic agents first; a Vet on Wheels agent also gets check-ins of its parent clinic (offer a home visit)
+    for ag in select * from t_bal where n < target order by (units = '{}'), exists (select 1 from calldesk.vow_parent v where v.vow_unit = any (units)) loop
       need := ag.target - ag.n;
-      for r in select c.* from t_chk c where not c.used and (ag.units = '{}' or c.unit = any (ag.units))
-                order by c.spend desc nulls last limit need loop
+      for r in select c.* from t_chk c where not c.used and (ag.units = '{}' or c.unit = any (ag.units)
+                       or c.unit in (select v.clinic_unit from calldesk.vow_parent v where v.vow_unit = any (ag.units)))
+                order by (ag.units = '{}' or c.unit = any (ag.units)) desc, c.spend desc nulls last limit need loop
         select coalesce(jsonb_agg(p), '[]') into pp from (
           select jsonb_strip_nulls(jsonb_build_object('pet_id', x.pid, 'name', x.patient_name, 'species', x.species, 'breed', x.breed, 'last_visit', x.sale_date)) p
             from (select distinct on (substring(s2.client_id from '\(([^)]*)\)')) substring(s2.client_id from '\(([^)]*)\)') pid,
@@ -109,7 +126,9 @@ begin
         insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets)
         values (d, ag.id, r.phone, r.client, r.unit, 12, coalesce(r.spend, 0),
                 jsonb_build_array(jsonb_build_object('type', 'checkin', 'rank', 12,
-                  'label', 'Check-in - last visit ' || to_char(r.last, 'DD Mon') || ' (' || (d - r.last) || ' days ago) - ask how the pet is, book the next visit')),
+                  'label', case when ag.units = '{}' or r.unit = any (ag.units)
+                    then 'Check-in - last visit ' || to_char(r.last, 'DD Mon') || ' (' || (d - r.last) || ' days ago) - ask how the pet is, book the next visit'
+                    else 'Check-in (Vet on Wheels) - last clinic visit ' || to_char(r.last, 'DD Mon') || ' (' || (d - r.last) || ' days ago) - ask how the pet is, offer a home visit' end)),
                 pp)
         on conflict (list_date, phone) do nothing;
         update t_chk set used = true where phone = r.phone;

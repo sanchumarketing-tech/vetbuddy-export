@@ -26,7 +26,7 @@ begin
      where q.list_date = d and q.agent_id is not null
        and q.called_at is null and q.dialed_at is null and q.attempted_at is null and q.skipped_at is null
        and q.outcome is null and q.note is null
-       and not exists (select 1 from t_rb b where b.id = q.agent_id and (b.units = '{}' or q.unit = any (b.units)))
+       and not exists (select 1 from t_rb b where b.id = q.agent_id and (b.units = '{}' or q.unit = any (b.units) or calldesk.home_ok(b.units, q.unit, q.reasons)))
     returning 1)
   select count(*) into released from x;
   update t_rb b set n = (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = b.id);
