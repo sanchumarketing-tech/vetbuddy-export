@@ -8,6 +8,6 @@
 --    the agent's numbers, IST) and last_call (latest Corefactor call to one of the agent's numbers, IST).
 -- 4. public.cd_agent_logs(p_day): 12-minute warnings from calldesk.card_time, team leads only.
 -- The live definitions are kept in the function dump (db-dump-functions workflow).
--- 5. public.cf_live_feed(p_key, p_day): today's live Corefactor calls for the "Corefactor live calls" Google Sheet
---    (gsheet/live_calls/Code.gs, refreshes every 5 minutes, moves the finished day to Dump after midnight).
---    Read only; the key is in calldesk.settings 'live_feed_key' (not in git).
+-- 5. (removed 24 Nov 2026) public.cf_live_feed and the "Corefactor live calls" Google Sheet script were scrapped:
+--    a sheet pulling from the database every 5 minutes adds Supabase usage. Function dropped, key deleted.
+-- 6. public.cf_webhook: inbound calls take the agent number from to_number (the agent who took the call).
