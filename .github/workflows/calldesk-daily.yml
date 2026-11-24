@@ -29,7 +29,7 @@ on:
       only:
         description: "Run only one step"
         type: choice
-        options: [build, all, calls, reminders, appointments, leads]
+        options: [build, all, calls, reminders, appointments, leads, rebalance]   # rebalance: give numbers to agents added during the day
         default: build
 
 concurrency:

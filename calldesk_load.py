@@ -329,7 +329,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Call Desk daily load + list build")
     p.add_argument("--day", help="list day YYYY-MM-DD (default: today IST)")
     p.add_argument("--days", type=int, default=3, help="days of call logs to (re)load (default 3)")
-    p.add_argument("--only", choices=["calls", "reminders", "appointments", "leads", "build"], action="append",
+    p.add_argument("--only", choices=["calls", "reminders", "appointments", "leads", "build", "rebalance"], action="append",
                    help="run only these steps (repeatable)")
     p.add_argument("--source", choices=["corefactor", "runo"], help="calls step: only this source (default both)")
     p.add_argument("--appt-from", type=dt.date.fromisoformat, help="appointments step: load every day from this date")
@@ -357,6 +357,15 @@ def main(argv=None) -> int:
                 conn.rollback()
                 failed.append(name)
                 log.error("%s failed: %s", name, e, exc_info=True)
+        if a.only and "rebalance" in a.only:
+            # 24 Nov 2026: agents added after the morning build get numbers; everyone topped up / trimmed to target
+            # (untouched rows only - what agents already worked on stays with them)
+            with conn.cursor() as cur:
+                cur.execute("set local statement_timeout = '15min'")
+                cur.execute("select calldesk.rebalance_today(%s, true)", (today,))
+                stats = cur.fetchone()[0]
+            conn.commit()
+            log.info("Rebalanced %s: %s", today, json.dumps(stats))
         if not a.no_build and (not a.only or "build" in a.only):
             with conn.cursor() as cur:
                 # the database default is 2 minutes; building and balancing 30 agents' lists can take longer
