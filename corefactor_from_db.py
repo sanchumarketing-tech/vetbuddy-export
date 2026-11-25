@@ -81,6 +81,66 @@ def tata_record(b, names):
     }
 
 
+def archive_csv(report, day, header, rows, if_present):
+    """The day's file in the archive folder (read by the Call Desk load and the reminder check)."""
+    if not cf.env("SP_SITE_URL"):
+        return
+    buf = io.StringIO()
+    csv.writer(buf).writerows([header] + rows)
+    arch = cf.SharePoint.from_env("SP_SITE_URL", "SP_LIBRARY")
+    folder = report.get("ARCHIVE_FOLDER")
+    arch.ensure_folder(folder)
+    for ext in ((".xlsx", ".xls") if if_present == "replace" else (".csv", ".xlsx", ".xls")):
+        try:                                     # never overwrite a file the old download saved
+            arch.download(f"{folder.strip('/')}/{report.file_prefix}_{day.isoformat()}{ext}")
+            raise cf.RunError(f"The archive already has a {ext} file for {day} - nothing changed")
+        except cf.RunError as e:
+            if "already has" in str(e):
+                raise
+    name = f"{report.file_prefix}_{day.isoformat()}.csv"
+    arch.upload(f"{folder.strip('/')}/{name}", buf.getvalue().encode("utf-8-sig"))
+    log.info("Archived %s in '%s' (%d rows)", name, folder, len(rows))
+
+
+def write_graph(args, report, day, recs, sp, path):
+    """25 Nov 2026: append into the master on SharePoint through the Excel service (no download of the ~1M-row file)."""
+    import graph_excel as gx
+    gs = gx.GraphSheet(sp, path, sheet=report.get("SHEET"), header_row=report.get("HEADER_ROW") or 1)
+    try:
+        header = gs.data_header()
+        keys = [cf.norm(h) for h in header]
+        missing = [h for h, k in zip(header, keys) if not any(b.get(k) not in (None, "") for b in recs)]
+        if missing:
+            log.warning("Master columns with no pushed value: %s", ", ".join(missing))
+        if len(missing) > len(header) * 0.6:
+            raise cf.RunError("Most master columns are missing from the pushes - nothing changed; check calldesk.cf_live_raw.")
+        recs = sorted(recs, key=lambda b: str(b.get("starttime") or b.get("calldate") or ""))
+        rows = [[b.get(k) for k in keys] for b in recs]
+        archive_csv(report, day, header, rows, args.if_present)
+        days = gs.days_at_bottom([gs.col(report.get("DATE_COLUMN")), gs.col(report.get("FALLBACK_DATE_COLUMN"))])
+        there = sorted(r for r, d in days.items() if d == day)
+        if there:
+            if args.if_present == "skip":
+                log.info("The master already has %s (%d rows) - left unchanged", day, len(there))
+                return 0
+            if there != list(range(there[0], gs.last + 1)):
+                raise cf.RunError(f"{day} is in the master but not as its last rows - remove it by hand and re-run.")
+            gs.clear_rows(there[0], there[-1])
+            log.info("Cleared %d existing rows for %s to write them again", len(there), day)
+        if gs.last + len(rows) > 1_048_000:
+            raise cf.RunError(f"The master has {gs.last:,} rows; {len(rows):,} more would pass Excel's 1,048,576-row limit. "
+                              "Start a new master file (see README) - nothing changed.")
+        req = [x.strip() for x in (report.get("FORMULA_COLUMNS") or "").split(",") if x.strip()]
+        gs.append(header, rows, required_formula_cols=req)
+        log.info("Done: %d calls for %s added to the master sheet (rows now %d)", len(rows), day, gs.last)
+        if gs.last > 1_000_000:
+            log.warning("The master has %d of Excel's 1,048,576 rows - about %d days left at this rate",
+                        gs.last, (1_048_576 - gs.last) // max(len(rows), 1))
+        return 0
+    finally:
+        gs.close()
+
+
 def flatten(body):
     if isinstance(body, list):
         body = body[0] if body else {}
@@ -136,6 +196,8 @@ def main():
 
     sp = cf.SharePoint.from_env(f"{report.prefix}_SITE_URL", f"{report.prefix}_LIBRARY")
     path = report.get("MASTER_PATH", required=True)
+    if cf.env("CF_ENGINE", "graph") == "graph":
+        return write_graph(args, report, day, recs, sp, path)
     for attempt in range(1, 6):
         wb_bytes, etag = sp.download(path)
         master = cf.Master(wb_bytes, report)
