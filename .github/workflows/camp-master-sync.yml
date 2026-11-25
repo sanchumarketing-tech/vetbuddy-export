@@ -5,9 +5,10 @@ name: Camp master sync
 # Creates the workbook (with the November 2026 Wednesday Camp) if it does not exist yet.
 
 on:
-  schedule:
-    # Times are UTC (IST = UTC + 5:30)
-    - cron: "41 1 * * *"    # 07:11 AM IST
+  # 25 Nov 2026: switched off - the Teams bot (its only user) was deleted.
+  # schedule:
+  #   # Times are UTC (IST = UTC + 5:30)
+  #   - cron: "41 1 * * *"    # 07:11 AM IST
   workflow_dispatch:
 
 concurrency:
