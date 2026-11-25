@@ -88,11 +88,11 @@ class GraphSheet:
         log.info("Master sheet '%s': %d columns, last row %d", self.ws, self.ncol, self.last)
 
     # ---------------------------------------------------------------- low level
-    def _req(self, method, path, timeout=300, **kw):
+    def _req(self, method, path, timeout=300, tries=5, **kw):
         url = path if path.startswith("http") else self.base + path
-        for attempt in range(1, 6):
+        for attempt in range(1, tries + 1):
             r = requests.request(method, url, headers=self.h, timeout=timeout, **kw)
-            if r.status_code in (429, 503, 504) or (r.status_code == 500 and attempt < 5):
+            if attempt < tries and (r.status_code in (429, 503, 504) or r.status_code == 500):
                 wait = int(r.headers.get("Retry-After") or 10 * attempt)
                 log.warning("Excel service busy (%s), retrying in %ss", r.status_code, wait)
                 time.sleep(wait)
@@ -107,8 +107,8 @@ class GraphSheet:
     def range(self, address, select="values"):
         return self._req("get", f"{self.wsu}/range(address='{address}')?$select={select}").json()
 
-    def patch(self, address, body):
-        self._req("patch", f"{self.wsu}/range(address='{address}')", json=body)
+    def patch(self, address, body, tries=5):
+        self._req("patch", f"{self.wsu}/range(address='{address}')", json=body, tries=tries)
 
     def close(self):
         try:
@@ -206,9 +206,9 @@ class GraphSheet:
 
         start = self.last + 1
         import os as _os
-        # 25 Nov 2026: 50 rows a request took ~11 s each (6 min for 1,500 leads); a request costs about the same
-        # whatever its size, so write 300 rows at a time and halve only if the Excel service refuses a request
-        chunk = int(_os.environ.get('GRAPH_CHUNK_ROWS') or 300)
+        # 25 Nov 2026: 50 rows a request took ~11 s each (6 min for 1,500 leads). 300 rows were refused by the Excel
+        # service (500/504) on the 143 MB Lead Box master, so 100 rows a request; a refused request is halved at once
+        chunk = int(_os.environ.get('GRAPH_CHUNK_ROWS') or 100)
         # 20-11-2026 (speed test): GRAPH_SPARSE_FORMAT=1 sends number formats only for date / time columns
         # (null = leave the cell as it is), so each request carries far less
         sparse = _os.environ.get('GRAPH_SPARSE_FORMAT') == '1'
@@ -233,7 +233,8 @@ class GraphSheet:
             t0 = time.time()
             try:
                 self.patch(f"A{r1}:{self.lastcol}{r2}", {"formulasR1C1": body_vals,
-                                                            "numberFormat": [fmt_row] * len(part)})
+                                                            "numberFormat": [fmt_row] * len(part)},
+                           tries=2 if chunk > 50 else 5)          # a big request that fails: halve it at once, don't wait
             except Exception as e:                     # too big for the Excel service: same rows, smaller requests
                 if chunk <= 25:
                     raise
