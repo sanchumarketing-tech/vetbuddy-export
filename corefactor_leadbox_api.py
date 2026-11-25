@@ -148,7 +148,19 @@ def main():
     day = (datetime.strptime(args.date, "%Y-%m-%d").date() if args.date
            else datetime.now(cf.IST).date() - timedelta(days=1))
     log.info("Corefactor Lead Box for %s, through the Lead API (stage %s, %s)", day, args.stage, args.engine)
-    leads = fetch(day)
+    # 25 Nov 2026: the archive stage keeps what it fetched, so the excel stage (same job) does not ask the API again
+    import json, os
+    cache = os.path.join(cf.env("OUTPUT_DIR", ".") or ".", f"leadbox_api_{day.isoformat()}.json")
+    if args.stage == "excel" and os.path.exists(cache):
+        with open(cache, encoding="utf-8") as fh:
+            leads = json.load(fh)
+        log.info("Lead API: %d leads for %s taken from this run's first stage (not fetched again)", len(leads), day)
+    else:
+        leads = fetch(day)
+        if args.stage == "archive":
+            os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
+            with open(cache, "w", encoding="utf-8") as fh:
+                json.dump(leads, fh)
     if not leads:
         log.warning("No leads created on %s - nothing changed", day)
         return 0

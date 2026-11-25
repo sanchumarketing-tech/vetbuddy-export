@@ -8,9 +8,10 @@ name: Corefactor daily Lead Box
 # still saved. Uses the same COREFACTOR_SESSIONID secret as the call logs workflow.
 
 on:
-  schedule:
-    # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
-    - cron: "33 1 * * *"    # 07:03 AM IST -> leads created yesterday (after the call logs run)
+  # 25 Nov 2026: switched off - replaced by leadbox-api-daily.yml (API key).
+  # schedule:
+  #   # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
+  #   - cron: "33 1 * * *"    # 07:03 AM IST -> leads created yesterday (after the call logs run)
   workflow_dispatch:
     inputs:
       date:

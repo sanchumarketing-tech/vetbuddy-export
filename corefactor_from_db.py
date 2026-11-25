@@ -34,9 +34,51 @@ def pushes(kind, day):
     """The pushes of one kind for the day (by the call / created date in the push, else the time received)."""
     with vs.connect() as conn, conn.cursor() as cur:
         cur.execute("""select body, received_at at time zone 'Asia/Kolkata' from calldesk.cf_live_raw
-                       where kind = %s and received_at >= %s::date - 2 and received_at < %s::date + 3
+                       where kind = %s and received_at >= %s::date - 1 and received_at < %s::date + 2
                        order by id""", (kind, day, day))
         return cur.fetchall()
+
+
+def agent_names():
+    """Corefactor agent number -> agent name (calldesk.cf_agent_numbers, learned from days both the download and the
+    webhook had). The webhook only sends the number."""
+    try:
+        with vs.connect() as conn, conn.cursor() as cur:
+            cur.execute("select number, name from calldesk.cf_agent_numbers")
+            return {k: v for k, v in cur.fetchall()}
+    except Exception as e:                       # table not there yet: names stay blank, numbers are still written
+        log.warning("Agent names not available (%s)", str(e).splitlines()[0])
+        return {}
+
+
+def secs_hms(v):
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return v
+    return f"{n // 3600:02d}:{n % 3600 // 60:02d}:{n % 60:02d}"
+
+
+def tata_record(b, names):
+    """A Corefactor (Tata) call push -> the download's columns (normalised names), so it fits the master and the
+    archive file the Call Desk load and the reminder check read."""
+    if "uniqueid" not in b or "direction" not in b:
+        return b
+    out_ = str(b.get("direction") or "").lower().startswith("out")
+    cust = (b.get("tonumber") or b.get("leadmobile")) if out_ else b.get("fromnumber")
+    agent_no = b.get("fromnumber") if out_ else b.get("tonumber")
+    clean = lambda v: None if v in (None, "", "None", "null") else v     # noqa: E731
+    start = clean(b.get("starttime"))
+    return {
+        "calldate": start, "calltype": "Outbound" if out_ else "Inbound",
+        "customername": clean(b.get("leadname")), "customernumber": cust,
+        "agentname": names.get(str(agent_no or "")[-10:]) or names.get(str(agent_no or "")), "agentnumber": agent_no,
+        "didnumber": clean(b.get("fromextension")) or clean(b.get("didnumber")),
+        "totaltime": secs_hms(b.get("callduration")), "talktime": secs_hms(b.get("talktimeduration")),
+        "starttime": start, "endtime": clean(b.get("endtime")), "callstatus": clean(b.get("callstatus")),
+        "notes": clean(b.get("notes")), "dtmf": clean(b.get("dtmf")), "recording": clean(b.get("audiofilename")),
+        "id": b.get("uniqueid"), "creditsutilized": clean(b.get("creditsutilized")),
+    }
 
 
 def flatten(body):
@@ -65,9 +107,12 @@ def main():
     log.info("Corefactor %s for %s, from the database (webhook pushes)", report.title, day)
 
     date_key = cf.norm(report.get("FALLBACK_DATE_COLUMN"))       # "Call Date" / "Created Date"
+    names = agent_names() if kind == "call" else {}
     recs = []
     for body, received in pushes(kind, day):
         b = {cf.norm(k): v for k, v in flatten(body).items()}
+        if kind == "call":
+            b = tata_record(b, names)
         when = next((cf.parse_dt(b[k]) for k in (date_key, "starttime", "calldate", "createddate", "createdat", "date")
                      if b.get(k) not in (None, "") and cf.parse_dt(b[k])), None) or received
         if when.date() == day:
@@ -80,7 +125,7 @@ def main():
     else:                        # the same call pushed twice
         seen, keep = set(), []
         for b in recs:
-            k = repr(sorted(b.items()))
+            k = str(b.get("id") or "") or repr(sorted(b.items()))
             if k not in seen:
                 seen.add(k)
                 keep.append(b)
@@ -123,8 +168,8 @@ def main():
                 folder = report.get("ARCHIVE_FOLDER")
                 arch.ensure_folder(folder)
                 name = f"{report.file_prefix}_{day.isoformat()}.csv"
-                for ext in (".csv", ".xlsx", ".xls"):      # never overwrite a file the old job saved
-                    try:
+                for ext in ((".xlsx", ".xls") if args.if_present == "replace" else (".csv", ".xlsx", ".xls")):
+                    try:                                    # never overwrite a file the old download saved
                         arch.download(f"{folder.strip('/')}/{report.file_prefix}_{day.isoformat()}{ext}")
                         raise cf.RunError(f"The archive already has a {ext} file for {day} - nothing changed")
                     except cf.RunError as e:

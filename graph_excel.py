@@ -206,13 +206,16 @@ class GraphSheet:
 
         start = self.last + 1
         import os as _os
-        chunk = int(_os.environ.get('GRAPH_CHUNK_ROWS') or 50)
+        # 25 Nov 2026: 50 rows a request took ~11 s each (6 min for 1,500 leads); a request costs about the same
+        # whatever its size, so write 300 rows at a time and halve only if the Excel service refuses a request
+        chunk = int(_os.environ.get('GRAPH_CHUNK_ROWS') or 300)
         # 20-11-2026 (speed test): GRAPH_SPARSE_FORMAT=1 sends number formats only for date / time columns
         # (null = leave the cell as it is), so each request carries far less
         sparse = _os.environ.get('GRAPH_SPARSE_FORMAT') == '1'
         fmt_row = [f if (is_date_fmt(f) or is_time_fmt(f)) else None for f in fmt] if sparse else fmt
         t_all = time.time()
-        for i in range(0, len(rows), chunk):
+        i = 0
+        while i < len(rows):
             part = rows[i:i + chunk]
             r1, r2 = start + i, start + i + len(part) - 1
             body_vals = []
@@ -228,9 +231,17 @@ class GraphSheet:
                         line.append("")
                 body_vals.append(line)
             t0 = time.time()
-            self.patch(f"A{r1}:{self.lastcol}{r2}", {"formulasR1C1": body_vals,
-                                                        "numberFormat": [fmt_row] * len(part)})
+            try:
+                self.patch(f"A{r1}:{self.lastcol}{r2}", {"formulasR1C1": body_vals,
+                                                            "numberFormat": [fmt_row] * len(part)})
+            except Exception as e:                     # too big for the Excel service: same rows, smaller requests
+                if chunk <= 25:
+                    raise
+                chunk = max(25, chunk // 2)
+                log.warning("  rows %d-%d refused (%s) - trying %d rows a request", r1, r2, str(e)[:120], chunk)
+                continue
             log.info("  wrote rows %d-%d in %.1fs", r1, r2, time.time() - t0)
+            i += len(part)
         new_last = start + len(rows) - 1
         # an Excel table that ended at the old last row grows to the new last row
         for t in self._req("get", self.wsu + "/tables?$select=id,name").json().get("value", []):

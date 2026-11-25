@@ -1,9 +1,10 @@
 name: Corefactor from the database (webhook) -> SharePoint masters
 
-# Replaces the session-id jobs (corefactor-daily / leadbox-daily): Corefactor pushes calls and leads to the
-# Supabase webhook (Edge Function "corefactor"); this job writes yesterday's pushes into the archive folders and the master workbooks
-# (Backend Call Log Report.xlsx / Backend Leadbox Report.xlsx). Runs after the old jobs: a day the master
-# already has is skipped, so both can run side by side until the old ones are switched off.
+# Corefactor pushes every call to the Supabase webhook (Edge Function "corefactor"). Each morning this job writes
+# yesterday's calls into the archive folder (Corefactor_CallLogs_<day>.csv, read by the Call Desk load and the reminder
+# check) and appends them to Backend Call Log Report.xlsx. Since 25 Nov 2026 it is the only writer of the master: the
+# Corefactor download (corefactor-daily.yml) is switched off. Push fields -> master columns: corefactor_from_db.tata_record;
+# agent names from calldesk.cf_agent_numbers.
 
 on:
   schedule:

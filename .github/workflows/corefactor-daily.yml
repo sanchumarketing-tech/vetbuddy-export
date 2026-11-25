@@ -8,9 +8,10 @@ name: Corefactor daily call logs
 # still saved. See README.md -> "Call logs (Corefactor)".
 
 on:
-  schedule:
-    # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
-    - cron: "23 1 * * *"    # 06:53 AM IST -> yesterday's call logs
+  # 25 Nov 2026: switched off - the Backend Call Log master is written from the webhook (corefactor-db-daily.yml). Run by hand if ever needed.
+  # schedule:
+  #   # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
+  #   - cron: "23 1 * * *"    # 06:53 AM IST -> yesterday's call logs
   workflow_dispatch:
     inputs:
       date:
