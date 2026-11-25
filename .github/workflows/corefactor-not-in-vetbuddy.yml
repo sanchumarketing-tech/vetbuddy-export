@@ -1,0 +1,31 @@
+name: Corefactor numbers not in VetBuddy (one-off list)
+
+# Manual only. Reads the whole Backend Call Log master + today's webhook calls, drops VetBuddy customers, DND and
+# deceased numbers, and saves Corefactor_Not_In_VetBuddy_<date>.xlsx next to the master in SharePoint.
+# The log shows counts only (no phone numbers); no artifact is uploaded (the repo is public).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Build the list
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_CALLLOG_SITE_URL: ${{ vars.SP_CALLLOG_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_CALLLOG_LIBRARY: ${{ vars.SP_CALLLOG_LIBRARY || 'Documents' }}
+          SP_CALLLOG_MASTER_PATH: ${{ vars.SP_CALLLOG_MASTER_PATH || 'Sanchu Reports/Backend Call Log Report.xlsx' }}
+          OUTPUT_DIR: ${{ runner.temp }}/cfx
+        run: python tools/corefactor_not_in_vetbuddy.py
