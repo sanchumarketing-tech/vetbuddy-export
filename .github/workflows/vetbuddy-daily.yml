@@ -3,7 +3,7 @@ name: VetBuddy daily MTD export
 on:
   schedule:
     # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
-    - cron: "17 1 * * *"    # 06:47 AM IST  -> export, upload to SharePoint, refresh master sheet, send to the MIS Upload Hub
+    - cron: "17 1 * * *"    # 06:47 AM IST  -> export, upload to SharePoint, refresh master sheet
     - cron: "17 18 * * *"   # 11:47 PM IST  -> move the day's file to the archive folder
   workflow_dispatch:
     inputs:
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests xlrd openpyxl "psycopg[binary]" pandas lxml
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
 
       - name: Run ${{ env.TASK }}
         env:
@@ -71,27 +71,6 @@ jobs:
           else
             python vetbuddy_sales_export.py
           fi
-
-      # NEW: send the VetBuddy export(s) to the MIS Upload Hub, which passes them on to every MIS
-      # on its Report Types “Send to” list (SM Calling sheets, Google performance, …).
-      # Runs after export / backfill / reload_month only. Files the hub doesn’t recognise are skipped by the hub.
-      - name: Send to the MIS Upload Hub
-        if: success() && (env.TASK == 'export' || env.TASK == 'backfill' || env.TASK == 'reload_month')
-        env:
-          HUB_URL: ${{ secrets.HUB_URL }}
-          HUB_KEY: ${{ secrets.HUB_KEY }}
-          REPORTS: ${{ runner.temp }}/reports
-        run: |
-          shopt -s nullglob
-          files=("$REPORTS"/*.xlsx "$REPORTS"/*.xls "$REPORTS"/*.csv)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No export files found in $REPORTS - nothing to send."
-            exit 1
-          fi
-          for f in "${files[@]}"; do
-            echo "== $f"
-            python send_to_hub.py "$f"
-          done
 
       # Backup copy + log on GitHub for 14 days (also on failure, for diagnosis)
       - if: always()
