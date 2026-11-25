@@ -190,6 +190,15 @@ def main():
     out.save(path)
     res = vx.sp_put_file(h, drive["id"], path, f"{OUT_FOLDER.strip('/')}/{name}")
     log.info("Uploaded: %s/%s %s", OUT_FOLDER, name, res.get("webUrl", ""))
+    # hand-over copy for the chat (dropped after it is picked up)
+    con = vs.connect()
+    with con.cursor() as c:
+        c.execute("create table if not exists calldesk.tmp_export (name text primary key, data bytea, made_at timestamptz default now())")
+        c.execute("insert into calldesk.tmp_export (name, data) values (%s, %s) on conflict (name) do update "
+                  "set data = excluded.data, made_at = now()", (name, path.read_bytes()))
+    con.commit()
+    con.close()
+    log.info("Hand-over copy stored (%d KB)", path.stat().st_size // 1024)
     path.unlink(missing_ok=True)
     local.unlink(missing_ok=True)
 
