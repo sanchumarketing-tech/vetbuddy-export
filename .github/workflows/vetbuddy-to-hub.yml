@@ -1,0 +1,84 @@
+name: VetBuddy to MIS Upload Hub
+
+# Runs by itself every time "VetBuddy daily MTD export" finishes successfully, takes the VetBuddy
+# file that run saved (its GitHub artifact) and sends it to the MIS Upload Hub. The hub passes it on
+# to every MIS on its Report Types "Send to" list (SM Calling sheets, Google performance, …).
+# The export workflow itself is not changed.
+#
+# Needs: send_to_hub.py in the main folder of the repo, and the secrets HUB_URL and HUB_KEY.
+
+on:
+  workflow_run:
+    workflows: ["VetBuddy daily MTD export"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Optional: the export run to send (number from its URL). Blank = the latest successful export."
+        type: string
+        required: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # automatic runs: only after a successful export run
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests pandas xlrd openpyxl lxml
+
+      - name: Which export run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.workflow_run.id }}" ]; then
+            id="${{ github.event.workflow_run.id }}"
+          elif [ -n "${{ inputs.run_id }}" ]; then
+            id="${{ inputs.run_id }}"
+          else
+            id=$(gh run list --repo "${{ github.repository }}" --workflow "VetBuddy daily MTD export" \
+                 --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          if [ -z "$id" ]; then echo "No successful export run found."; exit 1; fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Export run: $id"
+
+      - name: Get the VetBuddy file from that run
+        uses: actions/download-artifact@v4
+        continue-on-error: true          # an archive run may have no file - then nothing is sent
+        with:
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          pattern: vetbuddy-*
+          path: artifacts
+
+      - name: Send to the MIS Upload Hub
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_KEY: ${{ secrets.HUB_KEY }}
+        run: |
+          shopt -s nullglob globstar
+          sent=0
+          for dir in artifacts/*/; do
+            case "$dir" in
+              *-archive-*|*-backfill_pharmacy-*)
+                echo "Skipping $dir (archive / pharmacy run - nothing for the MIS)"; continue ;;
+            esac
+            for f in "$dir"**/*.xlsx "$dir"**/*.xls "$dir"**/*.csv; do
+              echo "== $f"
+              python send_to_hub.py "$f"
+              sent=$((sent + 1))
+            done
+          done
+          echo "Files sent: $sent"
