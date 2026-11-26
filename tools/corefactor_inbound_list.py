@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 One-off: every Corefactor INBOUND caller (whole Backend Call Log master + webhook calls after it), one row per number,
-into calldesk.tmp_cf_inbound (dropped after use). The log prints counts only - never a phone number (public repo).
+-> the 10,000 most recent (minus DND and deceased) as an Excel file in SharePoint next to the master.
+The master is opened from the sharing link in CF_LINK. The log prints counts only - never a phone number (public repo).
 """
-import os, re, sys
+import base64, os, re, sys
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -18,6 +19,7 @@ SITE = os.environ.get("SP_CALLLOG_SITE_URL", "")
 LIB = os.environ.get("SP_CALLLOG_LIBRARY", "Documents")
 MASTER = os.environ.get("SP_CALLLOG_MASTER_PATH", "Sanchu Reports/Backend Call Log Report.xlsx").strip("/")
 WORK = Path(os.environ.get("OUTPUT_DIR", "/tmp/cfi"))
+TAKE = int(os.environ.get("TAKE", "10000"))
 agg = {}
 
 
@@ -40,9 +42,15 @@ def main():
     WORK.mkdir(parents=True, exist_ok=True)
     h = {"Authorization": f"Bearer {vx.graph_token()}"}
     drive = vx.sp_drive(h, SITE, LIB)
-    r = requests.get(f"{vx.GRAPH}/drives/{drive['id']}/root:/{quote(MASTER)}", headers=h, timeout=60)
+    link = os.environ.get("CF_LINK", "").strip()
+    if link:   # the sheet the user linked
+        enc = "u!" + base64.urlsafe_b64encode(link.encode()).decode().rstrip("=")
+        r = requests.get(f"{vx.GRAPH}/shares/{enc}/driveItem", headers=h, timeout=60)
+    else:
+        r = requests.get(f"{vx.GRAPH}/drives/{drive['id']}/root:/{quote(MASTER)}", headers=h, timeout=60)
     vx._check(r, "Finding the call log master")
     item = r.json()
+    log.info("Reading '%s' (%.0f MB, last changed %s)", item.get("name"), item.get("size", 0) / 1e6, item.get("lastModifiedDateTime"))
     local = WORK / "master.xlsx"
     with requests.get(f"{vx.GRAPH}/drives/{drive['id']}/items/{item['id']}/content", headers=h, stream=True, timeout=900) as resp:
         vx._check(resp, "Downloading the master")
@@ -81,12 +89,50 @@ def main():
         if p:
             add(p, at, nm or "", st, ag); n += 1
     log.info("Webhook inbound calls after the master: %d; inbound numbers now %d", n, len(agg))
-    cur.execute("delete from calldesk.tmp_cf_inbound")
-    data = [(p, a["name"][:120], a["calls"], a["ans"], a["first"], a["last"], (a["status"] or "")[:60], (a["agent"] or "")[:80]) for p, a in agg.items()]
-    for i in range(0, len(data), 5000):
-        cur.executemany("insert into calldesk.tmp_cf_inbound values (%s,%s,%s,%s,%s,%s,%s,%s)", data[i:i + 5000])
-    con.commit(); con.close()
-    log.info("Stored %d inbound numbers", len(data))
+    cur.execute("select right(regexp_replace(phone, '\\D', '', 'g'), 10) from calldesk.exclusions where reason = 'dnd' "
+                "union select right(regexp_replace(phone, '\\D', '', 'g'), 10) from calldesk.queue where outcome = 'dnd'")
+    dnd = {p for (p,) in cur.fetchall() if p}
+    cur.execute("select right(regexp_replace(phone, '\\D', '', 'g'), 10) from calldesk.deceased_map where all_dead "
+                "union select right(regexp_replace(phone, '\\D', '', 'g'), 10) from calldesk.deceased_marked where phone is not null")
+    dead = {p for (p,) in cur.fetchall() if p}
+    con.close()
+    keep = [p for p in agg if p not in dnd and p not in dead]
+    keep.sort(key=lambda p: agg[p]["last"] or datetime(1900, 1, 1), reverse=True)
+    top = keep[:TAKE]
+    log.info("Inbound numbers %d | DND removed %d | deceased removed %d | eligible %d | in file %d",
+             len(agg), sum(1 for p in agg if p in dnd), sum(1 for p in agg if p in dead and p not in dnd), len(keep), len(top))
+    out = openpyxl.Workbook()
+    ws = out.active
+    ws.title = "Inbound 10,000"
+    ws.append(["S.No", "Phone", "Customer Name (Corefactor)", "Inbound Calls", "Answered", "First Inbound Call",
+               "Last Inbound Call", "Last Call Status", "Last Agent"])
+    for i, p in enumerate(top, 1):
+        a = agg[p]
+        ws.append([i, p, a["name"], a["calls"], a["ans"], a["first"], a["last"], a["status"], a["agent"]])
+    for col in ("F", "G"):
+        for c in ws[col][1:]:
+            c.number_format = "dd-mm-yyyy hh:mm"
+    for i, w in enumerate([7, 13, 28, 12, 10, 17, 17, 22, 22], 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    for c in ws[1]:
+        c.font = openpyxl.styles.Font(bold=True)
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = ws.dimensions
+    sm = out.create_sheet("Summary")
+    for k, v in [("Source", "Backend Call Log Report (Corefactor) - Call Type Inbound, whole file + today's webhook calls"),
+                 ("Calls up to", str(last)), ("Inbound numbers (unique)", len(agg)),
+                 ("Removed: DND", sum(1 for p in agg if p in dnd)), ("Removed: deceased", sum(1 for p in agg if p in dead and p not in dnd)),
+                 ("Eligible", len(keep)), ("In this file (most recent inbound first)", len(top)),
+                 ("Made", datetime.now().strftime("%d-%m-%Y %H:%M"))]:
+        sm.append([k, v])
+    sm.column_dimensions["A"].width = 42; sm.column_dimensions["B"].width = 80
+    name = f"Corefactor_Inbound_{len(top)}_{datetime.now():%Y-%m-%d}.xlsx"
+    path = WORK / name
+    out.save(path)
+    folder = "/".join(MASTER.split("/")[:-1]) or "Sanchu Reports"
+    res = vx.sp_put_file(h, item["parentReference"]["driveId"], path, f"{folder}/{name}")
+    log.info("Uploaded: %s/%s %s", folder, name, res.get("webUrl", ""))
+    path.unlink(missing_ok=True); local.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
