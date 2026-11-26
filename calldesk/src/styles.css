@@ -20,17 +20,8 @@
   --grey: #4b5563; --grey-bg: #eef0f2;
   --radius: 10px;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101513; --panel: #171e1b; --ink: #e7eeeb; --muted: #95a39e; --line: #27312d;
-    --brand: #2dd4bf; --brand-ink: #062a26; --brand-soft: #123532; --sel: #15302c;
-    --good: #4ade80; --good-bg: #13301e; --warn: #fbbf24; --warn-bg: #33270e;
-    --red: #f87171; --red-bg: #3a1717; --violet: #c4b5fd; --violet-bg: #2a2142;
-    --blue: #93b4fd; --blue-bg: #1b2645; --sky: #7dd3fc; --sky-bg: #12293a;
-    --teal: #5eead4; --teal-bg: #10302c; --green: #a3e635; --green-bg: #1f2d12;
-    --orange: #fdba74; --orange-bg: #3a2414; --grey: #c2c9d1; --grey-bg: #252b30;
-  }
-}
+/* always the light look (26 Nov 2026), even when the computer is in dark mode */
+:root { color-scheme: light; }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
