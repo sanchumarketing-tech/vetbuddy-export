@@ -18,3 +18,10 @@
 --    had 82 visible numbers: the clinic is new and 11 reasons are switched off.)
 --
 -- 3. public.cd_list / cd_list_live: see sql/42 (agents see every row assigned to them).
+--
+-- 4. (10:15) build_list: a call-back missed on an earlier day (e.g. set for 6:47 pm, after the shift) is carried with
+--    callback_at moved to the SAME TIME TODAY, so it waits in "Call-backs" and pops up red at that time - it no longer
+--    sits on top of the list all morning. Normal order (urgent > best time now > others > best later today) otherwise.
+--      case when c.outcome = 'callback' then case when (c.callback_at at time zone 'Asia/Kolkata')::date < d
+--           then ((d + (c.callback_at at time zone 'Asia/Kolkata')::time) at time zone 'Asia/Kolkata') else c.callback_at end end
+--    Today's rows were moved the same way.
