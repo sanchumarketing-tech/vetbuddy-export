@@ -93,25 +93,34 @@ function spiRun() {
   // 20-11-2026: two tries only (9:00 and 9:30 AM), both files needed - never a report with half the sales
   var second = spiTodayAt_(SPI.SECOND_TRY[0], SPI.SECOND_TRY[1]).getTime();
   var lastTry = Date.now() >= second - 5 * 60000;
+  // 26-11-2026: the next try is booked BEFORE the import, so a Google server error in the middle of the import
+  // ("We're sorry, a server error occurred") can no longer skip the 9:30 try. After the 9:30 try there is one
+  // safety re-run 20 minutes later, used only when that try crashed - never when the files are missing.
+  var crashRetry = lastTry && p.getProperty('SPI_CRASH_DATE') !== today;
+  if (!lastTry) ScriptApp.newTrigger('spiRun').timeBased().at(new Date(second)).create();
+  else if (crashRetry) { p.setProperty('SPI_CRASH_DATE', today); ScriptApp.newTrigger('spiRun').timeBased().after(20 * 60000).create(); }
   var r;
   try {
     r = spiImport_(want, false);
   } catch (e) {
     r = { done: false, msg: 'ERROR: ' + e.message };
-    spiLog_('', '', r.msg);
-    if (lastTry) throw e;                                          // Google emails the owner
+    var again = !lastTry || crashRetry;
+    try { spiLog_('', '', r.msg + (again ? ' Will try again.' : '')); } catch (e2) {}
+    if (!again) throw e;                                           // Google emails the owner
+    return;                                                        // the next try is already booked
   }
   if (!r.done && r.gfMissing) { try { spiGfAlert_(today); } catch (e) { spiLog_('', '', 'Gofrugal delay alert FAILED: ' + e.message); } }
   if (r.done) {
     p.setProperty('SPI_DONE_DATE', today);
+    spiRemoveTriggers_(['spiRun']);                                // the booked retry is not needed
     // 19-11-2026: posting runs as its own execution 1 minute later, so a slow import cannot use up
     // the 6-minute Apps Script limit and block the Supabase update / Teams / WhatsApp posts.
     spiRemoveTriggers_(['spiPost']);
     ScriptApp.newTrigger('spiPost').timeBased().after(60 * 1000).create();
     return;
   }
-  if (lastTry) { spiStopped_(today); return; }
-  ScriptApp.newTrigger('spiRun').timeBased().at(new Date(second)).create();      // the second (last) try
+  if (lastTry) { spiRemoveTriggers_(['spiRun']); spiStopped_(today); return; }   // files still missing: stop for the day
+  // not the last try: the 9:30 try is already booked
 }
 
 function spiStopped_(today) {
@@ -121,26 +130,31 @@ function spiStopped_(today) {
   spiLog_('', '', 'Stopped: the files were not complete at the 9:30 AM try - no sales report today.');
 }
 
-// after a successful import: Supabase (bot) update, picture, Teams and WhatsApp posts (once a day)
+// after a successful import: the picture to WhatsApp (once a day)
 function spiPost() {
   spiRemoveTriggers_(['spiPost']);
   var p = PropertiesService.getScriptProperties(), today = spiDay_(0);
   if (p.getProperty('SPI_POSTED_DATE') === today) return;          // already posted today
+  // 25-11-2026: the Teams chatbot (Supabase sheet-numbers push) and the Teams report post were removed - WhatsApp only
+  if (!waReady_()) return;
+  // 26-11-2026: up to 3 tries, 10 minutes apart; the next try is booked first, so a Google error cannot lose the post
+  var t = (p.getProperty('SPI_POST_TRY') || '').split('|'), n = t[0] === today ? Number(t[1]) + 1 : 1;
+  p.setProperty('SPI_POST_TRY', today + '|' + n);
+  if (n < 3) ScriptApp.newTrigger('spiPost').timeBased().after(10 * 60000).create();
+  var shot;
+  try { shot = snapImage_(today); } catch (e) { spiLog_('', '', 'Picture FAILED (try ' + n + '/3): ' + e.message); return; }
+  try { waSend_(shot.img, waTitle_()); } catch (e) { spiLog_('', '', 'WhatsApp post FAILED (try ' + n + '/3): ' + e.message); return; }
   p.setProperty('SPI_POSTED_DATE', today);
-  // order (19-11-2026): 1. WhatsApp report first (priority), 2. Supabase (bot), 3. Teams
-  var tm = !!p.getProperty('TEAMS_WEBHOOK_URL'), wa = waReady_(), shot = null;
-  if (tm || wa) { try { shot = snapImage_(today); } catch (e) { spiLog_('', '', 'Picture FAILED: ' + e.message); } }
-  if (shot && wa) { try { waSend_(shot.img, waTitle_()); } catch (e) { spiLog_('', '', 'WhatsApp post FAILED: ' + e.message); } }
-  if (botReady_()) { try { botPush_(); } catch (e) { spiLog_('', '', 'Supabase (bot) update FAILED: ' + e.message); } }
-  if (shot && tm) { try { snapSend_(shot); } catch (e) { spiLog_('', '', 'Teams post FAILED: ' + e.message); } }
+  spiRemoveTriggers_(['spiPost']);
 }
 
 /* ---------------- Gofrugal sync mail (19-11-2026) ----------------
-   If Gofrugal's data sync is still behind after the 7:30 AM retry, mail IT and the data analyst at 7:55 AM.
+   If Gofrugal's data sync is still behind, mail IT, the data analyst and Shenbagaraj at 8:15 AM (26-11-2026: was 7:55),
+   naming the outlets (units) that are behind. If today's check is not saved yet, it looks again at 8:45 before mailing.
    The GitHub job saves the sync state in SharePoint: Sales Reports Sanchu / Gofrugal Upload / Gofrugal_Sync_Status.json.
    Setup once: run spiSyncMailInstall from the editor and approve "send email as you". */
-var SPI_MAIL_TO = 'it@sanchu.co.in,dataanalyst@sanchu.co.in';
-var SPI_MAIL_AT = [7, 55];
+var SPI_MAIL_TO = 'it@sanchu.co.in,dataanalyst@sanchu.co.in,shenbagaraj@sanchu.co.in';
+var SPI_MAIL_AT = [8, 15];   // 26-11-2026: was 7:55 - the GitHub export (starts ~7:55) saves today's sync check at ~8:00
 
 function spiSyncMailInstall() {
   MailApp.getRemainingDailyQuota();                       // asks for the mail permission once
@@ -166,8 +180,15 @@ function spiSyncMail() {
                               '/Gofrugal_Sync_Status.json:/content', { headers: { Authorization: 'Bearer ' + g.token }, muteHttpExceptions: true });
     if (r.getResponseCode() === 200) st = JSON.parse(r.getContentText());
   } catch (e) { st = null; }
-  var lines = [];
+  // 26-11-2026: no check from today yet (the export is late) - look again once at 8:45 before mailing
+  if (!(st && st.date === today) && p.getProperty('SPI_MAIL_WAIT') !== today) {
+    p.setProperty('SPI_MAIL_WAIT', today);
+    ScriptApp.newTrigger('spiSyncMail').timeBased().at(spiTodayAt_(8, 45)).create();
+    return;
+  }
+  var lines = [], units = [];
   if (st && st.date === today && st.state === 'behind') {
+    units = (st.behind || []).map(function (o) { return String(o.outlet).replace(/^Sanchu\s+/i, ''); });
     lines.push('Gofrugal data sync is not complete. Every outlet must show "Data as on" ' + st.needed + ' or later before the pharmacy');
     lines.push('report (3111 / 3126) is downloaded. Last check: ' + st.checked_at + '.', '', 'Outlets behind:');
     (st.behind || []).forEach(function (o) { lines.push('  ' + o.outlet + ' - data as on ' + (o.data_as_on || '-') + ' (' + o.status + ')'); });
@@ -175,13 +196,19 @@ function spiSyncMail() {
     return;                                                               // synced; the download is on its way
   } else {
     lines.push('The Gofrugal file for ' + want + ' is not in SharePoint yet and no sync check has been recorded today.');
+    if (st && st.behind && st.behind.length) {
+      units = st.behind.map(function (o) { return String(o.outlet).replace(/^Sanchu\s+/i, ''); });
+      lines.push('', 'Last check (' + st.checked_at + ') - outlets behind:');
+      st.behind.forEach(function (o) { lines.push('  ' + o.outlet + ' - data as on ' + (o.data_as_on || '-') + ' (' + o.status + ')'); });
+    }
   }
   lines.push('', 'Backup status Active and Backup request - Incremental have been sent automatically; the job keeps retrying',
-             '(one more try at 8:15 AM; no report that day if still not synced). Please check the shop systems / internet.',
+             '(no report that day if still not synced by the 9:30 AM try). Please check the shop systems / internet.',
              'The 9 AM WhatsApp sales report waits for the Gofrugal file.');
-  MailApp.sendEmail(SPI_MAIL_TO, 'Gofrugal data not synced - ' + today, lines.join('\n'));
+  var subj = 'Gofrugal data not synced - ' + today + (units.length ? ' - ' + units.join(', ') : '');
+  MailApp.sendEmail(SPI_MAIL_TO, subj, lines.join('\n'));
   p.setProperty('SPI_MAIL_DATE', today);
-  spiLog_('', '', 'Gofrugal sync mail sent to ' + SPI_MAIL_TO);
+  spiLog_('', '', 'Gofrugal sync mail sent to ' + SPI_MAIL_TO + (units.length ? ' (units: ' + units.join(', ') + ')' : ''));
 }
 
 // 19-11-2026: the GitHub job uploads the Gofrugal file only after Gofrugal's data sync is up to date
@@ -495,35 +522,7 @@ function snapImage_(day) {
 }
 
 
-// post the picture to Teams (Workflow "When a Teams webhook request is received" -> post in the group chat)
-function snapSend_(r0) {
-  var hook = PropertiesService.getScriptProperties().getProperty('TEAMS_WEBHOOK_URL');
-  if (!hook) throw new Error('Teams posting not set. Menu Sales Report > SharePoint auto import > Set Teams posting address.');
-  var ss = SpreadsheetApp.getActive(), day = spiDay_(0);
-  var title = String(ss.getSheetByName(SH.SUMMARY).getRange('C1').getDisplayValue()).split('(')[0].trim() || 'Daily sales';
-  var r = r0 || snapImage_(day);
-  var msg = snapMsg_();
-  var body = { title: msg ? msg.title : 'Sanchu Daily Sales - ' + title, text: msg ? msg.text : '', sheetUrl: ss.getUrl(), fileName: r.img.getName(),
-               image: Utilities.base64Encode(r.img.getBytes()), imageType: r.img.getContentType() || 'image/jpeg' };
-  // the Workflow only accepts callers from our Microsoft tenant: sign in with the Azure app (same login as SharePoint)
-  var flowToken = spiToken_('https://service.flow.microsoft.com//.default');
-  var res = UrlFetchApp.fetch(hook, { method: 'post', contentType: 'application/json', payload: JSON.stringify(body),
-    headers: { Authorization: 'Bearer ' + flowToken }, muteHttpExceptions: true });
-  if (res.getResponseCode() >= 300) throw new Error('Teams did not accept the post: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
-  spiLog_('', r.img.getName(), 'Posted to Teams: ' + body.title);
-  return body.title;
-}
-function snapSendNow() {
-  spiAskScopes_();
-  SpreadsheetApp.getUi().alert('Sent to Teams: ' + snapSend_());
-}
-function snapSetWebhook() {
-  var ui = SpreadsheetApp.getUi();
-  var r = ui.prompt('Teams posting address', 'Paste the HTTP POST URL of the Teams Workflow (When a Teams webhook request is received)', ui.ButtonSet.OK_CANCEL);
-  if (r.getSelectedButton() !== ui.Button.OK || !r.getResponseText().trim()) return;
-  PropertiesService.getScriptProperties().setProperty('TEAMS_WEBHOOK_URL', r.getResponseText().trim());
-  ui.alert('Saved. Use "Send picture to Teams now" to test.');
-}
+// 25-11-2026: the Teams report post (snapSend_ / Teams Workflow) was removed - the picture goes to WhatsApp only.
 
 /* ===================================================================
    DAILY PICTURE TO A WHATSAPP GROUP  (via Green API, free Developer plan)
@@ -666,124 +665,4 @@ function waSend_(img, caption) {
   return j.idMessage;
 }
 
-/* ===================================================================
-   SHEET NUMBERS -> SUPABASE  (for the Teams bot)
-   Every morning after the 9 AM import (and from the menu) the sheet sends:
-     - the daily unit totals of "Data" (= the Summary, with the manual VOW corrections)
-     - the monthly targets of "AOP" (Target @ 2 Cr)
-     - the Summary KPIs (MTD, MON EST, target, balance, ADS ...) for this and last month
-   to Supabase through public.sheet_push (sql/04_sheet_numbers.sql).
-   Setup (once): menu Sales Report > SharePoint auto import > Set Supabase (bot) login
-   =================================================================== */
-
-function botProps_() { return PropertiesService.getScriptProperties(); }
-function botReady_() {
-  var p = botProps_();
-  return !!(p.getProperty('SB_URL') && p.getProperty('SB_ANON') && p.getProperty('SB_PUSH_KEY'));
-}
-
-function botSetLogin() {
-  var ui = SpreadsheetApp.getUi(), p = botProps_();
-  var keys = [['SB_URL', 'Project URL (Supabase > Project Settings > API), e.g. https://abcdxyz.supabase.co'],
-              ['SB_ANON', 'anon / publishable key (Supabase > Project Settings > API Keys)'],
-              ['SB_PUSH_KEY', 'push key shown by 04_sheet_numbers.sql ("COPY THIS PUSH KEY")']];
-  for (var i = 0; i < keys.length; i++) {
-    var r = ui.prompt('Supabase (bot) login (' + (i + 1) + '/3)', keys[i][1] +
-                      (p.getProperty(keys[i][0]) ? '\n(already set - leave empty to keep it)' : ''), ui.ButtonSet.OK_CANCEL);
-    if (r.getSelectedButton() !== ui.Button.OK) return;
-    var v = r.getResponseText().trim();
-    if (v) p.setProperty(keys[i][0], keys[i][0] === 'SB_URL' ? v.replace(/\/+$/, '') : v);
-  }
-  try { ui.alert('Supabase works: ' + botPush_()); }
-  catch (e) { ui.alert('Supabase did NOT work:\n' + e.message); }
-}
-
-function botPushNow() {
-  spiAskScopes_();
-  var ui = SpreadsheetApp.getUi();
-  try { ui.alert('Sent to Supabase: ' + botPush_()); }
-  catch (e) { ui.alert('Supabase push failed:\n' + e.message); }
-}
-
-function botPush_() {
-  var p = botProps_(), ss = SpreadsheetApp.getActive(), C = CoreFactory(), tz = ss.getSpreadsheetTimeZone();
-  if (!botReady_()) throw new Error('Supabase login not set. Menu Sales Report > SharePoint auto import > Set Supabase (bot) login.');
-  var iso = function (s) { return Utilities.formatDate(new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 864e5), 'UTC', 'yyyy-MM-dd'); };
-  var r2 = function (x) { return x === null || x === undefined || !isFinite(x) ? null : Math.round(x * 100) / 100; };
-  var r4 = function (x) { return x === null || x === undefined || !isFinite(x) ? null : Math.round(x * 10000) / 10000; };
-  var blank = function (x) { return x === '' || x === null || x === undefined; };
-
-  // 1. daily totals per unit (same rule as the Summary)
-  var data = readTable_(ss, SH.DATA, 6), agg = {};
-  data.forEach(function (r) {
-    var d = +r[0], u = String(r[1]).trim().toUpperCase();
-    if (!d || !u) return;
-    var legacy = !blank(r[4]);
-    var k = d + '|' + u, a = agg[k] || (agg[k] = { d: iso(d), u: u, t: 0, v: legacy ? null : 0, g: legacy ? null : 0 });
-    if (legacy) a.t += +r[4] || 0;
-    else {
-      var vb = +r[2] || 0, gf = (+r[3] || 0) + (+r[5] || 0);
-      a.t += vb + gf; a.v = (a.v || 0) + vb; a.g = (a.g || 0) + gf;
-    }
-  });
-  var daily = Object.keys(agg).map(function (k) { var a = agg[k]; return { d: a.d, u: a.u, t: r2(a.t), v: r2(a.v), g: r2(a.g) }; });
-
-  // 2. targets from AOP (row 1 = units, column A = month)
-  var aop = ss.getSheetByName(SH.AOP).getDataRange().getValues(), hdr = aop[0] || [], targets = [];
-  var MONS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-  var monthOf = function (x) {
-    if (x instanceof Date) return Utilities.formatDate(x, tz, 'yyyy-MM');
-    if (typeof x === 'number' && x > 0) return iso(x).slice(0, 7);
-    var t = String(x || '').trim(), m = t.match(/^(\d{4})-(\d{2})/);
-    if (m) return m[1] + '-' + m[2];
-    m = t.match(/([A-Za-z]{3})[a-z]*[\s\-']*(\d{2,4})/);
-    if (m && MONS.indexOf(m[1].toLowerCase()) >= 0) { var y = +m[2]; if (y < 100) y += 2000; return y + '-' + ('0' + (MONS.indexOf(m[1].toLowerCase()) + 1)).slice(-2); }
-    return '';
-  };
-  aop.slice(1).forEach(function (row) {
-    var mk = monthOf(row[0]);
-    if (!mk) return;
-    for (var j = 1; j < hdr.length; j++) {
-      var u = String(hdr[j] || '').trim().toUpperCase(), v = typeof row[j] === 'number' ? row[j] : parseFloat(String(row[j]).replace(/,/g, ''));
-      if (u && isFinite(v) && v > 0) targets.push({ m: mk + '-01', u: u, t: r2(v) });
-    }
-  });
-
-  // 3. Summary KPIs for the latest month and the month before
-  var st = readSettings_(ss);
-  var shown = vowSplitShown_(st.units.filter(function (u) { return /^y/i.test(String(u[1]).trim()); })
-                                     .map(function (u) { return String(u[0]).trim().toUpperCase(); }));
-  var kpi = [], months = [], latest = daily.reduce(function (m, x) { return x.d > m ? x.d : m; }, '').slice(0, 7);
-  if (latest) {
-    var y = +latest.slice(0, 4), mo = +latest.slice(5, 7);
-    var prev = (mo === 1 ? (y - 1) + '-12' : y + '-' + ('0' + (mo - 1)).slice(-2));
-    months = [latest, prev];
-  }
-  months.forEach(function (mk) {
-    var S = C.summary(data, aop, shown, mk);
-    if (!S || S.empty) return;
-    shown.concat(['*']).forEach(function (u) {
-      var R = S.rows[u];
-      if (!R) return;
-      kpi.push({ month: mk + '-01', unit: u === '*' ? 'TOTAL' : u, as_of: iso(S.asOf), days_done: S.dayNo, days_left: S.remaining,
-                 mtd: r2(R.mtd), last_month_same_days: r2(R.lm), two_months_same_days: r2(R.l2m),
-                 growth_vs_last_month: r4(R.g1), growth_vs_two_months: r4(R.g2), month_estimate: r2(R.est), target: r2(R.aop),
-                 estimate_vs_target: r4(R.estVsAop), balance_to_target: r2(R.balance), required_per_day: r2(R.reqPerDay),
-                 ads: r2(R.ads), ads_last_month: r2(R.adsLm), target_per_day: r2(R.aopPerDay), ads_vs_target: r4(R.adsVsAop),
-                 vetbuddy_mtd: r2(R.vb), gofrugal_mtd: r2(R.gf) });
-    });
-  });
-
-  // 4. send
-  var key = p.getProperty('SB_ANON'), headers = { apikey: key };
-  if (!/^sb_/.test(key)) headers.Authorization = 'Bearer ' + key;     // old-style anon JWT
-  var base = String(p.getProperty('SB_URL')).trim().replace(/\/+$/, '').replace(/\/rest\/v1$/i, '');   // works with or without /rest/v1
-  var res = UrlFetchApp.fetch(base + '/rest/v1/rpc/sheet_push', {
-    method: 'post', contentType: 'application/json', headers: headers, muteHttpExceptions: true,
-    payload: JSON.stringify({ p_key: p.getProperty('SB_PUSH_KEY'), p_daily: daily, p_targets: targets, p_kpi: kpi })
-  });
-  if (res.getResponseCode() >= 300) throw new Error('Supabase HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 300));
-  var msg = String(JSON.parse(res.getContentText()));
-  spiLog_('', '', 'Supabase (bot) updated: ' + msg);
-  return msg;
-}
+/* 25-11-2026: the Teams chatbot was deleted - the sheet-numbers push to Supabase (botPush_) was removed. */
