@@ -1,6 +1,7 @@
 // Agent logs -> Dashboard (team leads), 26 Nov 2026.
 // Same rules as the "Agent Wise - MIS" Google Sheet (Team Callback MIS), on the Call Desk's own call logs
 // (Corefactor + Runo), plus the time each agent spent on customer cards. Data: cd_agent_calls(p_from, p_to).
+// Smartflo = Corefactor. Ring time (RNR splits) comes from Corefactor only; without it the split shows NA.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { rpc } from "./supabase.js";
 import { Bars, Num, PctBar, Skeleton, reduced } from "./Coach.jsx";
@@ -31,6 +32,7 @@ const longDay = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN",
 const shortDay = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 const pct = (a, b) => (b ? Math.round((a * 1000) / b) / 10 : null);
 const keyName = (s) => (s || "").trim().toLowerCase();
+const ringN = (r, v) => (r.ringKnown ? N(v) : "NA");                    // RNR ring-time splits: Corefactor only
 
 // ------------------------------------------------------------------ the sheet's rules
 function parse(d) {
@@ -199,7 +201,7 @@ export function AgentDashboard({ day, setDay }) {
         <summary>How it counts</summary>
         <ul>
           <li><b>Break</b> = a gap of {S.breakMin}+ min between one call ending and the next starting (answered incoming calls count as work). Gaps of {S.idleMin}–{S.breakMin} min are idle gaps.</li>
-          <li><b>RNR</b> = an outbound call the customer didn’t answer. Ring time splits (below {S.shortRnr}, {S.veryShortRnr} and {S.shortestRnr} seconds) use Corefactor calls; Runo doesn’t give the ring time.</li>
+          <li><b>RNR</b> = an outbound call the customer didn’t answer. Ring time = Corefactor (Smartflo) “Total Time”. The splits below {S.shortRnr}, {S.veryShortRnr} and {S.shortestRnr} seconds count Corefactor calls only; where there is no Corefactor ring time they show <b>NA</b>.</li>
           <li><b>Agent didn’t pick up</b> = “Unanswered (Agent)” / “Unreachable (Agent)”: the call never reached the customer. Counted separately, not as RNR.</li>
           <li><b>Calling time</b> = ring + talk time of every outbound call and answered incoming call. <b>Connect %</b> = answered ÷ outbound calls.</li>
           <li><b>New lead</b> = the first outbound call ever made to that number in the Call Desk’s call history.</li>
@@ -250,7 +252,7 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
         <div className="hp-tile"><b><Num v={team.answered} /></b><span>answered · {team.connectPct ?? "–"}% connect</span></div>
         <div className="hp-tile"><b>{hm(team.talk)}</b><span>talk time (h:mm)</span></div>
         <div className="hp-tile"><b><Num v={Math.round(team.breakMin)} /> min</b><span>break time · {team.breaks.length} breaks</span></div>
-        <div className="hp-tile"><b><Num v={team.rnr} /></b><span>RNR · {N(team.rnr20)} under {S.shortRnr}s</span></div>
+        <div className="hp-tile"><b><Num v={team.rnr} /></b><span>RNR · {team.ringKnown ? `${N(team.rnr20)} under ${S.shortRnr}s` : "ring time NA"}</span></div>
         <div className="hp-tile"><b>{hm(team.cardSec)}</b><span>time on customers · {N(team.cards)} opened</span></div>
       </div>
 
@@ -274,7 +276,7 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
                     <td>{r.first ? hhmm(r.first) : "—"}</td><td>{r.last ? hhmm(r.last) : "—"}</td><td>{r.span ? hm(r.span) : "—"}</td><td>{r.late ?? "—"}</td>
                     <td>{N(r.calls)}</td><td>{N(r.leads)}</td><td><PctBar v={r.answered} d={r.calls} /></td><td>{hm(r.talk)}</td>
                     <td>{r.breaks.length}</td><td className={r.flagBreak ? "flag" : ""}>{Math.round(r.breakExLunch)}</td><td>{Math.round(r.longestBreak) || "—"}</td>
-                    <td>{N(r.rnr)}</td><td className={r.flagShort ? "flag" : ""}>{r.shortShare === null ? "—" : `${Math.round(r.shortShare)}%`}</td><td>{N(r.agentMiss)}</td>
+                    <td>{N(r.rnr)}</td><td className={r.flagShort ? "flag" : ""}>{r.shortShare === null ? <span className="muted">NA</span> : `${Math.round(r.shortShare)}%`}</td><td>{N(r.agentMiss)}</td>
                     <td>{N(r.cards)}</td><td>{r.cards ? hm(r.cardSec) : "—"}</td><td className={r.cardWarn ? "flag" : ""}>{r.cardWarn || "—"}</td>
                   </tr>
                 ))}
@@ -319,8 +321,8 @@ function AgentDay({ k, name, calls, cards, S, day, loadedTo, onClose }) {
           <Stat l="Break time as % of active span" v={r.breakPctSpan === null ? "—" : `${r.breakPctSpan}%`} /><Stat l="Idle gaps (count / min)" v={`${r.idle.length} / ${Math.round(r.idleMin)}`} />
         </div>
         <div className="mis-group"><h4>RNR &amp; follow-up</h4>
-          <Stat l="RNR calls" v={N(r.rnr)} /><Stat l={`Below ${S.shortRnr} seconds`} v={N(r.rnr20)} sub={r.shortShare === null ? "" : `${Math.round(r.shortShare)}% of RNR with ring time`} flag={r.flagShort} />
-          <Stat l={`Below ${S.veryShortRnr} seconds`} v={N(r.rnr10)} /><Stat l={`Below ${S.shortestRnr} seconds`} v={N(r.rnr5)} />
+          <Stat l="RNR calls" v={N(r.rnr)} /><Stat l={`Below ${S.shortRnr} seconds`} v={ringN(r, r.rnr20)} sub={r.ringKnown ? `${Math.round(r.shortShare)}% of ${N(r.ringKnown)} Corefactor RNR calls` : "no Corefactor ring time"} flag={r.flagShort} />
+          <Stat l={`Below ${S.veryShortRnr} seconds`} v={ringN(r, r.rnr10)} /><Stat l={`Below ${S.shortestRnr} seconds`} v={ringN(r, r.rnr5)} />
           <Stat l="Agent didn’t pick up" v={N(r.agentMiss)} sub="call never reached the customer" />
           <Stat l={`RNR leads called ${S.rnrTarget}+ times`} v={`${r.rnrFollowed} of ${r.rnrLeads}`} />
         </div>
@@ -415,11 +417,11 @@ function RangeView({ P, names, who, S }) {
               {th("newLeads", "New leads")}{th("cards", "Customers opened")}{th("cardSec", "Time on customers")}</tr></thead>
             <tbody>
               <tr className="tot"><td>Total</td><td /><td>{N(Math.round(sum("breakMin")))}</td><td>{hm(sum("breakMin") * 60)}</td><td>{hm(sum("calling"))}</td><td>{hm(sum("talk"))}</td>
-                <td>{N(T.calls)}</td><td>{N(T.answered)}</td><td><PctBar v={T.answered} d={T.calls} /></td><td>{N(sum("rnr"))}</td><td>{N(sum("rnr20"))}</td><td>{N(sum("rnr10"))}</td><td>{N(sum("rnr5"))}</td>
+                <td>{N(T.calls)}</td><td>{N(T.answered)}</td><td><PctBar v={T.answered} d={T.calls} /></td><td>{N(sum("rnr"))}</td><td>{sum("ringKnown") ? N(sum("rnr20")) : "NA"}</td><td>{sum("ringKnown") ? N(sum("rnr10")) : "NA"}</td><td>{sum("ringKnown") ? N(sum("rnr5")) : "NA"}</td>
                 <td>{N(sum("newLeads"))}</td><td>{N(sum("cards"))}</td><td>{hm(sum("cardSec"))}</td></tr>
               {sorted.map((r) => (
                 <tr key={r.k}><td><b>{r.name}</b></td><td>{r.days}</td><td>{N(Math.round(r.breakMin))}</td><td>{hm(r.breakMin * 60)}</td><td>{hm(r.calling)}</td><td>{hm(r.talk)}</td>
-                  <td>{N(r.calls)}</td><td>{N(r.answered)}</td><td><PctBar v={r.answered} d={r.calls} /></td><td>{N(r.rnr)}</td><td>{N(r.rnr20)}</td><td>{N(r.rnr10)}</td><td>{N(r.rnr5)}</td>
+                  <td>{N(r.calls)}</td><td>{N(r.answered)}</td><td><PctBar v={r.answered} d={r.calls} /></td><td>{N(r.rnr)}</td><td>{ringN(r, r.rnr20)}</td><td>{ringN(r, r.rnr10)}</td><td>{ringN(r, r.rnr5)}</td>
                   <td>{N(r.newLeads)}</td><td>{N(r.cards)}</td><td>{r.cards ? hm(r.cardSec) : "—"}</td></tr>
               ))}
             </tbody>
