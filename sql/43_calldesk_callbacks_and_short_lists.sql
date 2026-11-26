@@ -25,3 +25,7 @@
 --      case when c.outcome = 'callback' then case when (c.callback_at at time zone 'Asia/Kolkata')::date < d
 --           then ((d + (c.callback_at at time zone 'Asia/Kolkata')::time) at time zone 'Asia/Kolkata') else c.callback_at end end
 --    Today's rows were moved the same way.
+--
+-- 5. (11:50) build_list: call-back label now reads "Call back – promised on 25 Nov for 26 Nov, 10:00 am" (+ the agent's note).
+--    The promise date is kept in the reason ('set_on') when a call-back is carried again; older call-back labels are not
+--    repeated. Today's rows relabelled the same way.
