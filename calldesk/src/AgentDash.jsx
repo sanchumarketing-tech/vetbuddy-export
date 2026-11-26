@@ -163,7 +163,10 @@ function displayNames(calls, cards) {
 }
 
 // ------------------------------------------------------------------ page
-export function AgentDashboard({ day, setDay }) {
+// only our agents: people on the Agents list (role agent, not deleted). Names are compared without case, spaces or dots.
+const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+export function AgentDashboard({ day, setDay, agents = [] }) {
   const [S, setS] = useSettings();
   const [view, setView] = useState("day");
   const [who, setWho] = useState("");
@@ -174,7 +177,16 @@ export function AgentDashboard({ day, setDay }) {
   const [rt, setRt] = useState(t);
   const from = view === "range" ? rf : day, to = view === "range" ? rt : day;
   const [d, err, reload] = useCalls(from, to);
-  const P = useMemo(() => parse(d, nameList(S.names)), [d, S.names]);
+  const ours = useMemo(() => Object.fromEntries(agents.filter((a) => a.role === "agent").map((a) => [norm(a.name), a.name])), [agents]);
+  const raw = useMemo(() => parse(d, nameList(S.names)), [d, S.names]);
+  // keep only our agents, and show them by the name on the Agents list
+  const P = useMemo(() => {
+    if (!agents.length) return { ...raw, calls: [], cards: [], hidden: [] };
+    const own = (x) => { const n = ours[norm(x.agent)]; return n ? { ...x, agent: n } : null; };
+    const calls = raw.calls.map(own).filter(Boolean), cards = raw.cards.map(own).filter(Boolean);
+    const hidden = [...new Set([...raw.calls, ...raw.cards].filter((x) => !ours[norm(x.agent)]).map((x) => x.agent))];
+    return { ...raw, calls, cards, hidden };
+  }, [raw, ours, agents.length]);
   const names = useMemo(() => displayNames(P.calls, P.cards), [P]);
   const agentKeys = Object.keys(names).sort((a, b) => names[a].localeCompare(names[b]));
 
@@ -220,10 +232,10 @@ export function AgentDashboard({ day, setDay }) {
       )}
 
       {err && <p className="note warn">{err}</p>}
-      {!d && !err && <Skeleton rows={6} />}
-      {d && view === "day" && <DayView P={P} names={names} who={who} setWho={setWho} S={S} day={day} loadedTo={d.loaded_to} />}
-      {d && view === "range" && <RangeView P={P} names={names} who={who} S={S} />}
-      {d && view === "hourly" && <HourlyView P={P} names={names} who={who} S={S} />}
+      {(!d || !agents.length) && !err && <Skeleton rows={6} />}
+      {d && agents.length > 0 && view === "day" && <DayView P={P} names={names} who={who} setWho={setWho} S={S} day={day} loadedTo={d.loaded_to} />}
+      {d && agents.length > 0 && view === "range" && <RangeView P={P} names={names} who={who} S={S} />}
+      {d && agents.length > 0 && view === "hourly" && <HourlyView P={P} names={names} who={who} S={S} />}
 
       <details className="mis-how">
         <summary>How it counts</summary>
@@ -316,7 +328,11 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
           </div>
         </div>
       )}
-      {P.unmatched?.length > 0 && !who && <p className="muted small">Shown by number: {P.unmatched.length} Corefactor agent number{P.unmatched.length === 1 ? "" : "s"} that could not be matched to a name (the agent didn’t open customers in the Call Desk on these days, e.g. Social Media). {Object.keys(P.learned || {}).length} numbers were matched to agents. Name the rest under ⚙ Settings.</p>}
+      {P.hidden?.length > 0 && !who && (
+        <details className="mis-hidden"><summary>Only agents on the Agents list are shown · {P.hidden.length} other caller{P.hidden.length === 1 ? "" : "s"} hidden</summary>
+          <p className="muted small">Not on the Agents list (or the name differs): {P.hidden.slice(0, 40).join(", ")}{P.hidden.length > 40 ? " …" : ""}. Corefactor numbers belong to agents who didn’t open customers in the Call Desk; give them a name under ⚙ Settings (use the name exactly as on the Agents list) and they will show.</p>
+        </details>
+      )}
       {focus && <AgentDay k={focus} name={names[focus] || focus} calls={byC[focus] || []} cards={byK[focus] || []} S={S} day={day} loadedTo={loadedTo} onClose={who ? null : () => setOpen(null)} />}
       {!focus && <p className="muted small">Tip: pick one agent above (or click a row) to see their timeline, break timings and customers.</p>}
     </>

@@ -605,3 +605,4 @@ table.rep-t-table { min-width: 640px; }
 html[data-theme="dark"] .rep-t { background: #172a42; color: #e3ecf8; border-color: #24406a; }
 html[data-theme="dark"] .rep-t:nth-child(2) { background: #2a2142; color: #ece3fb; }
 html[data-theme="dark"] .rep-t.click { background: #18392f; color: #e9f3ee; } html[data-theme="dark"] .rep-t.click.bad { background: #3e2420; color: #f8d7d0; }
+.mis-hidden { margin: 0 0 10px; font-size: 13px; } .mis-hidden summary { cursor: pointer; color: var(--muted); }

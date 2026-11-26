@@ -1030,7 +1030,7 @@ const monthISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() +
 // salary month: 21st of the previous month to the 20th; from the 21st we are in next month's cycle
 const salaryMonthISO = (d = new Date()) => monthISO(d.getDate() >= 21 ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : d);
 const monthName = (iso) => new Date(`${iso}-01T00:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-function Incentives({ me, startAgent = -1, startMonth }) {
+function Incentives({ me, startAgent = -1, startMonth, ours }) {
   const isLead = me.role === "lead";
   const [month, setMonth] = useState(startMonth || salaryMonthISO());
   const [agent, setAgent] = useState(isLead ? startAgent : me.id);
@@ -1118,7 +1118,7 @@ function Incentives({ me, startAgent = -1, startMonth }) {
           <table className="grid">
             <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th title="Every appointment, including the same pet more than once">All appts</th><th>Unique pets</th><th title="Pets this agent booked 5 or more times this salary month">Same pet 5+</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Incentive</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
             <tbody>
-              {d.agents.map((a) => (
+              {d.agents.filter((a) => !ours?.size || ours.has(a.id)).map((a) => (
                 <tr key={a.id}>
                   <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
                   <td className="muted">{a.department || "–"}</td>
@@ -1131,10 +1131,10 @@ function Incentives({ me, startAgent = -1, startMonth }) {
                   <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
                 </tr>
               ))}
-              <tr className="total"><td>Total</td><td /><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
-                {["called", "booked"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}
-                {["appts", "pets", "rep_pets"].map((k) => <td key={k}><strong>{repD && !repD.error ? d.agents.reduce((s, a) => s + Number(repOf(a.id)[k] || 0), 0) : ""}</strong></td>)}
-                {["visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td><strong>{rs(d.agents.reduce((s, a) => s + Number(a.amount || 0), 0))}</strong></td><td /><td /><td /></tr>
+              <tr className="total"><td>Total</td><td /><td>{d.agents.filter((a) => !ours?.size || ours.has(a.id)).reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
+                {["called", "booked"].map((k) => <td key={k}><strong>{d.agents.filter((a) => !ours?.size || ours.has(a.id)).reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}
+                {["appts", "pets", "rep_pets"].map((k) => <td key={k}><strong>{repD && !repD.error ? d.agents.filter((a) => !ours?.size || ours.has(a.id)).reduce((s, a) => s + Number(repOf(a.id)[k] || 0), 0) : ""}</strong></td>)}
+                {["visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.filter((a) => !ours?.size || ours.has(a.id)).reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td><strong>{rs(d.agents.filter((a) => !ours?.size || ours.has(a.id)).reduce((s, a) => s + Number(a.amount || 0), 0))}</strong></td><td /><td /><td /></tr>
             </tbody>
           </table>
           {edit && (
@@ -1158,7 +1158,7 @@ function Incentives({ me, startAgent = -1, startMonth }) {
 }
 
 // team lead: Agent logs tab = Dashboard (sheet logic + time on customers) | Logs (the 12-minute warnings, unchanged)
-function AgentLogsTabs({ day, setDay }) {
+function AgentLogsTabs({ day, setDay, agents }) {
   const [sub, setSub] = useState("dash");
   return (
     <>
@@ -1166,14 +1166,14 @@ function AgentLogsTabs({ day, setDay }) {
         {[["dash", "Dashboard"], ["logs", "Logs"]].map(([k, v]) => <button key={k} className={sub === k ? "on" : ""} onClick={() => setSub(k)}>{v}</button>)}
       </div>
       <div className="hp-fade" key={sub}>
-        {sub === "dash" ? <AgentDashboard day={day} setDay={setDay} /> : <AgentLogs day={day} setDay={setDay} />}
+        {sub === "dash" ? <AgentDashboard day={day} setDay={setDay} agents={agents} /> : <AgentLogs day={day} setDay={setDay} />}
       </div>
     </>
   );
 }
 
 // team lead: Incentives tab with Team performance / Team incentive / Agents
-function LeadIncentives({ me }) {
+function LeadIncentives({ me, ours }) {
   const [sub, setSub] = useState("perf");
   const [month, setMonth] = useState(salaryMonthISO());
   const [pick, setPick] = useState({ agent: -1, n: 0 });
@@ -1186,9 +1186,9 @@ function LeadIncentives({ me }) {
         ))}
       </div>
       <div className="hp-fade" key={sub + pick.n}>
-        {sub === "perf" && <TeamPerformance month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} />}
-        {sub === "team" && <TeamIncentive month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} />}
-        {sub === "agents" && <Incentives me={me} startAgent={pick.agent} startMonth={month} />}
+        {sub === "perf" && <TeamPerformance month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} ours={ours} />}
+        {sub === "team" && <TeamIncentive month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} ours={ours} />}
+        {sub === "agents" && <Incentives me={me} startAgent={pick.agent} startMonth={month} ours={ours} />}
       </div>
     </>
   );
@@ -1256,6 +1256,7 @@ export default function App() {
   if (!me) return (<>{err && <p className="note warn pad">{err}</p>}<Login onDone={check} /></>);
 
   const isLead = me.role === "lead";
+  const ours = new Set(agents.filter((a) => a.role === "agent").map((a) => a.id));   // our agents (Agents list)
   const openAgent = (id) => { setAgentId(id); setTab("list"); };
   return (
     <div className="app">
@@ -1290,12 +1291,12 @@ export default function App() {
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
-      {tab === "logs" && isLead && <AgentLogsTabs day={day} setDay={setDay} />}
+      {tab === "logs" && isLead && <AgentLogsTabs day={day} setDay={setDay} agents={agents} />}
       {tab === "kpi" && <KpiPage types={TYPES} Chip={ReasonChip} />}
       {tab === "home" && (isLead
-        ? <LeadHome me={me} goPerf={() => setTab("incentives")} goTeam={() => setTab("team")} goLogs={() => setTab("logs")} />
+        ? <LeadHome me={me} ours={ours} goPerf={() => setTab("incentives")} goTeam={() => setTab("team")} goLogs={() => setTab("logs")} />
         : <AgentHome me={me} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} />)}
-      {tab === "incentives" && (isLead ? <LeadIncentives me={me} /> : <Incentives me={me} />)}
+      {tab === "incentives" && (isLead ? <LeadIncentives me={me} ours={ours} /> : <Incentives me={me} />)}
     </div>
   );
 }

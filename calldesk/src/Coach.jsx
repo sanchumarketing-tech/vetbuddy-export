@@ -305,7 +305,8 @@ export function Bars({ items, label, active, onHover, animKey }) {
 // ------------------------------------------------------------------ team lead: Team performance
 // Loads every team for the salary month. One request per team: asking for all teams at once
 // is too slow for the database (statement timeout), one team takes 1-2 seconds.
-function useMonthData(month) {
+// ours = ids of the agents on the Agents list (role agent, not deleted); others are left out
+function useMonthData(month, ours) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -325,7 +326,8 @@ function useMonthData(month) {
     })().catch((e) => { if (live) setErr(e.message); });
     return () => { live = false; };
   }, [month]);
-  return [d, err];
+  const kept = useMemo(() => (d && ours?.size ? { ...d, agents: d.agents.filter((a) => ours.has(a.id)) } : d), [d, ours]);
+  return [kept, err];
 }
 const teamsOf = (d) => {
   const seen = (d?.departments || []).filter((t) => d.agents.some((a) => a.department === t));
@@ -340,8 +342,8 @@ function MonthPick({ month, setMonth }) {
   return <label className="inline">Salary month <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>;
 }
 
-export function TeamPerformance({ month, setMonth, openAgentIncentive }) {
-  const [d, err] = useMonthData(month);
+export function TeamPerformance({ month, setMonth, openAgentIncentive, ours }) {
+  const [d, err] = useMonthData(month, ours);
   const [team, setTeam] = useState(null);         // null = choose a team; "*" = all teams
   const [agent, setAgent] = useState(null);       // agent id for the day-by-day view
   const [metric, setMetric] = useState("eligible");
@@ -512,8 +514,8 @@ function AgentPerformance({ id, month, back, openAgentIncentive }) {
 }
 
 // ------------------------------------------------------------------ team lead: Team incentive
-export function TeamIncentive({ month, setMonth, openAgentIncentive }) {
-  const [d, err] = useMonthData(month);
+export function TeamIncentive({ month, setMonth, openAgentIncentive, ours }) {
+  const [d, err] = useMonthData(month, ours);
   const [team, setTeam] = useState(null);
   const head = (<div className="page-head"><h2>Team incentive</h2><MonthPick month={month} setMonth={setMonth} /></div>);
   if (err) return <div className="page">{head}<p className="note warn">{err}</p></div>;
@@ -712,9 +714,9 @@ export function KpiPage({ types, Chip }) {
 
 // ------------------------------------------------------------------ team lead home (26 Nov 2026)
 // Team progress this cycle (cd_incentives, team by team) + today on the lists (cd_team) + 12-minute warnings (cd_agent_logs).
-export function LeadHome({ me, goPerf, goTeam, goLogs }) {
+export function LeadHome({ me, goPerf, goTeam, goLogs, ours }) {
   const month = salaryMonthISO();
-  const [d, err] = useMonthData(month);
+  const [d, err] = useMonthData(month, ours);
   const [today, setToday] = useState(null);
   const [warn, setWarn] = useState(null);
   useEffect(() => {
