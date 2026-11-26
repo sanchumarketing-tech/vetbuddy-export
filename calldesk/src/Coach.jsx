@@ -297,12 +297,27 @@ function Bars({ items, label, active, onHover, animKey }) {
 }
 
 // ------------------------------------------------------------------ team lead: Team performance
+// Loads every team for the salary month. One request per team: asking for all teams at once
+// is too slow for the database (statement timeout), one team takes 1-2 seconds.
 function useMonthData(month) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   useEffect(() => {
+    let live = true;
     setD(null); setErr("");
-    rpc("cd_incentives", { p_month: `${month}-01`, p_agent: -1, p_dept: "" }).then(setD).catch((e) => setErr(e.message));
+    const get = (dept) => rpc("cd_incentives", { p_month: `${month}-01`, p_agent: -1, p_dept: dept });
+    (async () => {
+      const first = await get("Sharpshooting");
+      const depts = (first.departments || ["Sharpshooting"]).filter((x) => x !== "Sharpshooting");
+      const agents = [...first.agents];
+      for (const dept of depts) {
+        if (!live) return;
+        const r = await get(dept);
+        r.agents.forEach((a) => { if (!agents.some((x) => x.id === a.id)) agents.push(a); });
+      }
+      if (live) setD({ ...first, department: null, agents: agents.sort((a, b) => b.eligible - a.eligible || a.name.localeCompare(b.name)) });
+    })().catch((e) => { if (live) setErr(e.message); });
+    return () => { live = false; };
   }, [month]);
   return [d, err];
 }
