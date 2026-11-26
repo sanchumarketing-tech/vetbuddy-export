@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc, login, logout, SignedOut } from "./supabase.js";
 import { AgentHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
+import { RulesNotice } from "./Notice.jsx";
 
 // ------------------------------------------------------------------ labels
 export const TYPES = {
@@ -1256,6 +1257,7 @@ export default function App() {
         )}
 
       </header>
+      <RulesNotice me={me} />
       {isLead && <LeadAlerts />}
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}

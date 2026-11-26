@@ -473,3 +473,35 @@ html[data-theme="dark"] .hp-t tr.focus td { background: #4a1f2b; }
 html[data-theme="dark"] .hp-ins { background: linear-gradient(120deg, #18392f, #3d3214); color: #e9f3ee; }
 html[data-theme="dark"] .hp-ins.warn { background: linear-gradient(120deg, #3e2420, #3d3214); color: #f8e3dc; }
 @media (prefers-reduced-motion: reduce) { .hp-funnel > *, .hp-fbar i, .hp-ins { animation: none !important; } .hp-fstep:hover, .hp-ins:hover { transform: none; } }
+
+/* 26 Nov 2026: team rules notice (first visit of the day) */
+@keyframes rules-pop { from { opacity: 0; transform: translateY(18px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes rules-fade { from { opacity: 0; } to { opacity: 1; } }
+.rules-back { position: fixed; inset: 0; z-index: 60; background: rgba(16, 24, 22, .55); backdrop-filter: blur(3px); display: grid; place-items: center; padding: 16px; animation: rules-fade .2s ease-out both; }
+.rules-card { width: 100%; max-width: 860px; max-height: calc(100vh - 32px); overflow-y: auto; background: var(--panel); color: var(--ink); border-radius: 18px; padding: 22px 26px 18px; box-shadow: 0 24px 60px rgba(0,0,0,.35); border-top: 6px solid #d6334f; animation: rules-pop .3s cubic-bezier(.2,.8,.2,1) both; }
+.rules-head { display: flex; justify-content: space-between; align-items: center; }
+.rules-tag { background: #fde8e4; color: #b42318; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; border-radius: 12px; padding: 4px 12px; }
+.rules-x { background: none; border: 0; font-size: 18px; cursor: pointer; color: var(--muted); padding: 4px 8px; border-radius: 8px; }
+.rules-x:hover { background: var(--bg); }
+.rules-card h2 { margin: 14px 0 6px; font-size: 22px; }
+.rules-card p { margin: 6px 0; font-size: 14.5px; }
+.rules-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0; }
+.rules-grid section { border-radius: 14px; padding: 12px 14px; border-left: 5px solid var(--c); background: var(--bgc); color: #1d2b2a; }
+.rules-grid .r1 { --c: #d6334f; --bgc: #fdecef; } .rules-grid .r2 { --c: #f2a03d; --bgc: #fff4e3; }
+.rules-grid .r3 { --c: #1f6fb8; --bgc: #e8f2fd; } .rules-grid .r4 { --c: #7a2b2b; --bgc: #fbe9e4; grid-row: span 2; }
+.rules-grid .r5 { --c: #1f8a70; --bgc: #e3f3ea; }
+.rules-grid h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 15px; text-transform: none; letter-spacing: 0; color: #1d2b2a; }
+.rules-grid h3 span { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--c); color: #fff; font-size: 13px; }
+.rules-grid ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 13.5px; }
+.rules-grid p { font-size: 13.5px; margin: 0; }
+.rules-grid ol.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.rules-grid ol.steps li { background: #fff; border-radius: 10px; padding: 8px 10px; font-size: 13.5px; border: 1px solid #f1d3cb; }
+.rules-grid ol.steps li:nth-child(2) { border-color: #f0b4a6; } .rules-grid ol.steps li:nth-child(3) { border-color: #d6334f; background: #fff5f6; }
+.rules-strict { font-weight: 700; color: #b42318; }
+.rules-sign { color: var(--muted); }
+.rules-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.rules-foot .primary { background: #0f5c4d; color: #fff; padding: 10px 20px; }
+.rules-btn { position: fixed; right: 70px; bottom: 16px; z-index: 40; height: 44px; border-radius: 22px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 0 16px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.15); transition: transform .15s; }
+.rules-btn:hover { transform: translateY(-2px); }
+@media (max-width: 720px) { .rules-grid { grid-template-columns: 1fr; } .rules-grid .r4 { grid-row: auto; } .rules-card { padding: 18px 16px; } .rules-btn { right: 68px; padding: 0 12px; } }
+@media (prefers-reduced-motion: reduce) { .rules-back, .rules-card { animation: none; } }
