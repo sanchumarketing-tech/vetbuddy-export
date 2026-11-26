@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { rpc, login, logout, SignedOut } from "./supabase.js";
 import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
+import { useRepeats, RepeatTiles, RepeatDetails } from "./Repeats.jsx";
 import { AgentDashboard } from "./AgentDash.jsx";
 
 // ------------------------------------------------------------------ labels
@@ -1037,6 +1038,10 @@ function Incentives({ me, startAgent = -1, startMonth }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   const [edit, setEdit] = useState(null);
+  const [showRep, setShowRep] = useState(false);
+  const repD = useRepeats(isLead, month, isLead ? agent : -1);   // team leads only: all appointments, unique pets, same pet 5+
+  const repOf = (id) => repD?.error ? repD : repD ? (repD.agents?.[String(id)] || { appts: 0, pets: 0, rep_pets: 0, rep_appts: 0 }) : null;
+  const openRep = (id) => { setAgent(id); setShowRep(true); setTimeout(() => document.getElementById("rep-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 900); };
   const load = useCallback(() => {
     setD(null); setErr("");
     rpc("cd_incentives", { p_month: `${month}-01`, p_agent: isLead ? agent : -1, p_dept: isLead && agent === -1 ? dept : null }).then(setD).catch((e) => setErr(e.message));
@@ -1088,6 +1093,8 @@ function Incentives({ me, startAgent = -1, startMonth }) {
             {one.next_slab && <div><span>{one.next_slab.more}</span>more visits to the {one.next_slab.at} slab (₹{one.next_slab.per_visit} per visit)</div>}
             <div><span>{one.target ? pct(one.eligible, one.target) : "–"}</span>of target</div>
           </div>
+          {isLead && <RepeatTiles r={repOf(one.id)} min={repD?.min || 5} onOpen={() => setShowRep(true)} />}
+          {isLead && showRep && repD && !repD.error && <RepeatDetails rows={repD.repeats} min={repD.min || 5} onClose={() => setShowRep(false)} />}
           <IncentivePlan slabs={d.slabs?.[one.department]} visits={one.eligible} dept={one.department} />
           {one.logins?.length === 0 && <p className="note warn">No VetBuddy login is linked to {one.name} yet{isLead ? " - add it below." : " - ask your team lead."}</p>}
           <table className="grid">
@@ -1109,20 +1116,25 @@ function Incentives({ me, startAgent = -1, startMonth }) {
       {d && !one && (
         <>
           <table className="grid">
-            <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Incentive</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
+            <thead><tr><th>Agent</th><th>Department</th><th>Target</th><th>Called</th><th>Booked</th><th title="Every appointment, including the same pet more than once">All appts</th><th>Unique pets</th><th title="Pets this agent booked 5 or more times this salary month">Same pet 5+</th><th>Visited</th><th>Shared</th><th>Eligible</th><th>Incentive</th><th>Of target</th><th>VetBuddy logins</th><th /></tr></thead>
             <tbody>
               {d.agents.map((a) => (
                 <tr key={a.id}>
                   <td><button className="link" onClick={() => setAgent(a.id)}>{a.name}</button></td>
                   <td className="muted">{a.department || "–"}</td>
-                  <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.booked}</td><td>{a.visited}</td>
+                  <td>{a.target ?? <span className="muted">–</span>}</td><td>{a.called}</td><td>{a.booked}</td>
+                  <td>{repD && !repD.error ? repOf(a.id).appts : <span className="muted">…</span>}</td><td>{repD && !repD.error ? repOf(a.id).pets : <span className="muted">…</span>}</td>
+                  <td>{repD && !repD.error ? (repOf(a.id).rep_pets ? <button className="link rep-flag" onClick={() => openRep(a.id)}>{repOf(a.id).rep_pets} pets · {repOf(a.id).rep_appts} bookings</button> : <span className="muted">0</span>) : <span className="muted">…</span>}</td>
+                  <td>{a.visited}</td>
                   <td>{a.shared || ""}</td><td><strong>{a.eligible}</strong></td><td><strong>{rs(a.amount)}</strong>{a.next_slab && <div className="muted small">{a.next_slab.more} more → ₹{a.next_slab.per_visit}/visit</div>}</td><td>{a.target ? pct(a.eligible, a.target) : "–"}</td>
                   <td className="muted small">{a.logins?.length ? a.logins.join(", ") : <span className="warntext">none</span>}</td>
                   <td><button className="link" onClick={() => setEdit({ id: a.id, name: a.name, logins: (a.logins || []).join(", "), target: a.target ?? "" })}>Edit</button></td>
                 </tr>
               ))}
               <tr className="total"><td>Total</td><td /><td>{d.agents.reduce((s, a) => s + (a.target || 0), 0) || "–"}</td>
-                {["called", "booked", "visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td><strong>{rs(d.agents.reduce((s, a) => s + Number(a.amount || 0), 0))}</strong></td><td /><td /><td /></tr>
+                {["called", "booked"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}
+                {["appts", "pets", "rep_pets"].map((k) => <td key={k}><strong>{repD && !repD.error ? d.agents.reduce((s, a) => s + Number(repOf(a.id)[k] || 0), 0) : ""}</strong></td>)}
+                {["visited", "shared", "eligible"].map((k) => <td key={k}><strong>{d.agents.reduce((s, a) => s + (a[k] || 0), 0)}</strong></td>)}<td><strong>{rs(d.agents.reduce((s, a) => s + Number(a.amount || 0), 0))}</strong></td><td /><td /><td /></tr>
             </tbody>
           </table>
           {edit && (

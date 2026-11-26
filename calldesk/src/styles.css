@@ -582,3 +582,26 @@ html[data-theme="dark"] .mis-group.cust { background: #241c36; }
 html[data-theme="dark"] .mis-tiles .hp-tile:nth-child(5) { background: #2a2142; } html[data-theme="dark"] .mis-tiles .hp-tile:nth-child(6) { background: #172a42; }
 @media (max-width: 860px) { .mis-two { grid-template-columns: 1fr; } .mis-tl-l { width: 60px; } .mis-tl-axis, .mis-tl-key { left: 68px; padding-left: 0; } }
 .mis-names { margin-top: 12px; } .mis-names textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+
+/* 26 Nov 2026: booking repeats (team leads, Agents' incentives) */
+.rep-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 12px; }
+.rep-t { text-align: left; background: #e8f2fd; border: 1px solid #cfe2f8; border-radius: 12px; padding: 10px 14px; color: #1d2b4f; display: flex; flex-direction: column; font: inherit; animation: hp-in .35s ease-out both; }
+.rep-t:nth-child(2) { background: #f1e8fb; border-color: #e0cff6; color: #3b2160; }
+.rep-t b { font-size: 22px; } .rep-t span { font-size: 12.5px; } .rep-t small { font-size: 11.5px; opacity: .8; }
+.rep-t.click { cursor: pointer; background: #e3f3ea; border-color: #bfe3cf; color: #16453a; transition: transform .15s, box-shadow .15s; }
+.rep-t.click:disabled { cursor: default; }
+.rep-t.click.bad { background: #fde8e4; border-color: #f4b8ad; color: #8a1c12; }
+.rep-t.click:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(0,0,0,.1); }
+.rep-flag { color: #d92d20 !important; font-weight: 700; padding: 0 !important; }
+.rep-panel { background: var(--panel); border: 2px solid #f4b8ad; border-radius: 14px; padding: 14px 16px; margin: 0 0 16px; animation: hp-in .3s ease-out both; }
+.rep-head { display: flex; justify-content: space-between; align-items: center; }
+.rep-head h3 { margin: 0; font-size: 16px; text-transform: none; letter-spacing: 0; color: #8a1c12; }
+.rep-pet { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+.rep-pet-h { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
+.rep-n { background: #d92d20; color: #fff; font-weight: 800; border-radius: 10px; padding: 4px 10px; font-size: 16px; }
+table.rep-t-table { min-width: 640px; }
+.rep-st { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 12px; background: var(--grey-bg); color: var(--grey); }
+.rep-st.c { background: #fde8e4; color: #b42318; } .rep-st.v { background: #e3f3ea; color: #0f5c4d; }
+html[data-theme="dark"] .rep-t { background: #172a42; color: #e3ecf8; border-color: #24406a; }
+html[data-theme="dark"] .rep-t:nth-child(2) { background: #2a2142; color: #ece3fb; }
+html[data-theme="dark"] .rep-t.click { background: #18392f; color: #e9f3ee; } html[data-theme="dark"] .rep-t.click.bad { background: #3e2420; color: #f8d7d0; }
