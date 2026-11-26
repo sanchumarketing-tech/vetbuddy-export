@@ -11,7 +11,10 @@ const DEFAULTS = {
   breakMin: 10, idleMin: 5, shortRnr: 20, veryShortRnr: 10, shortestRnr: 5,
   shiftStart: "", shiftEnd: "", lunchFrom: "", lunchTo: "", lunchMin: 30,
   rnrTarget: 5, flagBreakMin: 60, flagShortShare: 25,
+  names: "",   // "number name" per line: names for Corefactor agent numbers the dashboard can't match by itself
 };
+const nameList = (txt) => Object.fromEntries((txt || "").split(/\n/).map((l) => l.trim().match(/^(\+?[0-9 -]{10,}?)\s*[=:,-]?\s+(.+)$/)).filter(Boolean)
+  .map((m) => [m[1].replace(/\D/g, "").slice(-10), m[2].trim()]));
 function useSettings() {
   const [s, setS] = useState(() => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("cd_mis_settings") || "{}") }; } catch { return DEFAULTS; } });
   const save = (n) => { setS(n); try { localStorage.setItem("cd_mis_settings", JSON.stringify(n)); } catch { /* ignore */ } };
@@ -35,7 +38,7 @@ const keyName = (s) => (s || "").trim().toLowerCase();
 const ringN = (r, v) => (r.ringKnown ? N(v) : "NA");                    // RNR ring-time splits: Corefactor only
 
 // ------------------------------------------------------------------ the sheet's rules
-function parse(d) {
+function parse(d, names = {}) {
   const calls = (d?.calls || []).map(([agent, at, dir, ans, dur, talk, status, src, isNew, phone]) => {
     const t = ms(at);
     return { agent: (agent || "").trim(), day: at.slice(0, 10), t, end: t + (dur || 0) * 1000, dir, ans: !!ans, dur: dur || 0, talk: talk ?? (ans ? dur || 0 : 0),
@@ -61,7 +64,11 @@ function parse(d) {
     const [name, hits] = Object.entries(v).sort((a, b) => b[1] - a[1])[0];
     if (hits >= 3 && hits / tot >= 0.8) learned[num] = name;
   });
-  calls.forEach((c) => { if (learned[c.agent]) { c.number = c.agent; c.agent = learned[c.agent]; } });
+  calls.forEach((c) => {
+    const typed = isNum(c.agent) && names[c.agent.replace(/\D/g, "").slice(-10)];
+    const nm = typed || learned[c.agent];
+    if (nm) { c.number = c.agent; c.agent = nm; }
+  });
   const unmatched = [...new Set(calls.filter((c) => isNum(c.agent)).map((c) => c.agent))];
   return { calls, cards, learned, unmatched };
 }
@@ -167,7 +174,7 @@ export function AgentDashboard({ day, setDay }) {
   const [rt, setRt] = useState(t);
   const from = view === "range" ? rf : day, to = view === "range" ? rt : day;
   const [d, err, reload] = useCalls(from, to);
-  const P = useMemo(() => parse(d), [d]);
+  const P = useMemo(() => parse(d, nameList(S.names)), [d, S.names]);
   const names = useMemo(() => displayNames(P.calls, P.cards), [P]);
   const agentKeys = Object.keys(names).sort((a, b) => names[a].localeCompare(names[b]));
 
@@ -249,7 +256,9 @@ function SettingsPanel({ S, setS, close }) {
         {time("lunchFrom", "Lunch window starts")}{time("lunchTo", "Lunch window ends")}{num("lunchMin", "Lunch = break of at least", "min")}
         {num("rnrTarget", "RNR follow-up target", "calls")}{num("flagBreakMin", "Flag break time over", "min")}{num("flagShortShare", "Flag short-RNR share over", "%")}
       </div>
-      <div className="actions"><button className="primary" onClick={() => { setS(f); close(); }}>Save</button><button className="link" onClick={() => setF(DEFAULTS)}>Back to the sheet’s settings</button><button className="link" onClick={close}>Cancel</button></div>
+      <label className="mis-names">Names for agent numbers <span className="muted small">one per line, e.g. <code>9876543210 Priya</code> (for numbers shown instead of a name)</span>
+        <textarea rows={4} value={f.names} onChange={(e) => setF({ ...f, names: e.target.value })} placeholder="9876543210 Priya" /></label>
+      <div className="actions"><button className="primary" onClick={() => { setS(f); close(); }}>Save</button><button className="link" onClick={() => setF({ ...DEFAULTS, names: f.names })}>Back to the sheet’s settings</button><button className="link" onClick={close}>Cancel</button></div>
     </div>
   );
 }
@@ -307,7 +316,7 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
           </div>
         </div>
       )}
-      {P.unmatched?.length > 0 && !who && <p className="muted small">Shown by number: {P.unmatched.length} Corefactor agent number{P.unmatched.length === 1 ? "" : "s"} that could not be matched to a name (the agent didn’t open customers in the Call Desk on these days, e.g. Social Media). {Object.keys(P.learned || {}).length} numbers were matched to agents.</p>}
+      {P.unmatched?.length > 0 && !who && <p className="muted small">Shown by number: {P.unmatched.length} Corefactor agent number{P.unmatched.length === 1 ? "" : "s"} that could not be matched to a name (the agent didn’t open customers in the Call Desk on these days, e.g. Social Media). {Object.keys(P.learned || {}).length} numbers were matched to agents. Name the rest under ⚙ Settings.</p>}
       {focus && <AgentDay k={focus} name={names[focus] || focus} calls={byC[focus] || []} cards={byK[focus] || []} S={S} day={day} loadedTo={loadedTo} onClose={who ? null : () => setOpen(null)} />}
       {!focus && <p className="muted small">Tip: pick one agent above (or click a row) to see their timeline, break timings and customers.</p>}
     </>

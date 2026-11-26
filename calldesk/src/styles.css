@@ -581,3 +581,4 @@ i.cardseg { background: #8b5cf6; opacity: .75; } i.cardseg.warn { background: #e
 html[data-theme="dark"] .mis-group.cust { background: #241c36; }
 html[data-theme="dark"] .mis-tiles .hp-tile:nth-child(5) { background: #2a2142; } html[data-theme="dark"] .mis-tiles .hp-tile:nth-child(6) { background: #172a42; }
 @media (max-width: 860px) { .mis-two { grid-template-columns: 1fr; } .mis-tl-l { width: 60px; } .mis-tl-axis, .mis-tl-key { left: 68px; padding-left: 0; } }
+.mis-names { margin-top: 12px; } .mis-names textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
