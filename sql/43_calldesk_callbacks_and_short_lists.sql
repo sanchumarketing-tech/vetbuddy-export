@@ -1,0 +1,20 @@
+-- 26-11-2026 (applied live in Supabase; summary of the changes)
+--
+-- 1. calldesk.build_list - call-backs / reschedules
+--    a) the carried row now keeps outcome = 'callback' and callback_at (before: only a "Call back as promised" label,
+--       so the row was not highlighted at its time, and the "not called the day before" rule hid it completely).
+--         insert into calldesk.queue (..., tries, carried_from, outcome, callback_at)
+--         ... coalesce(c.carried_from, c.list_date),
+--             case when c.outcome = 'callback' then 'callback' end, case when c.outcome = 'callback' then c.callback_at end
+--    b) t_carry looks back 90 days for call-backs (was 7 days for everything), so a call-back set more than a week
+--       ahead still comes back on its date:
+--         where q.list_date between d - 90 and d - 1 and not q.superseded
+--           and ((q.list_date >= d - 7 and <untouched row>) or (q.outcome = 'callback' and callback date <= d))
+--    Data fix: today's 22 carried call-backs got their time back; 2 call-backs that had never reached a list were added.
+--
+-- 2. calldesk.balance_lists - new step 3a: a clinic agent still short after follow-ups and check-ins gets older VetBuddy
+--    customers of their own units (last visit 7+ days ago, not on a list and not called in the last 3 days, not DND /
+--    deceased / in follow-ups), highest spend first, as "Check-in - last visit ..." rows. (VAISHALI P, Valasaravakkam,
+--    had 82 visible numbers: the clinic is new and 11 reasons are switched off.)
+--
+-- 3. public.cd_list / cd_list_live: see sql/42 (agents see every row assigned to them).
