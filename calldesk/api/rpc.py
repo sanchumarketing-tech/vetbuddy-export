@@ -14,7 +14,7 @@ ALLOWED = {"cd_incentives", "cd_agent_incentive", "cd_skip", "cd_pet", "cd_skip_
            "cd_agent_save", "cd_assign", "cd_kpi", "cd_mark_called", "cd_log",
            "cd_card_extras", "cd_pitch_save", "cd_vacc_note_save",
            "cd_pet_deceased", "cd_pet_deceased_list", "cd_dnd",
-           "cd_card_open", "cd_card_close", "cd_alerts", "cd_alert_ack", "cd_agent_delete", "cd_agent_logs", "cd_list_live", "cd_agent_off", "cd_agent_active", "cd_agent_calls", "cd_booking_repeats"}
+           "cd_card_open", "cd_card_close", "cd_alerts", "cd_alert_ack", "cd_agent_delete", "cd_agent_logs", "cd_list_live", "cd_agent_off", "cd_agent_active", "cd_agent_calls", "cd_booking_repeats", "cd_break"}
 
 
 class handler(BaseHTTPRequestHandler):

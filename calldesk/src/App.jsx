@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { rpc, login, logout, SignedOut } from "./supabase.js";
 import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
+import { useBreak, BreakButton, BreakScreen, BreakBar } from "./Break.jsx";
 import { CalledCheck } from "./CalledCheck.jsx";
 import { useRepeats, RepeatTiles, RepeatDetails } from "./Repeats.jsx";
 import { AgentDashboard } from "./AgentDash.jsx";
@@ -1244,6 +1245,7 @@ export default function App() {
   const [agents, setAgents] = useState([]);
   const [depts, setDepts] = useState([]);   // departments: [{ name, calls }]
   const [err, setErr] = useState("");
+  const brk = useBreak(me?.role === "agent");   // agents: Break button and break screen
 
   const check = useCallback(() => {
     setErr("");
@@ -1284,7 +1286,7 @@ export default function App() {
             ))}
           </nav>
         )}
-        <div className="who"><span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
+        <div className="who">{!isLead && <BreakButton brk={brk} />}<span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
         {isLead && tab === "list" && (
           <select className="agentpick" title="Whose list" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
             <option value={-1}>Everyone</option>
@@ -1296,6 +1298,8 @@ export default function App() {
       </header>
       <RulesNotice me={me} />
       {isLead && <LeadAlerts />}
+      {isLead && <BreakBar />}
+      {!isLead && brk.b?.on_break ? <BreakScreen brk={brk} name={me.name} /> : <>
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
@@ -1305,6 +1309,7 @@ export default function App() {
         ? <LeadHome me={me} ours={ours} goPerf={() => setTab("incentives")} goTeam={() => setTab("team")} goLogs={() => setTab("logs")} />
         : <AgentHome me={me} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} />)}
       {tab === "incentives" && (isLead ? <LeadIncentives me={me} ours={ours} /> : <Incentives me={me} />)}
+      </>}
     </div>
   );
 }
