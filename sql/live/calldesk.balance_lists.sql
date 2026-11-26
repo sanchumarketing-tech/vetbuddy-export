@@ -15,7 +15,7 @@ begin
   insert into t_vis select distinct v.id from calldesk.visible_ids(d, d) v;
   insert into t_bal select g.id, g.units, g.daily_target,
          (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = g.id and q.id in (select id from t_vis))::int
-    from calldesk.agents g where g.active and g.role = 'agent' and g.daily_target > 0 and g.department in (select name from calldesk.departments where calls);
+    from calldesk.agents g where g.active and not calldesk.is_off(g.id, d) and g.role = 'agent' and g.daily_target > 0 and g.department in (select name from calldesk.departments where calls);
 
   -- 1. over target: least urgent untouched rows move to an allowed agent with room, else wait as follow-ups
   for ag in select * from t_bal where n > target loop
@@ -132,6 +132,39 @@ begin
                 pp)
         on conflict (list_date, phone) do nothing;
         update t_chk set used = true where phone = r.phone;
+        update t_bal set n = n + 1 where id = ag.id;
+        filled := filled + 1;
+      end loop;
+    end loop;
+    -- 3a. (26-11-2026) clinic agents still short (new / small clinic, many reasons switched off): older VetBuddy customers
+    --     of their own units - last visit 7+ days ago, not on a list and not called in the last 3 days, highest spend first
+    for ag in select * from t_bal where n < target and units <> '{}' order by n::numeric / target, id loop
+      need := ag.target - ag.n;
+      for r in select z.phone, z.client, z.unit, z.last, z.spend from (
+                 select calldesk.norm_phone(s.client_phone) phone, (array_agg(s.client_name order by s.sale_date desc))[1] client,
+                        (array_agg(s.sales_unit order by s.sale_date desc))[1] unit, max(s.sale_date) last, sum(s.amount) spend
+                   from vetbuddy.sales s where s.client_id is not null and s.sales_unit = any (ag.units) and s.sale_date < d group by 1) z
+               where z.phone ~ '^[6-9]\d{9}$' and z.last <= d - 7
+                 and not exists (select 1 from calldesk.queue q where q.phone = z.phone and q.list_date between d - 3 and d)
+                 and not exists (select 1 from calldesk.queue q where q.phone = z.phone and q.called_at >= (d - 3)::timestamp)
+                 and not exists (select 1 from calldesk.calls k where k.phone = z.phone and k.call_at >= (d - 3)::timestamp)
+                 and not exists (select 1 from calldesk.exclusions x where x.phone = z.phone)
+                 and not exists (select 1 from calldesk.followups f where f.phone = z.phone)
+                 and not calldesk.omitted(z.phone)
+               order by z.spend desc nulls last limit need loop
+        select coalesce(jsonb_agg(p), '[]') into pp from (
+          select jsonb_strip_nulls(jsonb_build_object('pet_id', x.pid, 'name', x.patient_name, 'species', x.species, 'breed', x.breed, 'last_visit', x.sale_date)) p
+            from (select distinct on (substring(s2.client_id from '\(([^)]*)\)')) substring(s2.client_id from '\(([^)]*)\)') pid,
+                         s2.patient_name, s2.species, s2.breed, s2.sale_date
+                    from vetbuddy.sales s2 where calldesk.norm_phone(s2.client_phone) = r.phone and s2.sale_date >= d - 365
+                   order by substring(s2.client_id from '\(([^)]*)\)'), s2.sale_date desc) x
+           order by x.sale_date desc limit 6) y;
+        insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets)
+        values (d, ag.id, r.phone, r.client, r.unit, 12, coalesce(r.spend, 0),
+                jsonb_build_array(jsonb_build_object('type', 'checkin', 'rank', 12,
+                  'label', 'Check-in - last visit ' || to_char(r.last, 'DD Mon') || ' (' || (d - r.last) || ' days ago) - ask how the pet is, book the next visit')),
+                pp)
+        on conflict (list_date, phone) do nothing;
         update t_bal set n = n + 1 where id = ag.id;
         filled := filled + 1;
       end loop;

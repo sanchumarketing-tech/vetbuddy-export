@@ -15,6 +15,12 @@ begin
            k.disposition, k.notes, k.dtmf, k.campaign, k.recording
       from calldesk.calls k where k.phone = p_phone order by k.call_at desc limit 15)
     union all
+    -- 24 Nov 2026: the agent's own "called" mark in Call Desk (shows even before the Corefactor call arrives)
+    (select (q.called_at at time zone 'Asia/Kolkata'), 'Call Desk', 'note', 'Marked called', null, null, null, coalesce(q.called_by, a.name),
+            nullif(concat_ws(' · ', case when q.outcome is not null then 'Outcome: ' || q.outcome end), ''), nullif(q.note, ''), null, null, null
+       from calldesk.queue q left join calldesk.agents a on a.id = q.agent_id
+      where q.phone = p_phone and q.called_at is not null and q.list_date >= calldesk.today() - 30 order by q.called_at desc limit 5)
+    union all
     -- the agent's comment is kept in the Corefactor Lead Box (CRM), not in the call log
     (select l.created_at, 'Lead Box', 'note', nullif(concat_ws(' / ', l.raw->>'Call Status', l.raw->>'Sub Status'), ''), null, null, null,
            l.raw->>'Lead Owner',

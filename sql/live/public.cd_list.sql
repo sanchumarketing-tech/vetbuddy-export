@@ -19,7 +19,7 @@ begin
              'status', calldesk.status_of(q), 'called_at', q.called_at, 'called_by', q.called_by, 'try_slot', q.try_slot, 'try_note', q.try_note, 'skipped_at', q.skipped_at)
            order by q.rank, q.score desc, q.id)
     from calldesk.queue q
-    where q.list_date = coalesce(p_day, calldesk.today()) and q.id in (select v.id from calldesk.visible_ids(coalesce(p_day, calldesk.today()), coalesce(p_day, calldesk.today())) v) and (m.role = 'lead' or m.units = '{}' or q.unit = any (m.units))
+    where q.list_date = coalesce(p_day, calldesk.today()) and q.id in (select v.id from calldesk.visible_ids(coalesce(p_day, calldesk.today()), coalesce(p_day, calldesk.today())) v) and (m.role = 'lead' or m.units = '{}' or q.unit = any (m.units) or q.agent_id = m.id)
       and (who is null and m.role = 'lead' or q.agent_id = who or (who = 0 and q.agent_id is null))), '[]');
 end $function$
 ;

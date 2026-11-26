@@ -21,7 +21,7 @@ begin
   v as (select * from q where vis)
   select jsonb_build_object('day', d, 'departments', (select jsonb_agg(jsonb_build_object('name', name, 'calls', calls) order by sort, name) from calldesk.departments),
     'agents', coalesce((select jsonb_agg(x order by x.name) from (
-      select a.id, a.name, a.email, a.role, a.units, a.daily_target target, a.active, a.pin_hash is not null as has_pin, a.department, coalesce((select dp.calls from calldesk.departments dp where dp.name = a.department), false) as calls,
+      select a.id, a.name, a.email, a.role, a.units, a.daily_target target, a.active, a.pin_hash is not null as has_pin, a.department, (select coalesce(jsonb_agg(o.day order by o.day), '[]'::jsonb) from calldesk.agent_off o where o.agent_id = a.id and o.day >= calldesk.today()) off_days, calldesk.is_off(a.id, d) off_today, coalesce((select dp.calls from calldesk.departments dp where dp.name = a.department), false) as calls,
              count(v.id) assigned,
              count(v.id) filter (where v.attempted_at is not null) attempted,
              count(v.id) filter (where v.connected_at is not null) connected,

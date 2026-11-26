@@ -358,8 +358,9 @@ begin
   on conflict (phone) do update set due = excluded.due, reasons = excluded.reasons, why = excluded.why, from_list = excluded.from_list, updated_at = now();
   create temp table t_carry on commit drop as
   select q.* from calldesk.queue q
-  where q.list_date between d - 7 and d - 1 and not q.superseded
-    and ((q.connected_at is null and q.called_at is null and q.outcome is null and q.tries + (q.attempted_at is not null)::int < 3)
+  -- 26-11-2026: call-backs are carried on their date however far ahead they were set (up to 90 days), not only within 7 days
+  where q.list_date between d - 90 and d - 1 and not q.superseded
+    and ((q.list_date >= d - 7 and q.connected_at is null and q.called_at is null and q.outcome is null and q.tries + (q.attempted_at is not null)::int < 3)
          or (q.outcome = 'callback' and (q.callback_at at time zone 'Asia/Kolkata')::date <= d))
     and not exists (select 1 from calldesk.exclusions x where x.phone = q.phone);
   delete from t_carry c where c.outcome is distinct from 'callback' and calldesk.omitted(c.phone);
@@ -380,7 +381,7 @@ begin
     select c.id, c.outcome, row_number() over (order by (c.outcome = 'callback') desc, c.rank, c.score desc nulls last, c.id) rn
       from (select distinct on (phone) * from t_carry order by phone, list_date desc) c) z
   where z.outcome = 'callback'
-     or z.rn <= (select floor(0.6 * coalesce(sum(daily_target), 0)) from calldesk.agents where active and role = 'agent' and daily_target > 0 and department in (select name from calldesk.departments where calls));
+     or z.rn <= (select floor(0.6 * coalesce(sum(daily_target), 0)) from calldesk.agents ax where ax.active and not calldesk.is_off(ax.id, d) and ax.role = 'agent' and daily_target > 0 and department in (select name from calldesk.departments where calls));
   insert into calldesk.followups (phone, due, reasons, why, from_list)
   select c.phone, d,
          (select coalesce(jsonb_agg(e), '[]') from jsonb_array_elements(c.reasons) e where e->>'type' not in ('callback', 'checkin')),
@@ -392,15 +393,17 @@ begin
   update calldesk.queue q set superseded = true
    where q.id in (select id from t_carry) and q.phone not in (select tc.phone from t_carry tc where tc.id in (select id from t_carry_keep));
   delete from t_carry where phone not in (select tc.phone from t_carry tc where tc.id in (select id from t_carry_keep));
-  insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets, tries, carried_from)
+  insert into calldesk.queue (list_date, agent_id, phone, client, unit, rank, score, reasons, pets, tries, carried_from, outcome, callback_at)
   select d, c.agent_id, c.phone, c.client, c.unit,
          case when c.outcome = 'callback' then 0 else c.rank end, c.score,
          case when c.outcome = 'callback'
-              then jsonb_build_array(jsonb_build_object('type', 'callback', 'rank', 0,
-                     'label', 'Call back as promised' || coalesce(' at ' || to_char(c.callback_at at time zone 'Asia/Kolkata', 'HH12:MI am'), '')
-                              || coalesce(' - ' || c.note, ''))) || c.reasons
+              then jsonb_build_array(jsonb_build_object('type', 'callback', 'rank', 0, 'set_on', to_char(coalesce((select (e->>'set_on')::date from jsonb_array_elements(c.reasons) e where e->>'type' = 'callback' and e ? 'set_on' limit 1), (c.updated_at at time zone 'Asia/Kolkata')::date), 'YYYY-MM-DD'),
+                     'label', 'Call back – promised on ' || to_char(coalesce((select (e->>'set_on')::date from jsonb_array_elements(c.reasons) e where e->>'type' = 'callback' and e ? 'set_on' limit 1), (c.updated_at at time zone 'Asia/Kolkata')::date), 'DD Mon') || ' for ' || to_char(case when (c.callback_at at time zone 'Asia/Kolkata')::date < d then d + (c.callback_at at time zone 'Asia/Kolkata')::time else c.callback_at at time zone 'Asia/Kolkata' end, 'DD Mon, HH12:MI am')
+                              || coalesce(' - ' || c.note, '')))
+                   || (select coalesce(jsonb_agg(e), '[]'::jsonb) from jsonb_array_elements(c.reasons) e where e->>'type' <> 'callback')
               else c.reasons end,
-         c.pets, c.tries + (c.attempted_at is not null)::int, coalesce(c.carried_from, c.list_date)
+         c.pets, c.tries + (c.attempted_at is not null)::int, coalesce(c.carried_from, c.list_date),
+          case when c.outcome = 'callback' then 'callback' end, case when c.outcome = 'callback' then case when (c.callback_at at time zone 'Asia/Kolkata')::date < d then ((d + (c.callback_at at time zone 'Asia/Kolkata')::time) at time zone 'Asia/Kolkata') else c.callback_at end end   -- missed on an earlier day: same time today   -- 26-11-2026: keep the call-back time
   from (select distinct on (phone) * from t_carry order by phone, list_date desc) c
   on conflict (list_date, phone) do nothing;
   update calldesk.queue q set superseded = true from t_carry c where q.id = c.id;
@@ -464,7 +467,7 @@ begin
   create temp table t_agent on commit drop as
   select ag.id, ag.units, ag.daily_target as target,
          (select count(*) from calldesk.queue q where q.list_date = d and q.agent_id = ag.id)::int as n
-  from calldesk.agents ag where ag.active and ag.role = 'agent' and ag.daily_target > 0 and ag.department in (select name from calldesk.departments where calls);
+  from calldesk.agents ag where ag.active and not calldesk.is_off(ag.id, d) and ag.role = 'agent' and ag.daily_target > 0 and ag.department in (select name from calldesk.departments where calls);
   select coalesce(sum(target), 0) into capacity from t_agent;
   for r in select t.*, rp.pets from t_row t join t_rowpets rp using (phone)
            order by (t.rank = 12), row_number() over (partition by t.top_type order by t.score desc nulls last, t.phone)::numeric
