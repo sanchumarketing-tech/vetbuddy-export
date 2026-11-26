@@ -41,8 +41,29 @@ function parse(d) {
     return { agent: (agent || "").trim(), day: at.slice(0, 10), t, end: t + (dur || 0) * 1000, dir, ans: !!ans, dur: dur || 0, talk: talk ?? (ans ? dur || 0 : 0),
       agentMiss: /\(agent\)/i.test(status || ""), ringKnown: src === "Corefactor", isNew: !!isNew, phone };
   });
-  const cards = (d?.cards || []).map(([agent, o, c, warned, open]) => ({ agent: (agent || "").trim(), day: o.slice(0, 10), t: ms(o), end: ms(c), warned, open }));
-  return { calls, cards };
+  const cards = (d?.cards || []).map(([agent, o, c, warned, open, phone]) => ({ agent: (agent || "").trim(), day: o.slice(0, 10), t: ms(o), end: ms(c), warned, open, phone }));
+  // Corefactor webhook calls carry the agent's NUMBER, not the name. Learn number -> agent from customer cards:
+  // the agent opens a customer and a call from that number to the customer's phone follows.
+  const isNum = (a) => /^\+?[0-9 -]{10,}$/.test(a);
+  const byPhone = {};
+  cards.forEach((k) => { if (k.phone) (byPhone[k.phone] = byPhone[k.phone] || []).push(k); });
+  const votes = {};
+  calls.forEach((c) => {
+    if (!isNum(c.agent) || c.dir !== "out") return;
+    const k = (byPhone[c.phone] || []).find((x) => c.t >= x.t - 60000 && c.t <= x.end + 60000);
+    if (!k) return;
+    const v = (votes[c.agent] = votes[c.agent] || {});
+    v[k.agent] = (v[k.agent] || 0) + 1;
+  });
+  const learned = {};
+  Object.entries(votes).forEach(([num, v]) => {
+    const tot = Object.values(v).reduce((a, b) => a + b, 0);
+    const [name, hits] = Object.entries(v).sort((a, b) => b[1] - a[1])[0];
+    if (hits >= 3 && hits / tot >= 0.8) learned[num] = name;
+  });
+  calls.forEach((c) => { if (learned[c.agent]) { c.number = c.agent; c.agent = learned[c.agent]; } });
+  const unmatched = [...new Set(calls.filter((c) => isNum(c.agent)).map((c) => c.agent))];
+  return { calls, cards, learned, unmatched };
 }
 
 // one agent (or the whole team) for a set of calls + cards
@@ -204,6 +225,7 @@ export function AgentDashboard({ day, setDay }) {
           <li><b>RNR</b> = an outbound call the customer didn’t answer. Ring time = Corefactor (Smartflo) “Total Time”. The splits below {S.shortRnr}, {S.veryShortRnr} and {S.shortestRnr} seconds count Corefactor calls only; where there is no Corefactor ring time they show <b>NA</b>.</li>
           <li><b>Agent didn’t pick up</b> = “Unanswered (Agent)” / “Unreachable (Agent)”: the call never reached the customer. Counted separately, not as RNR.</li>
           <li><b>Calling time</b> = ring + talk time of every outbound call and answered incoming call. <b>Connect %</b> = answered ÷ outbound calls.</li>
+          <li><b>Agent names</b>: Corefactor (Smartflo) sends the agent’s number. The dashboard matches a number to an agent when that agent opened the customer in the Call Desk just before the call (at least 3 calls, 80% agreement). Numbers that can’t be matched are shown as numbers.</li>
           <li><b>New lead</b> = the first outbound call ever made to that number in the Call Desk’s call history.</li>
           <li><b>Time on customers</b> = how long the agent kept each customer open in the Call Desk (from opening the customer until they open the next one or leave the page; a card left open more than 3 hours counts as 3 hours).</li>
           <li>Red = break time without lunch over {S.flagBreakMin} min, or more than {S.flagShortShare}% of RNR calls under {S.shortRnr} seconds.</li>
@@ -285,6 +307,7 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
           </div>
         </div>
       )}
+      {P.unmatched?.length > 0 && !who && <p className="muted small">Shown by number: {P.unmatched.length} Corefactor agent number{P.unmatched.length === 1 ? "" : "s"} that could not be matched to a name (the agent didn’t open customers in the Call Desk on these days, e.g. Social Media). {Object.keys(P.learned || {}).length} numbers were matched to agents.</p>}
       {focus && <AgentDay k={focus} name={names[focus] || focus} calls={byC[focus] || []} cards={byK[focus] || []} S={S} day={day} loadedTo={loadedTo} onClose={who ? null : () => setOpen(null)} />}
       {!focus && <p className="muted small">Tip: pick one agent above (or click a row) to see their timeline, break timings and customers.</p>}
     </>
