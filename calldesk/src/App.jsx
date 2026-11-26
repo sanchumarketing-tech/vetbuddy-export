@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc, login, logout, SignedOut } from "./supabase.js";
-import { AgentHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
+import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
 
 // ------------------------------------------------------------------ labels
@@ -1264,7 +1264,9 @@ export default function App() {
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
       {tab === "logs" && isLead && <AgentLogs day={day} setDay={setDay} />}
       {tab === "kpi" && <KpiPage types={TYPES} Chip={ReasonChip} />}
-      {tab === "home" && <AgentHome me={me} lead={isLead} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} goTeam={() => setTab("team")} />}
+      {tab === "home" && (isLead
+        ? <LeadHome me={me} goPerf={() => setTab("incentives")} goTeam={() => setTab("team")} goLogs={() => setTab("logs")} />
+        : <AgentHome me={me} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} />)}
       {tab === "incentives" && (isLead ? <LeadIncentives me={me} /> : <Incentives me={me} />)}
     </div>
   );

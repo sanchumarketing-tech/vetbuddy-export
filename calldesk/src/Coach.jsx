@@ -709,3 +709,93 @@ export function KpiPage({ types, Chip }) {
     </div>
   );
 }
+
+// ------------------------------------------------------------------ team lead home (26 Nov 2026)
+// Team progress this cycle (cd_incentives, team by team) + today on the lists (cd_team) + 12-minute warnings (cd_agent_logs).
+export function LeadHome({ me, goPerf, goTeam, goLogs }) {
+  const month = salaryMonthISO();
+  const [d, err] = useMonthData(month);
+  const [today, setToday] = useState(null);
+  const [warn, setWarn] = useState(null);
+  useEffect(() => {
+    const t = todayIST();
+    rpc("cd_team", { p_day: t }).then(setToday).catch(() => setToday({ agents: [], unassigned: 0 }));
+    rpc("cd_agent_logs", { p_day: t }).then(setWarn).catch(() => setWarn({ rows: [], summary: [] }));
+  }, []);
+  const first = (me.name || "").split(/[\s.]+/)[0] || me.name;
+  const ag = today ? today.agents.filter((a) => a.role === "agent" && a.calls) : [];
+  const sumT = (k) => ag.reduce((s, a) => s + Number(a[k] || 0), 0);
+  const onList = sumT("assigned") + (today?.unassigned || 0), called = sumT("attempted"), answered = sumT("connected");
+  const notStarted = ag.filter((a) => a.active !== false && a.assigned > 0 && !a.first_call);
+  const done = (a) => (a.assigned ? Math.round((Math.max(a.attempted, a.marked_called) * 100) / a.assigned) : 0);
+  const behind = ag.filter((a) => a.assigned > 0 && a.first_call).sort((a, b) => done(a) - done(b)).slice(0, 3);
+  const close = d ? d.agents.filter((a) => a.next_slab && a.next_slab.more <= 15).sort((a, b) => a.next_slab.more - b.next_slab.more).slice(0, 5) : [];
+  const top = d ? [...d.agents].sort((a, b) => b.eligible - a.eligible).filter((a) => a.eligible > 0).slice(0, 3) : [];
+  const b = d ? sumBy(d.agents, "booked") : 0, v = d ? sumBy(d.agents, "visited") : 0;
+  return (
+    <div className="page hp hp-fade">
+      <header className="hp-hero">
+        <div>
+          <div className="hp-gt">{greeting()}, {first}!</div>
+          <div className="muted">{new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+        </div>
+        <div className="hp-hero-r"><button className="primary" onClick={goPerf}>Team performance →</button><button className="link" onClick={goTeam}>Team today</button></div>
+      </header>
+
+      <h2 className="hp-h2">Team progress this cycle <span className="muted small">{monthName(month)} salary month{d ? ` · ${dayLabel(d.cycle_from)} to ${dayLabel(d.cycle_to)}` : ""}</span></h2>
+      {err && <p className="note warn">{err}</p>}
+      {!d && !err && <Skeleton rows={3} />}
+      {d && (
+        <>
+          <div className="hp-tiles lh-tiles">
+            <div className="hp-tile"><b><Num v={sumBy(d.agents, "called")} /></b><span>people called</span></div>
+            <div className="hp-tile"><b><Num v={b} /></b><span>appointments booked</span></div>
+            <div className="hp-tile"><b><Num v={v} /></b><span>visited · {b ? Math.round((v * 100) / b) : 0}% of booked</span></div>
+            <div className="hp-tile"><b><Num v={sumBy(d.agents, "eligible")} /></b><span>eligible visits</span></div>
+            <div className="hp-tile"><b><Num v={sumBy(d.agents, "amount")} fmt={rs} /></b><span>team incentive so far</span></div>
+          </div>
+          <div className="lh-two">
+            <div className="hp-card">
+              <h3 className="hp-h">Top performers</h3>
+              {top.length ? top.map((a, i) => <div className="lh-row" key={a.id}><i className={`lh-rank r${i + 1}`}>{i + 1}</i><span><b>{a.name}</b><small>{a.department || "No team"}</small></span><b>{N(a.eligible)}<small> visits</small></b></div>) : <p className="muted">No eligible visits yet.</p>}
+            </div>
+            <div className="hp-card">
+              <h3 className="hp-h">Close to the next level</h3>
+              {close.length ? close.map((a) => <div className="lh-row" key={a.id}><span><b>{a.name}</b><small>{N(a.eligible)} visits · next level {a.next_slab.at}</small></span><b className="lh-more">{a.next_slab.more}<small> to go</small></b></div>) : <p className="muted">Nobody is within 15 visits of a level.</p>}
+            </div>
+          </div>
+        </>
+      )}
+
+      <h2 className="hp-h2">Today</h2>
+      {!today ? <Skeleton rows={2} /> : (
+        <>
+          <div className="hp-kpis">
+            <div><b><Num v={onList} /></b><span>on the call lists</span></div>
+            <div><b><Num v={called} /></b><span>called · {onList ? Math.round((called * 100) / onList) : 0}% of the lists</span></div>
+            <div><b><Num v={answered} /></b><span>answered · {called ? Math.round((answered * 100) / called) : 0}%</span></div>
+            <div><b><Num v={ag.filter((a) => a.first_call).length} /></b><span>of {ag.length} agents calling</span></div>
+            <div><b><Num v={warn?.rows?.length || 0} /></b><span>12-minute warnings</span></div>
+          </div>
+          <div className="lh-two">
+            <div className="hp-card">
+              <h3 className="hp-h">Needs a look</h3>
+              {notStarted.length > 0 && <div className="lh-alert"><b>Not started calling:</b> {notStarted.map((a) => a.name).join(", ")}</div>}
+              {behind.map((a) => <div className="lh-row" key={a.id}><span><b>{a.name}</b><small>{Math.max(a.attempted, a.marked_called)} of {a.assigned} called</small></span><PctBar v={Math.max(a.attempted, a.marked_called)} d={a.assigned} /></div>)}
+              {!notStarted.length && !behind.length && <p className="muted">Nothing to flag right now.</p>}
+              <button className="link" onClick={goTeam}>Open Team today →</button>
+            </div>
+            <div className="hp-card">
+              <h3 className="hp-h">12-minute warnings today</h3>
+              {warn?.summary?.length ? warn.summary.slice(0, 5).map((s) => <div className="lh-row" key={s.agent}><span><b>{s.agent}</b><small>{s.minutes} min on those customers</small></span><b className="lh-more">{s.warnings}</b></div>) : <p className="muted">{warn ? "No warnings today." : "Loading…"}</p>}
+              <button className="link" onClick={goLogs}>Open Agent logs →</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      <h2 className="hp-h2">Thought for the day</h2>
+      <Quote />
+    </div>
+  );
+}
