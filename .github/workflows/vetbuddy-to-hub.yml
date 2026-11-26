@@ -76,6 +76,9 @@ jobs:
                 echo "Skipping $dir (archive / pharmacy run - nothing for the MIS)"; continue ;;
             esac
             for f in "$dir"**/*.xlsx "$dir"**/*.xls "$dir"**/*.csv; do
+              # 26-11-2026: the export run also holds the Gofrugal pharmacy file - no MIS on the hub uses it
+              # (the hub answers "Not recognised" and the VetBuddy file was never sent)
+              case "$(basename "$f")" in Gofrugal_*) echo "Skipping $f (Gofrugal - not a hub report)"; continue ;; esac
               echo "== $f"
               python send_to_hub.py "$f"
               sent=$((sent + 1))
