@@ -383,6 +383,10 @@ The team's daily calling tool:
   - It reaches data only through the `public.cd_*` database functions; they check the signed-in agent themselves.
   - Live copies of those functions: `sql/live/`.
   - Incentives: `cd_incentives` (`sql/30_incentives_speed.sql`).
+- **Agent home, incentive plan, team pages (26 Nov 2026):** `calldesk/src/Coach.jsx`. Agents land on **Home** (progress, thought for the day,
+  important points, attendance bonus, sales tips, call scripts). The incentive plan table is drawn from `calldesk.incentive_slabs`.
+  Team leads: **Incentives → Team performance / Team incentive / Agents' incentives**. All numbers come from `cd_incentives` (no new database function).
+  Logo: `calldesk/public/logo.png` (favicon `icon.png`).
 - **Publishing:** *Call Desk web app* builds the site and publishes it to Vercel (needs secret `VERCEL_TOKEN`).
 - **Activity log:** 3 times a day (1:07 PM, 6:07 PM, 10:17 PM), `calldesk_log_export.py` writes **Call Desk Log.xlsx** (Sanchu Reports).
 

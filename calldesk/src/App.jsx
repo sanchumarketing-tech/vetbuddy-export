@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc, login, logout, SignedOut } from "./supabase.js";
+import { AgentHome, IncentivePlan, TeamPerformance, TeamIncentive } from "./Coach.jsx";
 
 // ------------------------------------------------------------------ labels
 export const TYPES = {
@@ -1026,10 +1027,10 @@ const monthISO = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() +
 // salary month: 21st of the previous month to the 20th; from the 21st we are in next month's cycle
 const salaryMonthISO = (d = new Date()) => monthISO(d.getDate() >= 21 ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : d);
 const monthName = (iso) => new Date(`${iso}-01T00:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-function Incentives({ me }) {
+function Incentives({ me, startAgent = -1, startMonth }) {
   const isLead = me.role === "lead";
-  const [month, setMonth] = useState(salaryMonthISO());
-  const [agent, setAgent] = useState(isLead ? -1 : me.id);
+  const [month, setMonth] = useState(startMonth || salaryMonthISO());
+  const [agent, setAgent] = useState(isLead ? startAgent : me.id);
   const [dept, setDept] = useState("Sharpshooting");   // department filter (all-agents view)
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
@@ -1085,6 +1086,7 @@ function Incentives({ me }) {
             {one.next_slab && <div><span>{one.next_slab.more}</span>more visits to the {one.next_slab.at} slab (₹{one.next_slab.per_visit} per visit)</div>}
             <div><span>{one.target ? pct(one.eligible, one.target) : "–"}</span>of target</div>
           </div>
+          <IncentivePlan slabs={d.slabs?.[one.department]} visits={one.eligible} dept={one.department} />
           {one.logins?.length === 0 && <p className="note warn">No VetBuddy login is linked to {one.name} yet{isLead ? " - add it below." : " - ask your team lead."}</p>}
           <table className="grid">
             <thead><tr><th>Appointment date and time</th><th>Customer</th><th>Pet</th><th>Unit</th><th>Status</th><th>Visited</th><th>Incentive</th></tr></thead>
@@ -1141,6 +1143,28 @@ function Incentives({ me }) {
   );
 }
 
+// team lead: Incentives tab with Team performance / Team incentive / Agents
+function LeadIncentives({ me }) {
+  const [sub, setSub] = useState("perf");
+  const [month, setMonth] = useState(salaryMonthISO());
+  const [pick, setPick] = useState({ agent: -1, n: 0 });
+  const openAgentIncentive = (id) => { setPick((p) => ({ agent: id, n: p.n + 1 })); setSub("agents"); };
+  return (
+    <>
+      <div className="subnav">
+        {[["perf", "Team performance"], ["team", "Team incentive"], ["agents", "Agents' incentives"]].map(([k, v]) => (
+          <button key={k} className={sub === k ? "on" : ""} onClick={() => { if (k === "agents") setPick((p) => ({ agent: -1, n: p.n + 1 })); setSub(k); }}>{v}</button>
+        ))}
+      </div>
+      <div className="hp-fade" key={sub + pick.n}>
+        {sub === "perf" && <TeamPerformance month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} />}
+        {sub === "team" && <TeamIncentive month={month} setMonth={setMonth} openAgentIncentive={openAgentIncentive} />}
+        {sub === "agents" && <Incentives me={me} startAgent={pick.agent} startMonth={month} />}
+      </div>
+    </>
+  );
+}
+
 // ------------------------------------------------------------------ app
 function Login({ onDone }) {
   const [user, setUser] = useState(() => { try { return localStorage.getItem("cd_user") || ""; } catch { return ""; } });
@@ -1159,7 +1183,8 @@ function Login({ onDone }) {
   return (
     <div className="login">
       <div className="login-card">
-        <div className="brand"><span className="logo" /> Sanchu Call Desk</div>
+        <img className="login-logo" src="/logo.png" alt="Sanchu Animal Hospital" />
+        <div className="brand login-title">Call Desk</div>
         <p className="muted">Sign in with your name or email and your PIN.</p>
         <form onSubmit={submit}>
           <label>Name or email<input autoFocus={!user} required value={user} onChange={(e) => setUser(e.target.value)} autoComplete="username" /></label>
@@ -1185,7 +1210,7 @@ export default function App() {
 
   const check = useCallback(() => {
     setErr("");
-    rpc("cd_me").then((m) => { setMe(m || null); if (m?.role === "lead") setTab("team"); else setTab("list"); })
+    rpc("cd_me").then((m) => { setMe(m || null); if (m?.role === "lead") setTab("team"); else setTab("home"); })
       .catch((e) => { if (e instanceof SignedOut) setMe(null); else { setErr(e.message); setMe(null); } });
   }, []);
   useEffect(() => { check(); }, [check]);
@@ -1206,7 +1231,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="top">
-        <div className="brand"><span className="logo" /> Call Desk</div>
+        <div className="brand"><img className="logo-img" src="/logo.png" alt="Sanchu Animal Hospital" /><span className="brand-sep">Call Desk</span></div>
         {isLead && (
           <nav>
             {[["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"], ["logs", "Agent logs"]].map(([k, v]) => (
@@ -1216,7 +1241,7 @@ export default function App() {
         )}
         {!isLead && (
           <nav>
-            {[["list", "My list"], ["incentives", "My incentives"]].map(([k, v]) => (
+            {[["home", "Home"], ["list", "My list"], ["incentives", "My incentives"]].map(([k, v]) => (
               <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{v}</button>
             ))}
           </nav>
@@ -1237,7 +1262,8 @@ export default function App() {
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
       {tab === "logs" && isLead && <AgentLogs day={day} setDay={setDay} />}
       {tab === "kpi" && <Kpis />}
-      {tab === "incentives" && <Incentives me={me} />}
+      {tab === "home" && !isLead && <AgentHome me={me} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} />}
+      {tab === "incentives" && (isLead ? <LeadIncentives me={me} /> : <Incentives me={me} />)}
     </div>
   );
 }
