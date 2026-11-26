@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { rpc, login, logout, SignedOut } from "./supabase.js";
 import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
+import { AgentDashboard } from "./AgentDash.jsx";
 
 // ------------------------------------------------------------------ labels
 export const TYPES = {
@@ -1144,6 +1145,21 @@ function Incentives({ me, startAgent = -1, startMonth }) {
   );
 }
 
+// team lead: Agent logs tab = Dashboard (sheet logic + time on customers) | Logs (the 12-minute warnings, unchanged)
+function AgentLogsTabs({ day, setDay }) {
+  const [sub, setSub] = useState("dash");
+  return (
+    <>
+      <div className="subnav">
+        {[["dash", "Dashboard"], ["logs", "Logs"]].map(([k, v]) => <button key={k} className={sub === k ? "on" : ""} onClick={() => setSub(k)}>{v}</button>)}
+      </div>
+      <div className="hp-fade" key={sub}>
+        {sub === "dash" ? <AgentDashboard day={day} setDay={setDay} /> : <AgentLogs day={day} setDay={setDay} />}
+      </div>
+    </>
+  );
+}
+
 // team lead: Incentives tab with Team performance / Team incentive / Agents
 function LeadIncentives({ me }) {
   const [sub, setSub] = useState("perf");
@@ -1262,7 +1278,7 @@ export default function App() {
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
-      {tab === "logs" && isLead && <AgentLogs day={day} setDay={setDay} />}
+      {tab === "logs" && isLead && <AgentLogsTabs day={day} setDay={setDay} />}
       {tab === "kpi" && <KpiPage types={TYPES} Chip={ReasonChip} />}
       {tab === "home" && (isLead
         ? <LeadHome me={me} goPerf={() => setTab("incentives")} goTeam={() => setTab("team")} goLogs={() => setTab("logs")} />

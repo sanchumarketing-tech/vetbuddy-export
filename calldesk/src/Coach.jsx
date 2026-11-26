@@ -77,7 +77,7 @@ function CycleBar() {
     <div className="hp-cyc">Cycle day {c.day} of {c.total}<div><i style={{ width: `${Math.round((c.day * 100) / c.total)}%` }} /></div></div>
   );
 }
-function PctBar({ v, d }) {
+export function PctBar({ v, d }) {
   const p = pctNum(v, d);
   if (p === null) return <span className="muted">–</span>;
   return <span className="nowrap">{p}%<span className="hp-pb"><i style={{ width: `${Math.min(100, p)}%` }} /></span></span>;
@@ -227,7 +227,7 @@ function useCelebrate() {
 }
 
 // ------------------------------------------------------------------ motion helpers
-const reduced = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+export const reduced = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 // counts a number up from 0 when it first shows (and from the old value when it changes)
 export function Num({ v, fmt = N }) {
   const target = Number(v) || 0;
@@ -253,7 +253,7 @@ export function Skeleton({ rows = 3 }) {
 
 // ------------------------------------------------------------------ interactive bar chart (svg)
 // items: [{ v, l (axis label), full (tooltip title), sub (tooltip line), onClick }]
-function Bars({ items, label, active, onHover, animKey }) {
+export function Bars({ items, label, active, onHover, animKey }) {
   const [hov, setHov] = useState(null);
   const cur = active ?? hov;
   const set = (i) => { setHov(i); onHover?.(i); };
