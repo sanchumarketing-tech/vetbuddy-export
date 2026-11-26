@@ -606,3 +606,23 @@ html[data-theme="dark"] .rep-t { background: #172a42; color: #e3ecf8; border-col
 html[data-theme="dark"] .rep-t:nth-child(2) { background: #2a2142; color: #ece3fb; }
 html[data-theme="dark"] .rep-t.click { background: #18392f; color: #e9f3ee; } html[data-theme="dark"] .rep-t.click.bad { background: #3e2420; color: #f8d7d0; }
 .mis-hidden { margin: 0 0 10px; font-size: 13px; } .mis-hidden summary { cursor: pointer; color: var(--muted); }
+
+/* 26 Nov 2026: Team today - called vs marked called */
+.cc-num { background: none; border: 0; padding: 2px 6px; border-radius: 6px; color: #1f6fb8; font-weight: 700; cursor: pointer; text-decoration: underline dotted; font: inherit; }
+.cc-num:hover { background: #e8f2fd; }
+.cc-diff { margin-left: 4px; background: #fde8e4; color: #b42318; border: 0; border-radius: 10px; padding: 1px 7px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.cc-diff:hover { background: #f9c9c4; }
+.cc-card { max-width: 1040px; border-top-color: #1f6fb8; }
+.cc-title { margin: 0; font-size: 20px; }
+.cc-sum { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 14px 0 10px; }
+.cc-box { text-align: left; border: 2px solid transparent; border-radius: 12px; padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; font: inherit; transition: transform .15s, border-color .15s; }
+.cc-box:hover { transform: translateY(-2px); } .cc-box.on { border-color: currentColor; }
+.cc-box b { font-size: 24px; } .cc-box span { font-size: 12.5px; } .cc-box small { font-size: 11px; opacity: .75; }
+.cc-box.g { background: #e3f3ea; color: #0f5c4d; } .cc-box.r { background: #fde8e4; color: #b42318; }
+.cc-box.b { background: #e8f2fd; color: #1d4f91; } .cc-box.a { background: #fff1c9; color: #7a5300; }
+.cc-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; } .cc-bar input { margin-left: auto; width: 220px; }
+.cc-list { max-height: 52vh; overflow-y: auto; }
+.cc-yes { color: #0f5c4d; font-weight: 700; } .cc-no { color: #b42318; font-weight: 700; }
+.hp-t tr.cc-gap td { background: #fff5f4; }
+@media (max-width: 760px) { .cc-sum { grid-template-columns: 1fr 1fr; } .cc-bar { flex-wrap: wrap; } .cc-bar input { width: 100%; } }
+.cc-list .hp-t th:nth-child(2), .cc-list .hp-t td:nth-child(2), .cc-list .hp-t th:nth-child(7), .cc-list .hp-t td:nth-child(7), .cc-list .hp-t th:nth-child(8), .cc-list .hp-t td:nth-child(8) { text-align: left; }

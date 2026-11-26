@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { rpc, login, logout, SignedOut } from "./supabase.js";
 import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
+import { CalledCheck } from "./CalledCheck.jsx";
 import { useRepeats, RepeatTiles, RepeatDetails } from "./Repeats.jsx";
 import { AgentDashboard } from "./AgentDash.jsx";
 
@@ -787,6 +788,8 @@ function Team({ day, setDay, openAgent }) {
   const [t, setT] = useState(null);
   const [err, setErr] = useState("");
   const [showReasons, setShowReasons] = useState(false);
+  const [check, setCheck] = useState(null);   // { agent, start }: who was called vs marked called
+  const open = (e, agent, start) => { e.stopPropagation(); setCheck({ agent, start }); };
   const load = useCallback(() => rpc("cd_team", { p_day: day }).then(setT).catch((e) => setErr(e.message)), [day]);
   useEffect(() => { setT(null); load(); }, [load]);
   if (err) return <p className="note warn pad">{err}</p>;
@@ -820,13 +823,18 @@ function Team({ day, setDay, openAgent }) {
             <tr key={a.id} className="click" onClick={() => openAgent(a.id)}>
               <td>{a.name}{!a.active && <span className="muted"> (off)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td>
-              <td>{a.assigned}</td><td>{fmtTime(a.first_call) || "—"}</td><td>{fmtTime(a.last_call) || "—"}</td><td>{a.marked_called}</td><td>{a.rescheduled}</td><td>{a.attempted}</td><td>{a.connected}</td>
+              <td>{a.assigned}</td><td>{fmtTime(a.first_call) || "—"}</td><td>{fmtTime(a.last_call) || "—"}</td>
+              <td>{a.marked_called ? <button className="cc-num" title="See who was marked called" onClick={(e) => open(e, a, "marked")}>{a.marked_called}</button> : 0}
+                {a.marked_called > a.attempted && <button className="cc-diff" title="Marked called but not in the call logs" onClick={(e) => open(e, a, "gap")}>+{a.marked_called - a.attempted}</button>}</td>
+              <td>{a.rescheduled}</td>
+              <td>{a.attempted ? <button className="cc-num" title="See who was called (call logs)" onClick={(e) => open(e, a, "logs")}>{a.attempted}</button> : 0}</td><td>{a.connected}</td>
               <td>{a.assigned ? Math.round((Math.max(a.attempted, a.marked_called) / a.assigned) * 100) : 0}%</td>
             </tr>
           ))}
           {t.unassigned > 0 && <tr className="click" onClick={() => openAgent(0)}><td>Not assigned</td><td /><td>{t.unassigned}</td><td colSpan={8} className="muted">Add agents (Agents tab) and rebuild, or move these rows from the list.</td></tr>}
         </tbody>
       </table>
+      {check && <CalledCheck agent={check.agent} day={day} start={check.start} onClose={() => setCheck(null)} />}
       <h3>By reason</h3>
       <table className="grid">
         <thead><tr><th>Reason</th><th>On lists</th><th>Called</th><th>Answered</th><th>Answer rate</th></tr></thead>
