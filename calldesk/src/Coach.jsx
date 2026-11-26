@@ -119,7 +119,7 @@ export function AttendanceBonus() {
       <h4>Attendance bonus</h4>
       <div className="hp-att-amt"><b>₹500</b> per month</div>
       <p>To get the ₹500 attendance bonus, you should have:</p>
-      <ul><li>No leaves</li><li>Week off on Sunday, Friday and Saturday</li><li>No extra leaves (without approval) during the month</li></ul>
+      <ul><li>No leaves</li><li>No week off on Sunday, Friday and Saturday</li><li>No extra leaves (without approval) during the month</li></ul>
     </div>
   );
 }
