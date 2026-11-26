@@ -258,38 +258,42 @@ function Bars({ items, label, active, onHover, animKey }) {
   const cur = active ?? hov;
   const set = (i) => { setHov(i); onHover?.(i); };
   const max = Math.max(1, ...items.map((p) => p.v));
-  const w = 600 / Math.max(items.length, 1);
+  const tilt = items.length > 12;   // many bars: tilted labels so they don't overlap
+  const H = tilt ? 236 : 200, X0 = tilt ? 70 : 20;
+  const w = (620 - X0) / Math.max(items.length, 1);
   const avg = items.length ? items.reduce((s, p) => s + p.v, 0) / items.length : 0;
   const ay = 150 - Math.round((avg / max) * 130);
   const tip = cur !== null && cur !== undefined && items[cur];
   return (
     <div className="hp-chartwrap" onMouseLeave={() => set(null)}>
-      <svg className="hp-chart" viewBox="0 0 640 200" width="100%" role="img" aria-label={label} key={animKey}>
+      <svg className={"hp-chart" + (tilt ? " tilt" : "")} viewBox={`0 0 640 ${H}`} width="100%" role="img" aria-label={label} key={animKey}>
         <defs>
           <linearGradient id="hpbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1f8a70" /><stop offset="1" stopColor="#1f6fb8" /></linearGradient>
           <linearGradient id="hpbh" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ee2a5f" /><stop offset="1" stopColor="#f2864f" /></linearGradient>
         </defs>
-        {[0.25, 0.5, 0.75, 1].map((g) => <line key={g} x1="20" x2="620" y1={150 - g * 130} y2={150 - g * 130} className="hp-gridline" />)}
+        {[0.25, 0.5, 0.75, 1].map((g) => <line key={g} x1={X0} x2="620" y1={150 - g * 130} y2={150 - g * 130} className="hp-gridline" />)}
         {items.map((p, i) => {
-          const h = Math.max(p.v > 0 ? 2 : 0, Math.round((p.v / max) * 130)), x = 20 + i * w;
+          const h = Math.max(p.v > 0 ? 2 : 0, Math.round((p.v / max) * 130)), x = X0 + i * w;
           const on = cur === i, dim = cur !== null && cur !== undefined && !on;
           return (
             <g key={i} className={"hp-bar" + (on ? " on" : "") + (dim ? " dim" : "") + (p.onClick ? " click" : "")}
               onMouseEnter={() => set(i)} onClick={() => p.onClick?.()} tabIndex={p.onClick ? 0 : -1}
               onFocus={() => set(i)} onBlur={() => set(null)} onKeyDown={(e) => { if (e.key === "Enter" && p.onClick) p.onClick(); }}>
-              <rect className="hit" x={x} y="10" width={w} height="165" fill="transparent" />
+              <rect className="hit" x={x} y="10" width={w} height={tilt ? 200 : 165} fill="transparent" />
               <rect className="b" x={x + w * 0.15} y={150 - h} width={w * 0.7} height={h} rx="3" fill={on ? "url(#hpbh)" : "url(#hpbg)"} style={{ animationDelay: `${Math.min(i * 22, 500)}ms` }} />
               {p.v > 0 && <text className="v" x={x + w / 2} y={144 - h} textAnchor="middle">{p.v}</text>}
-              <text className="l" x={x + w / 2} y="168" textAnchor="middle">{p.l}</text>
+              {tilt
+                ? <text className="l" x={x + w / 2} y="162" textAnchor="end" transform={`rotate(-40 ${x + w / 2} 162)`}>{p.l}</text>
+                : <text className="l" x={x + w / 2} y="168" textAnchor="middle">{p.l}</text>}
             </g>
           );
         })}
-        {items.length > 1 && avg > 0 && <g className="hp-avg"><line x1="20" x2="620" y1={ay} y2={ay} /><text x="622" y={ay + 3}>avg</text></g>}
-        <text x="20" y="192" className="l">{label}</text>
+        {items.length > 1 && avg > 0 && <g className="hp-avg"><line x1={X0} x2="620" y1={ay} y2={ay} /><text x="622" y={ay + 3}>avg</text></g>}
+        <text x={X0} y={H - 6} className="l">{label}</text>
       </svg>
       {tip && (
-        <div className="hp-tip" style={{ left: `${((20 + cur * w + w / 2) / 640) * 100}%` }}>
-          <b>{tip.full || tip.l}</b><span>{tip.v.toLocaleString("en-IN")}{tip.unit ? ` ${tip.unit}` : ""}</span>
+        <div className="hp-tip" style={{ left: `${((X0 + cur * w + w / 2) / 640) * 100}%` }}>
+          <b>{tip.full || tip.l}</b><span>{tip.v.toLocaleString("en-IN")}{tip.unit === "%" ? "%" : tip.unit ? ` ${tip.unit}` : ""}</span>
           {tip.sub && <small>{tip.sub}</small>}
           {tip.onClick && <em>{tip.hint || "Click to open"}</em>}
         </div>
@@ -400,7 +404,7 @@ export function TeamPerformance({ month, setMonth, openAgentIncentive }) {
         <h3 className="hp-h">Agents compared</h3>
         <div className="hp-tabs">{M.map(([k, v]) => <button key={k} className={metric === k ? "on" : ""} onClick={() => setMetric(k)}>{v}</button>)}</div>
         <Bars animKey={metric + team} active={hover !== null && hover < 24 ? hover : null} onHover={setHover}
-          items={sorted.slice(0, 24).map((a) => ({ v: Number(a[metric] || 0), l: a.name.split(/[\s.]+/)[0].slice(0, 9), full: a.name,
+          items={sorted.slice(0, 24).map((a) => ({ v: Number(a[metric] || 0), l: a.name.length > 14 ? a.name.slice(0, 13) + "…" : a.name, full: a.name,
             sub: `${a.department || "No team"} · ${N(a.booked)} booked · ${N(a.visited)} visited · ${rs(a.amount)}`, onClick: () => setAgent(a.id) }))}
           label={sorted.length > 24 ? "Top 24 agents · hover for details, click to open" : "Agent · hover for details, click to open"} />
       </div>
@@ -569,6 +573,139 @@ export function TeamIncentive({ month, setMonth, openAgentIncentive }) {
         </div>
       )}
       {slabsOf(sel) && <IncentivePlan slabs={slabsOf(sel)} dept={teamName(sel)} />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ KPIs (team lead), 26 Nov 2026
+// rows from cd_kpi: one per reason { type, due, attempted, connected, converted, converted_after_call }
+const pct1 = (a, b) => (b ? Math.round((a * 100) / b) : 0);
+export function KpiPage({ types, Chip }) {
+  const t = todayIST();
+  const salaryStart = (() => { const [y, m, d] = t.split("-").map(Number); return new Date(Date.UTC(y, d >= 21 ? m - 1 : m - 2, 21)).toISOString().slice(0, 10); })();
+  const RANGES = [["today", "Today", t, t], ["7", "Last 7 days", addDays(t, -6), t], ["30", "Last 30 days", addDays(t, -29), t], ["cycle", "This salary month", salaryStart, t]];
+  const [range, setRange] = useState("30");
+  const [from, setFrom] = useState(addDays(t, -29));
+  const [to, setTo] = useState(t);
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [metric, setMetric] = useState("due");
+  const [sort, setSort] = useState({ k: "due", d: -1 });
+  const [hover, setHover] = useState(null);
+  const [focus, setFocus] = useState(null);
+  const [showZero, setShowZero] = useState(false);
+  const [help, setHelp] = useState(false);
+  useEffect(() => {
+    let live = true; setRows(null); setErr("");
+    rpc("cd_kpi", { p_from: from, p_to: to }).then((r) => { if (live) setRows(r || []); }).catch((e) => { if (live) setErr(e.message); });
+    return () => { live = false; };
+  }, [from, to]);
+  const pick = (k) => { const r = RANGES.find((x) => x[0] === k); setRange(k); setFrom(r[2]); setTo(r[3]); };
+  const name = (ty) => types[ty]?.name || ty;
+
+  const head = (
+    <>
+      <div className="page-head">
+        <h2>Call KPIs</h2>
+        <div className="hp-range">
+          <input type="date" value={from} max={to} onChange={(e) => { setRange(""); setFrom(e.target.value); }} aria-label="From" />
+          <span className="muted">to</span>
+          <input type="date" value={to} min={from} max={t} onChange={(e) => { setRange(""); setTo(e.target.value); }} aria-label="To" />
+        </div>
+      </div>
+      <div className="hp-tabs">{RANGES.map(([k, v]) => <button key={k} className={range === k ? "on" : ""} onClick={() => pick(k)}>{v}</button>)}</div>
+    </>
+  );
+  if (err) return <div className="page hp hp-fade">{head}<p className="note warn">{err}</p></div>;
+  if (!rows) return <div className="page hp hp-fade">{head}<Skeleton rows={5} /></div>;
+
+  const sum = (k) => rows.reduce((s, r) => s + Number(r[k] || 0), 0);
+  const T = { due: sum("due"), attempted: sum("attempted"), connected: sum("connected"), converted: sum("converted"), after: sum("converted_after_call") };
+  const enriched = rows.map((r) => ({ ...r, calledPct: pct1(r.attempted, r.due), answerPct: pct1(r.connected, r.attempted), convPct: pct1(r.converted, r.due), afterPct: pct1(r.converted_after_call, r.connected) }));
+  const shown = enriched.filter((r) => showZero || r.due > 0 || r.attempted > 0);
+  const sorted = [...shown].sort((a, b) => sort.d * ((a[sort.k] ?? 0) - (b[sort.k] ?? 0)) || a.rank - b.rank);
+  const M = [["due", "Due"], ["attempted", "Called"], ["connected", "Answered"], ["converted", "Converted"], ["calledPct", "Called %"], ["answerPct", "Answer %"], ["convPct", "Converted %"]];
+  const isPct = metric.endsWith("Pct");
+  const chartRows = [...shown].filter((r) => !isPct || r.due >= 10).sort((a, b) => b[metric] - a[metric]).slice(0, 26);
+  // highlights (reasons with enough volume to mean something)
+  const big = enriched.filter((r) => r.attempted >= 20);
+  const best = (k) => [...big].sort((a, b) => b[k] - a[k])[0];
+  const gap = [...enriched].sort((a, b) => (b.due - b.attempted) - (a.due - a.attempted))[0];
+  const bestAns = best("answerPct"), bestConv = best("afterPct");
+  const funnel = [["Due", T.due, null, "#1f6fb8"], ["Called", T.attempted, T.due, "#1f8a70"], ["Answered", T.connected, T.attempted, "#f2a03d"], ["Converted", T.converted, T.due, "#ee2a5f"]];
+  const th = (k, label) => (
+    <th className={"sortable" + (sort.k === k ? " on" : "")} onClick={() => setSort((s) => ({ k, d: s.k === k ? -s.d : -1 }))}>
+      {label}{sort.k === k ? (sort.d < 0 ? " ↓" : " ↑") : ""}
+    </th>
+  );
+  const goRow = (ty) => { setFocus(ty); setTimeout(() => document.getElementById(`hp-kpi-${ty}`)?.scrollIntoView({ behavior: reduced() ? "auto" : "smooth", block: "center" }), 30); };
+
+  return (
+    <div className="page hp hp-fade">
+      {head}
+      <p className="cycle"><strong>{dayLabel(from)}{from !== to ? ` to ${dayLabel(to)}` : ""}</strong> · {shown.length} reasons with calls due</p>
+
+      <div className="hp-funnel">
+        {funnel.map(([l, v, of, c], i) => (
+          <div key={l} className="hp-fstep" style={{ "--c": c }}>
+            <span className="hp-fl">{l}</span>
+            <b><Num v={v} /></b>
+            {of !== null ? <small>{pct1(v, of)}% of {i === 3 ? "due" : funnel[i - 1][0].toLowerCase()}</small> : <small>on the lists</small>}
+            <div className="hp-fbar"><i style={{ width: `${T.due ? Math.max(2, (v * 100) / T.due) : 0}%` }} /></div>
+          </div>
+        ))}
+        <div className="hp-fstep" style={{ "--c": "#6a3fa6" }}>
+          <span className="hp-fl">Converted after an answered call</span>
+          <b><Num v={T.after} /></b>
+          <small>{pct1(T.after, T.connected)}% of answered calls</small>
+          <div className="hp-fbar"><i style={{ width: `${T.connected ? (T.after * 100) / T.connected : 0}%` }} /></div>
+        </div>
+      </div>
+
+      <div className="hp-insights">
+        {bestAns && <button className="hp-ins" onClick={() => goRow(bestAns.type)}><em>Best answer rate</em><b>{name(bestAns.type)}</b><span>{bestAns.answerPct}% of calls answered</span></button>}
+        {bestConv && <button className="hp-ins" onClick={() => goRow(bestConv.type)}><em>Best at converting</em><b>{name(bestConv.type)}</b><span>{bestConv.afterPct}% of answered calls converted</span></button>}
+        {gap && gap.due - gap.attempted > 0 && <button className="hp-ins warn" onClick={() => goRow(gap.type)}><em>Most left to call</em><b>{name(gap.type)}</b><span>{N(gap.due - gap.attempted)} due but not called</span></button>}
+      </div>
+
+      <div className="hp-card">
+        <h3 className="hp-h">By reason</h3>
+        <div className="hp-tabs">{M.map(([k, v]) => <button key={k} className={metric === k ? "on" : ""} onClick={() => setMetric(k)}>{v}</button>)}</div>
+        <Bars animKey={metric + from + to} active={hover} onHover={setHover}
+          items={chartRows.map((r) => ({ v: r[metric], unit: isPct ? "%" : "", l: name(r.type).length > 16 ? name(r.type).slice(0, 15) + "…" : name(r.type), full: name(r.type),
+            sub: `${N(r.due)} due · ${N(r.attempted)} called · ${N(r.connected)} answered · ${N(r.converted)} converted`, hint: "Click to find it in the table", onClick: () => goRow(r.type) }))}
+          label={isPct ? "Reasons with 10 or more due · hover for details" : "Reason · hover for details, click to find it in the table"} />
+      </div>
+
+      <div className="hp-card">
+        <div className="hp-card-head">
+          <h3 className="hp-h">All reasons</h3>
+          <label className="check"><input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} /> Show reasons with nothing due</label>
+        </div>
+        <div className="hp-sc">
+          <table className="hp-t">
+            <thead><tr><th>Reason</th>{th("due", "Due")}{th("attempted", "Called")}{th("connected", "Answered")}{th("converted", "Converted")}{th("calledPct", "Called %")}{th("answerPct", "Answer %")}{th("convPct", "Converted %")}{th("afterPct", "Converted after answered")}</tr></thead>
+            <tbody>
+              <tr className="tot"><td>Total</td><td>{N(T.due)}</td><td>{N(T.attempted)}</td><td>{N(T.connected)}</td><td>{N(T.converted)}</td>
+                <td><PctBar v={T.attempted} d={T.due} /></td><td><PctBar v={T.connected} d={T.attempted} /></td><td><PctBar v={T.converted} d={T.due} /></td><td><PctBar v={T.after} d={T.connected} /></td></tr>
+              {sorted.map((r) => {
+                const ci = chartRows.indexOf(r);
+                return (
+                  <tr key={r.type} id={`hp-kpi-${r.type}`} className={(focus === r.type ? "focus " : "") + (hover !== null && ci === hover ? "hot" : "")}
+                    onMouseEnter={() => setHover(ci >= 0 ? ci : null)} onMouseLeave={() => setHover(null)}>
+                    <td><Chip r={r} /></td><td>{N(r.due)}</td><td>{N(r.attempted)}</td><td>{N(r.connected)}</td><td>{N(r.converted)}</td>
+                    <td><PctBar v={r.attempted} d={r.due} /></td><td><PctBar v={r.connected} d={r.attempted} /></td><td><PctBar v={r.converted} d={r.due} /></td><td><PctBar v={r.converted_after_call} d={r.connected} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="muted small">Click a column title to sort. </p>
+      </div>
+
+      <button className="link" onClick={() => setHelp((h) => !h)}>{help ? "Hide" : "How are these counted?"}</button>
+      {help && <p className="muted small hp-help">Called and answered come from the call logs. Converted = a matching bill for that number within the window (vaccine or consultation for reminders, bath for bath due, haircut for haircut due, review for post-surgery; any bill otherwise; 1 day for appointments, 30 days for win-back, 60 for new pets, 14 for the rest).</p>}
     </div>
   );
 }

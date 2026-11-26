@@ -335,6 +335,7 @@ table.hp-plan-t { width: 100%; border-collapse: collapse; font-size: 14px; text-
 .hp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 14px 0; }
 .hp-card h3.hp-h { margin-top: 0; }
 .hp-chart { display: block; max-width: 760px; max-height: 240px; margin: 0 auto; }
+.hp-chart.tilt { max-height: 300px; }
 .hp-chart text { fill: var(--muted); font-size: 10px; } .hp-chart text.v { fill: var(--ink); }
 .hp-sc { overflow-x: auto; }
 table.hp-t { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 13.5px; }
@@ -394,7 +395,7 @@ table.hp-t { border-collapse: collapse; width: 100%; min-width: 520px; font-size
 .hp-plan-t tr.here td { animation: hp-pulse 1.6s ease-out 2; }
 .hp-toast { animation: hp-toast .3s ease-out both; }
 
-.hp-chartwrap { position: relative; }
+.hp-chartwrap { position: relative; max-width: 760px; margin: 0 auto; }
 .hp-gridline { stroke: var(--line); stroke-dasharray: 2 4; }
 .hp-bar .b { transform-box: fill-box; transform-origin: bottom; animation: hp-grow .6s cubic-bezier(.2,.8,.2,1) both; transition: opacity .15s; }
 .hp-bar.dim .b { opacity: .35; }
@@ -446,3 +447,29 @@ html[data-theme="dark"] .hp-plan-t tr.here td, html[data-theme="dark"] .hp-t tr.
 html[data-theme="dark"] .hp-plan-now { background: #18392f; color: #7fd8c0; }
 html[data-theme="dark"] .hp-t tr.hot td { background: #3a2a1a; }
 html[data-theme="dark"] .hp-t tr.focus td { background: #4a1f2b; }
+
+/* 26 Nov 2026: KPIs page */
+.hp-range { display: flex; align-items: center; gap: 8px; }
+.hp-funnel { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 6px 0 12px; }
+.hp-funnel > * { animation: hp-in .45s ease-out both; }
+.hp-funnel > *:nth-child(2) { animation-delay: .06s; } .hp-funnel > *:nth-child(3) { animation-delay: .12s; } .hp-funnel > *:nth-child(4) { animation-delay: .18s; } .hp-funnel > *:nth-child(5) { animation-delay: .24s; }
+.hp-fstep { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px 14px; border-top: 5px solid var(--c); transition: transform .18s, box-shadow .18s; }
+.hp-fstep:hover { transform: translateY(-3px); box-shadow: 0 8px 18px rgba(0,0,0,.08); }
+.hp-fl { display: block; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.hp-fstep b { display: block; font-size: 28px; color: var(--c); margin: 2px 0; }
+.hp-fstep small { color: var(--muted); }
+.hp-fbar { height: 6px; background: var(--line); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.hp-fbar i { display: block; height: 100%; background: var(--c); border-radius: 3px; animation: hp-fill 1s cubic-bezier(.2,.8,.2,1) both; }
+.hp-insights { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 4px; }
+.hp-ins { text-align: left; border: 0; border-radius: 14px; padding: 12px 14px; cursor: pointer; background: linear-gradient(120deg, #e3f3ea, #fff3d6); color: #16453a; transition: transform .18s, box-shadow .18s; animation: hp-in .45s ease-out both; }
+.hp-ins:hover { transform: translateY(-3px); box-shadow: 0 8px 18px rgba(15, 92, 77, .14); }
+.hp-ins.warn { background: linear-gradient(120deg, #fde8e4, #fff1c9); color: #6b2a1f; }
+.hp-ins em { font-style: normal; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; opacity: .75; }
+.hp-ins b { display: block; font-size: 16px; margin: 2px 0; } .hp-ins span { font-size: 13px; }
+.hp-card-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.hp-card-head h3.hp-h { margin: 0; }
+.hp-t th.sortable { cursor: pointer; user-select: none; } .hp-t th.sortable:hover, .hp-t th.sortable.on { color: #ee2a5f; }
+.hp-help { max-width: 820px; }
+html[data-theme="dark"] .hp-ins { background: linear-gradient(120deg, #18392f, #3d3214); color: #e9f3ee; }
+html[data-theme="dark"] .hp-ins.warn { background: linear-gradient(120deg, #3e2420, #3d3214); color: #f8e3dc; }
+@media (prefers-reduced-motion: reduce) { .hp-funnel > *, .hp-fbar i, .hp-ins { animation: none !important; } .hp-fstep:hover, .hp-ins:hover { transform: none; } }
