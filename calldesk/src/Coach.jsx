@@ -162,7 +162,7 @@ export function IncentivePlan({ slabs, visits, dept }) {
 }
 
 // ------------------------------------------------------------------ agent home
-export function AgentHome({ me, goList, goIncentives }) {
+export function AgentHome({ me, lead, goList, goIncentives, goTeam }) {
   const first = (me.name || "").split(/[\s.]+/)[0] || me.name;
   return (
     <div className="page hp hp-fade">
@@ -171,14 +171,16 @@ export function AgentHome({ me, goList, goIncentives }) {
           <div className="hp-gt">{greeting()}, {first}!</div>
           <div className="muted">{new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · let’s make today count</div>
         </div>
-        <div className="hp-hero-r"><button className="primary" onClick={goList}>Start calling →</button></div>
+        <div className="hp-hero-r">{lead
+          ? <><button className="primary" onClick={goIncentives}>Team performance →</button><button className="link" onClick={goTeam}>Team today</button></>
+          : <button className="primary" onClick={goList}>Start calling →</button>}</div>
       </header>
 
-      <h2 className="hp-h2">My progress this cycle</h2>
+      <h2 className="hp-h2">{lead ? "Team progress this cycle" : "My progress this cycle"}</h2>
       <div className="hp-soon">
         <span className="hp-soon-tag">Coming soon</span>
-        <p>Your visits, incentive so far and how close you are to the next level will show here.</p>
-        <button className="link" onClick={goIncentives}>Meanwhile, see my incentive plan →</button>
+        <p>{lead ? "The team's visits, incentives and who is closest to the next level will show here." : "Your visits, incentive so far and how close you are to the next level will show here."}</p>
+        <button className="link" onClick={goIncentives}>{lead ? "Meanwhile, open Team performance and Team incentive →" : "Meanwhile, see my incentive plan →"}</button>
       </div>
 
       <h2 className="hp-h2">Thought for the day</h2>

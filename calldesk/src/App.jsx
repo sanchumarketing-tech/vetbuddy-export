@@ -1210,7 +1210,7 @@ export default function App() {
 
   const check = useCallback(() => {
     setErr("");
-    rpc("cd_me").then((m) => { setMe(m || null); if (m?.role === "lead") setTab("team"); else setTab("home"); })
+    rpc("cd_me").then((m) => { setMe(m || null); setTab("home"); })
       .catch((e) => { if (e instanceof SignedOut) setMe(null); else { setErr(e.message); setMe(null); } });
   }, []);
   useEffect(() => { check(); }, [check]);
@@ -1234,7 +1234,7 @@ export default function App() {
         <div className="brand"><img className="logo-img" src="/logo.png" alt="Sanchu Animal Hospital" /><span className="brand-sep">Call Desk</span></div>
         {isLead && (
           <nav>
-            {[["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"], ["logs", "Agent logs"]].map(([k, v]) => (
+            {[["home", "Home"], ["team", "Team"], ["list", "Lists"], ["incentives", "Incentives"], ["kpi", "KPIs"], ["agents", "Agents"], ["logs", "Agent logs"]].map(([k, v]) => (
               <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{v}</button>
             ))}
           </nav>
@@ -1262,7 +1262,7 @@ export default function App() {
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}
       {tab === "logs" && isLead && <AgentLogs day={day} setDay={setDay} />}
       {tab === "kpi" && <Kpis />}
-      {tab === "home" && !isLead && <AgentHome me={me} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} />}
+      {tab === "home" && <AgentHome me={me} lead={isLead} goList={() => setTab("list")} goIncentives={() => setTab("incentives")} goTeam={() => setTab("team")} />}
       {tab === "incentives" && (isLead ? <LeadIncentives me={me} /> : <Incentives me={me} />)}
     </div>
   );
