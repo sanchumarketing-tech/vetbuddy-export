@@ -1,0 +1,32 @@
+name: Hand over a reports file (one-off)
+
+# Manual only. Copies one file from the reports OneDrive into calldesk.tmp_export for pick-up in the chat.
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: File path in the reports OneDrive, e.g. Sanchu Reports/Some_File.xlsx
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests xlrd openpyxl "psycopg[binary]"
+      - name: Copy the file
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_CALLLOG_SITE_URL: ${{ vars.SP_CALLLOG_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/sanchureports_sanchu_co_in' }}
+          SP_CALLLOG_LIBRARY: ${{ vars.SP_CALLLOG_LIBRARY || 'Documents' }}
+          FILE_PATH: ${{ inputs.path }}
+        run: python tools/sp_file_to_db.py
