@@ -178,7 +178,17 @@ export function AgentDashboard({ day, setDay, agents = [] }) {
   const from = view === "range" ? rf : day, to = view === "range" ? rt : day;
   const [d, err, reload] = useCalls(from, to);
   const ours = useMemo(() => Object.fromEntries(agents.filter((a) => a.role === "agent").map((a) => [norm(a.name), a.name])), [agents]);
-  const raw = useMemo(() => parse(d, nameList(S.names)), [d, S.names]);
+  // number -> agent matches learned on earlier days are remembered on this computer (typed names in Settings win)
+  const [remembered, setRemembered] = useState(() => { try { return JSON.parse(localStorage.getItem("cd_mis_learned") || "{}"); } catch { return {}; } });
+  const raw = useMemo(() => parse(d, { ...remembered, ...nameList(S.names) }), [d, S.names, remembered]);
+  useEffect(() => {
+    const add = {};
+    Object.entries(raw.learned || {}).forEach(([num, name]) => { const k = num.replace(/\D/g, "").slice(-10); if (remembered[k] !== name) add[k] = name; });
+    if (!Object.keys(add).length) return;
+    const next = { ...remembered, ...add };
+    try { localStorage.setItem("cd_mis_learned", JSON.stringify(next)); } catch { /* ignore */ }
+    setRemembered(next);
+  }, [raw]);
   // keep only our agents, and show them by the name on the Agents list
   const P = useMemo(() => {
     if (!agents.length) return { ...raw, calls: [], cards: [], hidden: [] };
