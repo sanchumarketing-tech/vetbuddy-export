@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc, login, logout, SignedOut } from "./supabase.js";
-import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage } from "./Coach.jsx";
+import { AgentHome, LeadHome, IncentivePlan, TeamPerformance, TeamIncentive, KpiPage, SalaryMonthPicker, salaryLabel } from "./Coach.jsx";
 import { RulesNotice } from "./Notice.jsx";
 import { useBreak, BreakButton, BreakScreen, BreakBar } from "./Break.jsx";
 import { CalledCheck } from "./CalledCheck.jsx";
@@ -1077,9 +1077,9 @@ function Incentives({ me, startAgent = -1, startMonth, ours }) {
             {(d?.departments || ["Sharpshooting", "Inbound", "Social Media", "Chat"]).map((x) => <option key={x} value={x}>{x}</option>)}
           </select></label>
         )}
-        <label className="inline">Salary month <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
+        <SalaryMonthPicker month={month} setMonth={setMonth} />
       </div>
-      {d && <p className="cycle"><strong>{monthName(month)}</strong> salary month: {fmtDate(d.cycle_from)} to {fmtDate(d.cycle_to)}</p>}
+      {d && <p className="cycle">Salary month <strong>{salaryLabel(month)}</strong></p>}
       <p className="muted small">
         <strong>Booked</strong> = appointments booked in VetBuddy by the agent's login whose <strong>appointment date and time</strong> fall in this salary month, 21st to 20th (one per pet).
         <strong> Visited</strong> = that pet was billed in VetBuddy on the appointment date or up to 3 days after.

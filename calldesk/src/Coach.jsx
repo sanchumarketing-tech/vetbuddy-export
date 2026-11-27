@@ -339,7 +339,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const sumBy = (rows, k) => rows.reduce((s, a) => s + Number(a[k] || 0), 0);
 
 function MonthPick({ month, setMonth }) {
-  return <label className="inline">Salary month <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>;
+  return <SalaryMonthPicker month={month} setMonth={setMonth} />;
 }
 
 export function TeamPerformance({ month, setMonth, openAgentIncentive, ours }) {
@@ -367,7 +367,7 @@ export function TeamPerformance({ month, setMonth, openAgentIncentive, ours }) {
       <div className="page hp hp-fade" key="choose">
         {layer}
         {head}
-        <p className="cycle"><strong>{monthName(month)}</strong> salary month: {dayLabel(d.cycle_from)} to {dayLabel(d.cycle_to)} <span className="muted">· latest day may be partial</span></p>
+        <p className="cycle">Salary month <strong>{salaryLabel(month)}</strong> <span className="muted">· latest day may be partial</span></p>
         {top.length > 0 && (<>
           <h3 className="hp-h">Top performers this cycle</h3>
           <p className="muted small">Tap a name to celebrate a winning moment.</p>
@@ -400,7 +400,7 @@ export function TeamPerformance({ month, setMonth, openAgentIncentive, ours }) {
     <div className="page hp hp-fade" key={"t" + team}>
       <button className="link hp-back" onClick={() => setTeam(null)}>← Back</button>
       {head}
-      <p className="cycle"><strong>{monthName(month)}</strong>: {dayLabel(d.cycle_from)} to {dayLabel(d.cycle_to)}</p>
+      <p className="cycle">Salary month <strong>{salaryLabel(month)}</strong></p>
       <TeamTiles rows={rows} />
       <div className="hp-card">
         <h3 className="hp-h">Agents compared</h3>
@@ -532,7 +532,7 @@ export function TeamIncentive({ month, setMonth, openAgentIncentive, ours }) {
   return (
     <div className="page hp hp-fade">
       {head}
-      <p className="cycle"><strong>{monthName(month)}</strong> salary month: {dayLabel(d.cycle_from)} to {dayLabel(d.cycle_to)}</p>
+      <p className="cycle">Salary month <strong>{salaryLabel(month)}</strong></p>
       <div className="hp-sc">
         <table className="hp-t">
           <thead><tr><th>Team</th><th>Agents</th><th>Eligible visits</th><th>Earning incentive</th><th>Team incentive</th><th>Average per agent</th><th>Top earner</th><th>Attendance bonus (max)</th></tr></thead>
@@ -744,7 +744,7 @@ export function LeadHome({ me, goPerf, goTeam, goLogs, ours }) {
         <div className="hp-hero-r"><button className="primary" onClick={goPerf}>Team performance →</button><button className="link" onClick={goTeam}>Team today</button></div>
       </header>
 
-      <h2 className="hp-h2">Team progress this cycle <span className="muted small">{monthName(month)} salary month{d ? ` · ${dayLabel(d.cycle_from)} to ${dayLabel(d.cycle_to)}` : ""}</span></h2>
+      <h2 className="hp-h2">Team progress this cycle <span className="muted small">salary month {salaryLabel(month)}</span></h2>
       {err && <p className="note warn">{err}</p>}
       {!d && !err && <Skeleton rows={3} />}
       {d && (
@@ -799,5 +799,26 @@ export function LeadHome({ me, goPerf, goTeam, goLogs, ours }) {
       <h2 className="hp-h2">Thought for the day</h2>
       <Quote />
     </div>
+  );
+}
+
+// Salary month picker: a salary month runs from the 21st of the previous month to the 20th ("2026-12" = 21 Nov - 20 Dec 2026)
+export function salaryLabel(iso) {
+  const [y, m] = iso.split("-").map(Number);
+  const s = new Date(y, m - 2, 21), e = new Date(y, m - 1, 20);
+  const f = (d) => d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return `${f(s)} – ${f(e)} ${e.getFullYear()}`;
+}
+export function SalaryMonthPicker({ month, setMonth }) {
+  const cur = salaryMonthISO();
+  const opts = [];
+  for (let i = 0; i < 13; i++) { const [y, m] = cur.split("-").map(Number); const d = new Date(y, m - 1 - i, 1); opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }
+  if (!opts.includes(month)) opts.push(month);
+  return (
+    <label className="inline">Salary month
+      <select value={month} onChange={(e) => setMonth(e.target.value)}>
+        {opts.map((o) => <option key={o} value={o}>{salaryLabel(o)}{o === cur ? " (this month)" : ""}</option>)}
+      </select>
+    </label>
   );
 }
