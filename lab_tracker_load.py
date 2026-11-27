@@ -167,7 +167,7 @@ def main():
             log.info("Loaded %d reports (%s to %s, latest report %s)", len(reps), first, today, last)
         cur.execute("select lab.refresh()")
         log.info("Board rebuilt: %s", cur.fetchone()[0])
-        cur.execute("select date_to from vetbuddy.v_data_freshness")
+        cur.execute("select max(sale_date) from vetbuddy.sales")
         vb_to = cur.fetchone()
         if vb_to and vb_to[0] < dt.datetime.now(IST).date() - dt.timedelta(days=1):
             log.warning("VetBuddy data only goes to %s - pets who came yesterday are still on the board.", vb_to[0])
