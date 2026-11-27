@@ -869,6 +869,16 @@ function Agents({ me, agents, depts = [], reload }) {
     try { await rpc("cd_agent_active", { p_id: a.id, p_active: on }); setMsg(`${a.name} is now ${on ? "active" : "inactive"}.`); reload(); }
     catch (e2) { setMsg(e2.message); } finally { setBusy(null); }
   };
+  // delete (re-added 27 Nov 2026): signed out, today's untouched numbers go back; past calls, KPIs and incentives keep the name
+  const remove = async (a) => {
+    setMsg("");
+    if (!window.confirm(`Delete ${a.name}?\n\nThey are signed out and can no longer sign in, and today's numbers on their list go back to the other agents. Their past calls stay in the KPIs, call log and incentives.`)) return;
+    setBusy(a.id);
+    try {
+      await rpc("cd_agent_delete", { p_id: a.id });
+      setMsg(`${a.name} deleted.`); if (f.id === a.id) setF(blank); reload();
+    } catch (e2) { setMsg(e2.message); } finally { setBusy(null); }
+  };
   // week off: no numbers on that day (they can still sign in)
   const [offFor, setOffFor] = useState(null);
   const [offDay, setOffDay] = useState(todayISO());
@@ -917,6 +927,7 @@ function Agents({ me, agents, depts = [], reload }) {
                 <input type="checkbox" checked={!!a.active} disabled={busy === a.id || (a.id === me?.id)} onChange={(e) => setActive(a, e.target.checked)} /> {a.active ? "Active" : <span className="warntext">Inactive</span>}</label></td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
               <td className="nowrap"><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button>
                 {a.role === "agent" && <> · <button className="link" onClick={() => { setOffFor(offFor === a.id ? null : a.id); setOffDay(todayISO()); }} title="Week off: no numbers on that day">Off</button></>}
+                {a.id !== me?.id && <> · <button className="link warntext" disabled={busy === a.id} onClick={() => remove(a)} title="Delete this agent (past calls are kept)">Delete</button></>}
                 {a.off_today && <> <Chip tone="warn">Off today</Chip></>}
                 {(a.off_days || []).filter((d) => d !== todayISO()).map((d) => <span key={d}> <Chip>Off {fmtDay(d)}</Chip></span>)}
                 {offFor === a.id && (
