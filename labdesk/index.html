@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex" />
+<title>Sanchu Lab Follow-up</title>
+<link rel="icon" type="image/png" href="/icon.png" />
+<style>
+  :root { --brand:#0f766e; --brand-soft:#e3f2f0; --ink:#1c1f1e; --mute:#66706d; --line:#e1e6e4; --bg:#f6f8f7; --card:#fff;
+          --red:#c0392b; --red-soft:#fdecea; --green:#1e8a4c; --green-soft:#e6f5ec; --amber:#b7791f; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); background:var(--bg); }
+  button, input, select { font: inherit; }
+  .logo { width:26px; height:26px; border-radius:7px; background:var(--brand); display:inline-block; position:relative; flex:none; }
+  .logo::after { content:""; position:absolute; inset:7px; border:2.5px solid #fff; border-radius:50% 50% 50% 4px; transform:rotate(-45deg); }
+  header { display:flex; align-items:center; gap:10px; padding:10px 16px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header .info { color:var(--mute); font-size:12.5px; display:flex; gap:14px; flex-wrap:wrap; margin-left:auto; align-items:center; }
+  header .info b { color:var(--ink); font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); margin-right:4px; }
+  .dot.old { background:var(--amber); }
+  button.primary { background:var(--brand); color:#fff; border:0; border-radius:8px; padding:9px 16px; font-weight:600; cursor:pointer; }
+  button.ghost { background:none; border:1px solid var(--line); border-radius:8px; padding:5px 10px; cursor:pointer; color:var(--ink); }
+  main { padding:14px 16px 40px; max-width:1400px; margin:0 auto; }
+  .units { display:grid; grid-template-columns:repeat(auto-fill, minmax(235px, 1fr)); gap:10px; margin-bottom:14px; }
+  .unit { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; }
+  .unit.on { border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft); }
+  .unit h3 { margin:0 0 6px; font-size:13px; letter-spacing:.02em; }
+  .unit .nums { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; text-align:center; }
+  .unit .nums div { border-radius:6px; padding:4px 2px; background:var(--bg); }
+  .unit .nums b { display:block; font-size:18px; }
+  .unit .nums small { font-size:10.5px; color:var(--mute); }
+  .unit .nums .r { background:var(--red-soft); } .unit .nums .r b { color:var(--red); }
+  .unit .nums .g { background:var(--green-soft); } .unit .nums .g b { color:var(--green); }
+  .unit .sub { margin-top:6px; font-size:11.5px; color:var(--mute); display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .bar .seg button { border:1px solid var(--line); background:var(--card); padding:5px 10px; cursor:pointer; }
+  .bar .seg button:first-child { border-radius:8px 0 0 8px; } .bar .seg button:last-child { border-radius:0 8px 8px 0; }
+  .bar .seg button + button { border-left:0; }
+  .bar .seg button.on { background:var(--brand-soft); color:var(--brand); border-color:var(--brand); }
+  .bar input[type=search] { border:1px solid var(--line); border-radius:8px; padding:6px 10px; min-width:220px; }
+  .bar label { font-size:13px; color:var(--mute); display:flex; gap:5px; align-items:center; }
+  .bar .count { margin-left:auto; color:var(--mute); font-size:12.5px; }
+  .tw { overflow-x:auto; border-radius:10px; }
+  table { width:100%; border-collapse:separate; border-spacing:0; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--mute); background:#fafbfb; }
+  tr:last-child td { border-bottom:0; }
+  tr.red td:first-child { box-shadow:inset 4px 0 0 var(--red); }
+  tr.green td:first-child { box-shadow:inset 4px 0 0 var(--green); }
+  tr.green { background:var(--green-soft); }
+  .phone { font-weight:700; font-size:15px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tr.red .phone a { color:var(--red); } tr.green .phone a { color:var(--green); }
+  .phone a { text-decoration:none; }
+  .pill { display:inline-block; font-size:11px; padding:1px 7px; border-radius:99px; background:var(--bg); border:1px solid var(--line); margin:1px 2px 1px 0; white-space:nowrap; }
+  .pill.new { background:#fff6e0; border-color:#f1d39a; color:#8a5a00; }
+  .pill.g { background:var(--green-soft); border-color:#b9e3c9; color:var(--green); }
+  .pill.r { background:var(--red-soft); border-color:#f3c5bf; color:var(--red); }
+  .mute { color:var(--mute); font-size:12px; }
+  .tests { max-width:320px; font-size:12.5px; }
+  .empty { padding:40px; text-align:center; color:var(--mute); background:var(--card); border:1px dashed var(--line); border-radius:10px; }
+  .warn { background:#fff6e0; border:1px solid #f1d39a; color:#7a4f00; padding:8px 12px; border-radius:8px; margin-bottom:10px; font-size:13px; }
+  .login { max-width:340px; margin:12vh auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; }
+  .login h2 { margin:10px 0 4px; font-size:18px; } .login p { margin:0 0 16px; color:var(--mute); font-size:13px; }
+  .login input { width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 10px; margin-bottom:10px; }
+  .login button { width:100%; } .login .err { color:var(--red); font-size:13px; min-height:18px; margin-bottom:6px; }
+  .help { font-size:12.5px; color:var(--mute); margin-top:16px; line-height:1.6; }
+  @media (max-width: 760px) { .hide-m { display:none; } td, th { padding:7px 6px; } .phone { font-size:14px; } header { position:static; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const S = { board: null, runo: { calls: {} }, unit: "ALL", show: "all", newOnly: false, q: "", timers: [] };
+
+function fmtDate(d) {
+  if (!d) return "";
+  const x = new Date(d + "T00:00:00");
+  return x.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+function daysSince(d, today) { return Math.round((new Date(today + "T00:00:00") - new Date(d + "T00:00:00")) / 864e5); }
+function title(s) { return String(s || "").toLowerCase().replace(/\b\w/g, c => c.toUpperCase()); }
+
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify(body || {}) });
+  if (r.status === 401) { stop(); showLogin(); throw new Error("signed out"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.message || ("Error " + r.status));
+  return j;
+}
+
+/* ---------------------------------------------------------------- login */
+function showLogin(msg) {
+  $("#app").innerHTML = `
+    <form class="login" id="lf">
+      <span class="logo"></span>
+      <h2>Lab Follow-up</h2>
+      <p>Sign in with your Call Desk name / email and PIN.</p>
+      <input id="u" placeholder="Name or email" autocomplete="username" required>
+      <input id="p" placeholder="PIN" type="password" inputmode="numeric" autocomplete="current-password" required>
+      <div class="err">${esc(msg || "")}</div>
+      <button class="primary" type="submit">Sign in</button>
+    </form>`;
+  $("#lf").onsubmit = async e => {
+    e.preventDefault();
+    const btn = $("#lf button"); btn.disabled = true;
+    try {
+      const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ user: $("#u").value, pin: $("#p").value }) });
+      const j = await r.json().catch(() => ({}));
+      if (!j.ok) { $(".login .err").textContent = j.msg || "Could not sign in."; btn.disabled = false; return; }
+      start();
+    } catch (err) { $(".login .err").textContent = "Could not sign in. Try again."; btn.disabled = false; }
+  };
+}
+async function logout() { stop(); await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); showLogin(); }
+
+/* ---------------------------------------------------------------- data */
+async function loadBoard() {
+  S.board = await api("/api/rpc", { fn: "lf_board" });
+  await loadRuno();
+}
+async function loadRuno() {
+  if (!S.board) return;
+  const phones = [...new Set(S.board.rows.map(r => r.phone).filter(Boolean))];
+  try { S.runo = await api("/api/runo", { phones }); } catch (e) { if (e.message !== "signed out") S.runo = { ...S.runo, error: e.message }; }
+  render();
+}
+function stop() { S.timers.forEach(clearInterval); S.timers = []; }
+async function start() {
+  stop();
+  $("#app").innerHTML = `<div class="empty">Loading…</div>`;
+  try { await loadBoard(); } catch (e) { if (e.message !== "signed out") $("#app").innerHTML = `<div class="empty">Could not load the board: ${esc(e.message)}</div>`; return; }
+  S.timers.push(setInterval(loadRuno, 120000));        // today's calls: every 2 minutes
+  S.timers.push(setInterval(loadBoard, 30 * 60000));    // the list itself changes once a day
+}
+
+/* ---------------------------------------------------------------- view */
+function today_calls(r) { return (r.phone && S.runo.calls && S.runo.calls[r.phone]) || []; }
+
+function render() {
+  const b = S.board; if (!b) return;
+  const rows = b.rows.map(r => ({ ...r, today: today_calls(r) }));
+  const yday = new Date(new Date(b.today + "T00:00:00Z") - 864e5).toISOString().slice(0, 10);
+  const units = b.units.map(u => {
+    const ur = rows.filter(r => r.unit === u.unit);
+    return { ...u, green: ur.filter(r => r.today.length).length, red: ur.filter(r => !r.today.length).length };
+  });
+  const tot = units.reduce((a, u) => ({ yesterday: a.yesterday + u.yesterday, open: a.open + u.open, green: a.green + u.green,
+    red: a.red + u.red, back_yday: a.back_yday + u.back_yday, back_7d: a.back_7d + u.back_7d }),
+    { yesterday: 0, open: 0, green: 0, red: 0, back_yday: 0, back_7d: 0 });
+
+  let list = rows.filter(r => S.unit === "ALL" || r.unit === S.unit);
+  if (S.newOnly) list = list.filter(r => r.last_report === yday);
+  if (S.show === "red") list = list.filter(r => !r.today.length);
+  if (S.show === "green") list = list.filter(r => r.today.length);
+  if (S.q) { const q = S.q.toLowerCase(); list = list.filter(r => [r.pet_name, r.client_name, r.phone, r.client_id, r.tests].join(" ").toLowerCase().includes(q)); }
+  list.sort((a, c) => (a.today.length > 0) - (c.today.length > 0) || (a.unit || "").localeCompare(c.unit || "") || a.last_report.localeCompare(c.last_report));
+
+  const vbOld = b.vetbuddy_to && daysSince(b.vetbuddy_to, b.today) > 1;
+  const trOld = b.tracker_last && daysSince(b.tracker_last, b.today) > 2;
+  const runoOk = !S.runo.error;
+
+  const card = u => `
+    <div class="unit ${S.unit === u.unit ? "on" : ""}" data-unit="${esc(u.unit)}">
+      <h3>${esc(u.unit === "ALL" ? "All units" : title(u.unit))}</h3>
+      <div class="nums">
+        <div><b>${u.yesterday}</b><small>Yesterday's reports</small></div>
+        <div class="r"><b>${u.red}</b><small>Not called</small></div>
+        <div class="g"><b>${u.green}</b><small>Called today</small></div>
+      </div>
+      <div class="sub"><span>On list: <b>${u.open}</b></span><span>Came back: <b>${u.back_yday}</b> yesterday · ${u.back_7d} in 7 d</span></div>
+    </div>`;
+
+  $("#app").innerHTML = `
+    <header>
+      <span class="logo"></span><h1>Lab Abnormal Follow-up</h1>
+      <div class="info">
+        <span><span class="dot ${runoOk ? "" : "old"}"></span>Runo calls checked <b>${esc(S.runo.checked || "—")}</b></span>
+        <span>VetBuddy visits to <b>${fmtDate(b.vetbuddy_to)}</b></span>
+        <span>Lab tracker to <b>${fmtDate(b.tracker_last)}</b></span>
+        <span>${esc(b.me.name)}</span>
+        <button class="ghost" id="refresh" title="Check Runo again now">↻</button>
+        <button class="ghost" id="csv">Download</button>
+        <button class="ghost" id="out">Sign out</button>
+      </div>
+    </header>
+    <main>
+      ${S.runo.error ? `<div class="warn">${esc(S.runo.error)} — colours show the last check.</div>` : ""}
+      ${vbOld ? `<div class="warn">VetBuddy data only goes to ${fmtDate(b.vetbuddy_to)} — pets who came back after that are still on the list.</div>` : ""}
+      ${trOld ? `<div class="warn">The Lab Test Tracker's latest abnormal report is ${fmtDate(b.tracker_last)} — yesterday's reports may not be in yet.</div>` : ""}
+      <div class="units">${units.length > 1 ? card({ unit: "ALL", ...tot }) : ""}${units.map(card).join("")}</div>
+      <div class="bar">
+        <div class="seg">
+          <button data-show="all" class="${S.show === "all" ? "on" : ""}">All</button>
+          <button data-show="red" class="${S.show === "red" ? "on" : ""}">Not called today</button>
+          <button data-show="green" class="${S.show === "green" ? "on" : ""}">Called today</button>
+        </div>
+        <label><input type="checkbox" id="newonly" ${S.newOnly ? "checked" : ""}> Yesterday's reports only</label>
+        <input type="search" id="q" placeholder="Search pet, client, phone, test" value="${esc(S.q)}">
+        <span class="count">${list.length} pet${list.length === 1 ? "" : "s"}</span>
+      </div>
+      ${list.length ? `<div class="tw"><table>
+        <thead><tr><th>Phone</th><th>Pet / client</th><th class="hide-m">Unit</th><th>Abnormal report</th><th class="hide-m">Tests</th><th>Calls before today</th><th>Today (Runo)</th></tr></thead>
+        <tbody>${list.map(r => row(r, b.today, yday)).join("")}</tbody></table></div>`
+      : `<div class="empty">${b.rows.length ? "Nothing here with these filters." : "No pets on the list."}</div>`}
+      <div class="help">
+        <b>Red</b> = not called today. It turns <b>green</b> within about 2 minutes of a Runo outgoing call to the number (any Runo line).
+        Every morning the colours start red again. A pet leaves the list the morning after its next VetBuddy bill (same client and pet) after the report date.
+        The list holds abnormal reports from ${fmtDate(b.start_date)} on.
+      </div>
+    </main>`;
+
+  document.querySelectorAll(".unit").forEach(el => el.onclick = () => { S.unit = el.dataset.unit; render(); });
+  document.querySelectorAll("[data-show]").forEach(el => el.onclick = () => { S.show = el.dataset.show; render(); });
+  $("#newonly").onchange = e => { S.newOnly = e.target.checked; render(); };
+  const q = $("#q"); q.oninput = () => { S.q = q.value; const p = q.selectionStart; render(); const n = $("#q"); n.focus(); n.setSelectionRange(p, p); };
+  $("#out").onclick = logout;
+  $("#refresh").onclick = loadRuno;
+  $("#csv").onclick = () => download(list, b.today);
+}
+
+function row(r, today, yday) {
+  const green = r.today.length > 0;
+  const age = daysSince(r.last_report, today);
+  const before = r.calls_before
+    ? `${r.calls_before} call${r.calls_before > 1 ? "s" : ""} · ${r.answered_before} answered<div class="mute">last ${esc(fmtDate(String(r.last_call_at).slice(0, 10)))}${r.last_call_by ? " · " + esc(r.last_call_by) : ""}</div>`
+    : `<span class="pill r">never called</span>`;
+  const todayCell = green
+    ? r.today.map(c => `<span class="pill ${c.ok ? "g" : ""}">${esc(c.t)} ${esc(c.by)} · ${c.ok ? Math.round(c.secs / 60 * 10) / 10 + " min" : "not answered"}</span>`).join("")
+    : `<span class="mute">not called yet</span>`;
+  return `<tr class="${green ? "green" : "red"}">
+    <td class="phone">${r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : `<span class="mute">no phone</span>`}</td>
+    <td><b>${esc(title(r.pet_name))}</b><div class="mute">${esc(title(r.client_name) || "")} · ${esc(r.vb_key)}</div></td>
+    <td class="hide-m">${esc(title(r.unit))}</td>
+    <td>${esc(fmtDate(r.last_report))} ${r.last_report === yday ? `<span class="pill new">yesterday</span>` : `<span class="mute">${age} days</span>`}
+        ${r.n_reports > 1 ? `<div class="mute">${r.n_reports} reports since ${esc(fmtDate(r.first_report))}</div>` : ""}
+        ${r.remarks ? `<div class="mute">${esc(r.remarks)}</div>` : ""}</td>
+    <td class="tests hide-m">${esc(r.tests || "")}</td>
+    <td>${before}</td>
+    <td>${todayCell}</td>
+  </tr>`;
+}
+
+function download(list, today) {
+  const head = ["Unit", "Phone", "Pet", "Client", "VetBuddy ID", "Report date", "Reports", "Tests", "Calls before today", "Answered before", "Last call", "Last call by", "Called today", "Today's calls"];
+  const lines = [head].concat(list.map(r => [title(r.unit), r.phone, r.pet_name, r.client_name, r.vb_key, r.last_report, r.n_reports, r.tests,
+    r.calls_before, r.answered_before, r.last_call_at || "", r.last_call_by || "", r.today.length ? "Yes" : "No",
+    r.today.map(c => `${c.t} ${c.by} ${c.ok ? "answered" : "not answered"}`).join("; ")]));
+  const csv = lines.map(l => l.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" }));
+  a.download = `Lab_Followup_${today}.csv`; a.click();
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.board) loadRuno(); });
+start();
+</script>
+</body>
+</html>
