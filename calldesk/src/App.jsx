@@ -852,7 +852,7 @@ function Team({ day, setDay, openAgent }) {
 const UNITS = ["ADYAR", "ANNA NAGAR", "NEELANGARAI", "VELACHERY", "VALASARAVAKKAM", "CH VET ON WHEELS", "COIMBATORE", "CBE VET ON WHEELS", "MADURAI", "MADURAI VET ON WHEELS", "TRICHY"];
 
 function Agents({ me, agents, depts = [], reload }) {
-  const blank = { id: null, email: "", name: "", role: "agent", department: "Sharpshooting", units: [], target: 200, active: true, pin: "" };
+  const blank = { id: null, email: "", name: "", role: "agent", department: "Sharpshooting", units: [], target: 200, active: true, pin: "", ids: "" };
   const [f, setF] = useState(blank);
   const [msg, setMsg] = useState("");
   const [fDept, setFDept] = useState("");   // filters: "" = all, "-" = none / Any
@@ -894,6 +894,9 @@ function Agents({ me, agents, depts = [], reload }) {
     e.preventDefault(); setMsg("");
     try {
       await rpc("cd_agent_save", { p_id: f.id ?? null, p_email: f.email, p_name: f.name, p_role: f.role, p_units: f.units, p_target: Number(f.target), p_active: f.active, p_pin: f.pin || null, p_department: f.department || "" });   // p_id: an edit updates that agent, even if the name or email changes
+      // 27 Nov 2026: their Corefactor number(s) / Runo line(s) for the Agent dashboard
+      const had = (agents.find((x) => x.id === f.id)?.call_ids || []).join(", ");
+      if (f.role === "agent" && (f.ids || "") !== had) await rpc("cd_agent_ids", { p_id: f.id ?? null, p_ids: f.ids || "", p_email: f.email });
       setMsg(`Saved ${f.name}.` + (f.pin ? ` New PIN set - they sign in with "${f.name}" or ${f.email.toLowerCase()} and that PIN.` : "")); setF(blank); reload();
     } catch (e2) { setMsg(e2.message); }
   };
@@ -920,12 +923,12 @@ function Agents({ me, agents, depts = [], reload }) {
           {shown.length === 0 && <tr><td colSpan={9} className="muted">No agents match these filters.</td></tr>}
           {shown.map((a) => (
             <tr key={a.id}>
-              <td>{a.name}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
+              <td>{a.name}{a.call_ids?.length ? <div className="muted small">{a.call_ids.join(", ")}</div> : null}</td><td className="muted">{a.email}</td><td>{a.role === "lead" ? "Team lead" : "Agent"}</td>
               <td>{a.department || <span className="muted">–</span>}{a.department && !a.calls && <span className="muted small"> (no calls yet)</span>}</td>
               <td className="muted">{a.units?.length ? a.units.map(title).join(", ") : "Any"}</td><td>{a.target}</td>
               <td><label className="check" title={a.active ? "Active: can sign in and gets numbers" : "Inactive: cannot sign in, gets no numbers"}>
                 <input type="checkbox" checked={!!a.active} disabled={busy === a.id || (a.id === me?.id)} onChange={(e) => setActive(a, e.target.checked)} /> {a.active ? "Active" : <span className="warntext">Inactive</span>}</label></td><td>{a.has_pin ? "Set" : <span className="warntext">Not set</span>}</td>
-              <td className="nowrap"><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "" })}>Edit</button>
+              <td className="nowrap"><button className="link" onClick={() => setF({ id: a.id, email: a.email, name: a.name, role: a.role, department: a.department || "", units: a.units || [], target: a.target, active: a.active, pin: "", ids: (a.call_ids || []).join(", ") })}>Edit</button>
                 {a.role === "agent" && <> · <button className="link" onClick={() => { setOffFor(offFor === a.id ? null : a.id); setOffDay(todayISO()); }} title="Week off: no numbers on that day">Off</button></>}
                 {a.id !== me?.id && <> · <button className="link warntext" disabled={busy === a.id} onClick={() => remove(a)} title="Delete this agent (past calls are kept)">Delete</button></>}
                 {a.off_today && <> <Chip tone="warn">Off today</Chip></>}
@@ -954,6 +957,7 @@ function Agents({ me, agents, depts = [], reload }) {
             {depts.map((d) => <option key={d.name} value={d.name}>{d.name}{d.calls ? "" : " (no calls yet)"}</option>)}
           </select></label>
           <label>Daily target<input type="number" min={0} max={1000} value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></label>
+          {f.role === "agent" && <label title="Corefactor sends only the caller's number, and Runo the line's name. Give each agent theirs so the Agent dashboard shows their calls. Several: separate with commas.">Corefactor number / Runo line<input value={f.ids || ""} placeholder="e.g. 9876543210, Sanchu Backend Sales" onChange={(e) => setF({ ...f, ids: e.target.value })} /></label>}
           <label>{f.id != null ? "New PIN (leave empty to keep)" : "PIN (4 to 8 digits)"}<input inputMode="numeric" pattern="[0-9]*" maxLength={8} value={f.pin}
             onChange={(e) => setF({ ...f, pin: e.target.value.replace(/\D/g, "") })} required={f.id == null} /></label>
           <label className="check"><input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</label>
@@ -1256,7 +1260,7 @@ export default function App() {
   const [agents, setAgents] = useState([]);
   const [depts, setDepts] = useState([]);   // departments: [{ name, calls }]
   const [err, setErr] = useState("");
-  const brk = useBreak(me?.role === "agent");   // agents: Break button and break screen
+  const brk = useBreak(!!me);   // everyone (agents and team leads): Break button and break screen
 
   const check = useCallback(() => {
     setErr("");
@@ -1297,7 +1301,7 @@ export default function App() {
             ))}
           </nav>
         )}
-        <div className="who">{!isLead && <BreakButton brk={brk} />}<span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
+        <div className="who"><BreakButton brk={brk} /><span>{me.name}</span><button className="link" onClick={out}>Sign out</button></div>
         {isLead && tab === "list" && (
           <select className="agentpick" title="Whose list" value={agentId} onChange={(e) => setAgentId(Number(e.target.value))}>
             <option value={-1}>Everyone</option>
@@ -1310,7 +1314,7 @@ export default function App() {
       <RulesNotice me={me} />
       {isLead && <LeadAlerts />}
       {isLead && <BreakBar />}
-      {!isLead && brk.b?.on_break ? <BreakScreen brk={brk} name={me.name} /> : <>
+      {brk.b?.on_break ? <BreakScreen brk={brk} name={me.name} /> : <>
       {tab === "list" && <CallList me={me} agentId={isLead ? agentId : me.id} agents={agents} day={day} setDay={setDay} />}
       {tab === "team" && <Team day={day} setDay={setDay} openAgent={openAgent} />}
       {tab === "agents" && <Agents me={me} agents={agents} depts={depts} reload={loadAgents} />}

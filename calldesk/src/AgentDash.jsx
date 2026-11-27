@@ -197,7 +197,12 @@ export function AgentDashboard({ day, setDay, agents = [] }) {
     const hidden = [...new Set([...raw.calls, ...raw.cards].filter((x) => !ours[norm(x.agent)]).map((x) => x.agent))];
     return { ...raw, calls, cards, hidden };
   }, [raw, ours, agents.length]);
-  const names = useMemo(() => displayNames(P.calls, P.cards), [P]);
+  // every active agent on the Agents list is shown, even with no calls yet (27 Nov 2026)
+  const names = useMemo(() => {
+    const m = displayNames(P.calls, P.cards);
+    agents.filter((a) => a.role === "agent" && a.active).forEach((a) => { m[keyName(a.name)] = m[keyName(a.name)] || a.name; });
+    return m;
+  }, [P, agents]);
   const agentKeys = Object.keys(names).sort((a, b) => names[a].localeCompare(names[b]));
 
   return (
@@ -254,7 +259,7 @@ export function AgentDashboard({ day, setDay, agents = [] }) {
           <li><b>RNR</b> = an outbound call the customer didn’t answer. Ring time = Corefactor (Smartflo) “Total Time”. The splits below {S.shortRnr}, {S.veryShortRnr} and {S.shortestRnr} seconds count Corefactor calls only; where there is no Corefactor ring time they show <b>NA</b>.</li>
           <li><b>Agent didn’t pick up</b> = “Unanswered (Agent)” / “Unreachable (Agent)”: the call never reached the customer. Counted separately, not as RNR.</li>
           <li><b>Calling time</b> = ring + talk time of every outbound call and answered incoming call. <b>Connect %</b> = answered ÷ outbound calls.</li>
-          <li><b>Agent names</b>: Corefactor (Smartflo) sends the agent’s number. The dashboard matches a number to an agent when that agent opened the customer in the Call Desk just before the call (at least 3 calls, 80% agreement). Numbers that can’t be matched are shown as numbers.</li>
+          <li><b>Agent names</b>: Corefactor (Smartflo) sends the agent’s number. The dashboard matches a number to an agent when that agent opened the customer in the Call Desk just before the call (at least 3 calls, 80% agreement). Numbers that can’t be matched are shown as numbers. Agents who don’t open customers in the Call Desk (VOW, Incoming, Chat…) are matched by the Corefactor number / Runo line set for them in Agents.</li>
           <li><b>New lead</b> = the first outbound call ever made to that number in the Call Desk’s call history.</li>
           <li><b>Time on customers</b> = how long the agent kept each customer open in the Call Desk (from opening the customer until they open the next one or leave the page; a card left open more than 3 hours counts as 3 hours).</li>
           <li>Red = break time without lunch over {S.flagBreakMin} min, or more than {S.flagShortShare}% of RNR calls under {S.shortRnr} seconds.</li>
@@ -291,7 +296,7 @@ function DayView({ P, names, who, setWho, S, day, loadedTo }) {
   const [sort, setSort] = useState({ k: "calls", d: -1 });
   const calls = P.calls.filter((c) => c.day === day), cards = P.cards.filter((c) => c.day === day);
   const byC = groupBy(calls, (c) => keyName(c.agent)), byK = groupBy(cards, (c) => keyName(c.agent));
-  const keys = [...new Set([...Object.keys(byC), ...Object.keys(byK)])].filter((k) => !who || k === who);
+  const keys = [...new Set([...Object.keys(byC), ...Object.keys(byK), ...Object.keys(names)])].filter((k) => !who || k === who);
   const rows = keys.map((k) => ({ k, name: names[k] || k, ...stats(byC[k] || [], byK[k] || [], S, { day, loadedTo }) }));
   const team = stats(keys.flatMap((k) => byC[k] || []), keys.flatMap((k) => byK[k] || []), S, {});
   const sorted = [...rows].sort((a, b) => sort.d * ((a[sort.k] ?? -1) - (b[sort.k] ?? -1)) || a.name.localeCompare(b.name));
@@ -443,7 +448,7 @@ function Timeline({ calls, cards, breaks, day }) {
 function RangeView({ P, names, who, S }) {
   const [sort, setSort] = useState({ k: "calls", d: -1 });
   const byC = groupBy(P.calls, (c) => keyName(c.agent)), byK = groupBy(P.cards, (c) => keyName(c.agent));
-  const keys = [...new Set([...Object.keys(byC), ...Object.keys(byK)])].filter((k) => !who || k === who);
+  const keys = [...new Set([...Object.keys(byC), ...Object.keys(byK), ...Object.keys(names)])].filter((k) => !who || k === who);
   // breaks are counted day by day, then added up
   const rows = keys.map((k) => {
     const cd = groupBy(byC[k] || [], (c) => c.day), kd = groupBy(byK[k] || [], (c) => c.day);
