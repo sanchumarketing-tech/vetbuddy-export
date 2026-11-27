@@ -1,0 +1,46 @@
+name: Lab Follow-up web app
+
+# Publishes the Lab Abnormal Follow-up board (labdesk/) on Vercel as its own project, next to the Call Desk.
+# Runs when the app's code changes on main, or by hand. Uses the same VERCEL_TOKEN secret as the Call Desk.
+# Optional variables: VERCEL_SCOPE (team slug), LABDESK_PROJECT (default "sanchu-labdesk").
+# No build step: a static page + Python functions (same login as the Call Desk).
+
+on:
+  push:
+    branches: [main]
+    paths: ["labdesk/**", ".github/workflows/labdesk-web.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: labdesk-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Publish on Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_SCOPE: ${{ vars.VERCEL_SCOPE }}
+          PROJECT: ${{ vars.LABDESK_PROJECT || 'sanchu-labdesk' }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then echo "::error::Add the VERCEL_TOKEN repository secret to publish on Vercel."; exit 1; fi
+          mkdir -p "../$PROJECT" && cp -r labdesk/. "../$PROJECT/"
+          cd "../$PROJECT"
+          scope=""; if [ -n "$VERCEL_SCOPE" ]; then scope="--scope $VERCEL_SCOPE"; fi
+          npx --yes vercel@65.2.0 --version >/dev/null
+          url=""
+          for try in 1 2 3; do
+            url=$(timeout 240 npx --yes vercel@65.2.0 deploy --prod --yes --token "$VERCEL_TOKEN" $scope) && break
+            echo "Vercel try $try did not finish - trying again"; url=""
+          done
+          [ -n "$url" ] || { echo "Vercel did not publish after 3 tries"; exit 1; }
+          echo "Published: $url"
+          echo "### Lab Follow-up published" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url  (production address: https://$PROJECT.vercel.app)" >> "$GITHUB_STEP_SUMMARY"

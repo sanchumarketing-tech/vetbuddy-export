@@ -1,0 +1,57 @@
+name: Lab abnormal follow-up board
+
+# Every morning, after VetBuddy (06:47) and Runo (07:13): the Lab Test Tracker (SharePoint) -> lab.reports,
+# then the board is rebuilt (pets that came back to VetBuddy leave it). Runs again at 09:47 in case
+# VetBuddy or the tracker was late - running twice is harmless. See lab_tracker_load.py.
+# The tracker: Lab Test Tracker.xlsx in Shenbagaraj's OneDrive (found by name; set the repository variable
+# SP_LAB_PATH to its path, or SP_LAB_SITE_URL to another OneDrive / site, to change that).
+
+on:
+  schedule:
+    # Times are UTC (IST = UTC + 5:30). GitHub may start a few minutes late.
+    - cron: "47 2 * * *"    # 08:17 AM IST
+    - cron: "17 4 * * *"    # 09:47 AM IST
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days back to reload from the tracker"
+        required: false
+        default: "45"
+      refresh_only:
+        description: "Only rebuild the board (don't read the tracker)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: lab-followup
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests openpyxl "psycopg[binary]"
+      - name: Tracker -> board
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_LAB_SITE_URL: ${{ vars.SP_LAB_SITE_URL || 'https://sanchuhospital-my.sharepoint.com/personal/shenbagaraj_sanchu_co_in' }}
+          SP_LAB_LIBRARY: ${{ vars.SP_LAB_LIBRARY || 'Documents' }}
+          SP_LAB_PATH: ${{ vars.SP_LAB_PATH }}
+          SP_LAB_FILE: ${{ vars.SP_LAB_FILE || 'Lab Test Tracker.xlsx' }}
+          SP_LAB_SHEET: ${{ vars.SP_LAB_SHEET }}
+          IN_DAYS: ${{ inputs.days || '45' }}
+          IN_REFRESH_ONLY: ${{ inputs.refresh_only }}
+        run: |
+          if [ "$IN_REFRESH_ONLY" = "true" ]; then
+            python lab_tracker_load.py --refresh-only
+          else
+            python lab_tracker_load.py --days "$IN_DAYS"
+          fi
