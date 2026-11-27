@@ -84,6 +84,7 @@ GitHub may start a scheduled run 5–20 minutes late. The month-to-date runs (Ve
 07:23  Appointment Status (yesterday) ─► "Appointment Status.xlsx" Sheet1 + archive + database
 08:15  Gofrugal retry (try 2 of 2): only if the Gofrugal file is still missing
 07:40  Corefactor from the database (webhook pushes ─► archive + call log master; skips days already there)
+         └ right after it: Corefactor call logs ─► MIS Upload Hub ─► Calling MIS + SM Calling sheets (calls up to yesterday)
 07:47  Reminder calls check (VetBuddy reminders vs call logs) + database
 07:55  Apps Script: email IT + data analyst if Gofrugal is still not synced
 08:05  Call Desk: build today's call lists in the database
@@ -113,6 +114,8 @@ GitHub may start a scheduled run 5–20 minutes late. The month-to-date runs (Ve
 | `corefactor_leadbox_api.py` | Corefactor Lead Box through the Lead API (API key) – the current Lead Box job |
 | `graph_excel.py` | Writes new rows straight into a big Excel master through Microsoft Graph (no download/upload) – used by the Lead Box job |
 | `corefactor_from_db.py` | Turns the Corefactor webhook pushes stored in the database into the daily archive file + master rows |
+| `corefactor_to_hub.py` | Sends the day's Corefactor call log (from the Call Log Archive) to the MIS Upload Hub; `--from/--to` for old days |
+| `send_to_hub.py` | Posts report files to the MIS Upload Hub (used by the VetBuddy and Corefactor hub jobs) |
 | `corefactor_leadbox_export.py` | Old Lead Box job (session id) – its workflow is disabled |
 | `runo_calllogs_export.py` | Runo call logs through Runo's API |
 | `vetbuddy_appointments_export.py` | VetBuddy Appointment Status (uses the VetBuddy login and SharePoint code of `vetbuddy_sales_export.py`) |
@@ -264,6 +267,14 @@ Corefactor pushes every call to a Supabase Edge Function. Vercel is not involved
     (same phone within ±3 minutes).
 - **Workflow *Corefactor from the database* (7:40 AM)** writes yesterday's pushes to the Call Log Archive file and
   the call log master. It skips any day the session-id job already added, so both can run side by side.
+- **Workflow *Corefactor call logs to MIS Upload Hub*** (27 Nov 2026) starts by itself each time *Corefactor from the
+  database* succeeds. It takes yesterday's `Corefactor_CallLogs_<day>` file from the Call Log Archive (the same rows as
+  Backend Call Log Report.xlsx) and posts it to the MIS Upload Hub (secrets `HUB_URL`, `HUB_KEY`, same as *VetBuddy to MIS
+  Upload Hub*). The hub passes it to every MIS on its call-log "Send to" list - today the **Calling MIS** and the
+  **SM Calling sheets** - which pick it up within 5-15 minutes. So the MIS sheets have Corefactor calls up to yesterday
+  (no live feed, by choice). Old days: Actions → *Corefactor call logs to MIS Upload Hub* → Run workflow → **From** /
+  **To** (one day per send, ~2-3 GitHub minutes a day). Days with no archive file are listed and skipped.
+  Code: `corefactor_to_hub.py`, `.github/workflows/corefactor-to-hub.yml`.
 - **Code:** `supabase/functions/corefactor/index.ts`, `sql/28_corefactor_webhook.sql`.
 - **To redeploy:** Supabase → Edge Functions → `corefactor` → Code → paste → Deploy. Keep **Verify JWT off**.
 
@@ -542,7 +553,7 @@ functions, which check the signed-in agent themselves), Supabase Auth sign-ins.
 
 | Caller | How | When (IST) |
 |---|---|---|
-| GitHub Actions (`vb_loader`, pooler) | VetBuddy sales 6:47 · Corefactor 6:53 · Lead Box 7:03 · Camp master 7:11 · Runo 7:13 · Appointments 7:23 + 1:01 PM · Corefactor from DB 7:40 · Reminders 7:47 · Call Desk build 7:55 · Call Desk Excel log 1:07 / 6:07 / 10:17 PM · by hand: Call Desk dry run, history load (GitHub usually starts these 30–60 min late) | mornings + 3 times in the day |
+| GitHub Actions (`vb_loader`, pooler) | VetBuddy sales 6:47 · Corefactor 6:53 · Lead Box 7:03 · Camp master 7:11 · Runo 7:13 · Appointments 7:23 + 1:01 PM · Corefactor from DB 7:40 (then Corefactor → MIS Upload Hub) · Reminders 7:47 · Call Desk build 7:55 · Call Desk Excel log 1:07 / 6:07 / 10:17 PM · by hand: Call Desk dry run, history load (GitHub usually starts these 30–60 min late) | mornings + 3 times in the day |
 | Call Desk website (Vercel) | Supabase web API → `cd_*` functions | office hours |
 | Teams bot (`teams-bot` Edge Function, `vb_teams`) | pooler | when asked |
 | Google Sheet dashboard (Apps Script) | web API → `sheet_push` | after the 9 AM import |
