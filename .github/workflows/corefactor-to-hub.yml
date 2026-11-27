@@ -1,0 +1,49 @@
+name: Corefactor call logs to MIS Upload Hub
+
+# Runs by itself every time "Corefactor from the database (webhook) -> SharePoint masters" finishes successfully
+# (07:40 AM): takes yesterday's Corefactor_CallLogs_<day> file from the Call Log Archive - the same rows that go into
+# Backend Call Log Report.xlsx - and sends it to the MIS Upload Hub, which passes it on to every MIS that uses call
+# logs. So the MIS has Corefactor calls up to yesterday. Run it by hand with From / To to send old days.
+# Needs the secrets HUB_URL and HUB_KEY (same as "VetBuddy to MIS Upload Hub").
+
+on:
+  workflow_run:
+    workflows: ["Corefactor from the database (webhook) -> SharePoint masters"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "First day to send (YYYY-MM-DD). Empty = yesterday"
+        required: false
+      to:
+        description: "Last day to send (YYYY-MM-DD). Empty = same as From"
+        required: false
+
+concurrency:
+  group: corefactor-to-hub
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests pandas xlrd openpyxl lxml
+      - name: Send the Corefactor call logs
+        env:
+          SP_TENANT_ID: ${{ secrets.SP_TENANT_ID }}
+          SP_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          SP_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+          SP_SITE_URL: ${{ vars.SP_SITE_URL }}
+          SP_LIBRARY: ${{ vars.SP_LIBRARY || 'Documents' }}
+          SP_CALLLOG_ARCHIVE_FOLDER: ${{ vars.SP_CALLLOG_ARCHIVE_FOLDER || 'Call Log Archive' }}
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_KEY: ${{ secrets.HUB_KEY }}
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+        run: python corefactor_to_hub.py ${IN_FROM:+--from "$IN_FROM"} ${IN_TO:+--to "$IN_TO"}
