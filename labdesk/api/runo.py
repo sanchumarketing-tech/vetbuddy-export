@@ -3,7 +3,7 @@
 Reads the "Live" tab of the RUNO Call Log Live Google Sheet (filled by Runo within a minute or two of
 each call) through Google's sheet query link - only today's outgoing calls, about 10 KB - so the
 database is not used for this. The answer is kept 60 seconds, so many open boards cost one read a minute.
-Signed-in users only (Call Desk login).
+Signed-in users only (Lab Follow-up login).
 """
 import csv
 import datetime as dt
@@ -73,7 +73,7 @@ def signed_in(token):
     t = _seen_tokens.get(token)
     if t and time.time() - t < 600:
         return True
-    status, raw = call_rpc("cd_me", {}, token)
+    status, raw = call_rpc("lf_me", {}, token)
     ok = status == 200 and raw.strip() not in (b"null", b"")
     if ok:
         _seen_tokens[token] = time.time()

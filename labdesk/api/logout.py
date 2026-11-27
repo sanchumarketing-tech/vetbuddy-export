@@ -11,5 +11,5 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         token = read_cookie(self)
         if token:
-            call_rpc("cd_logout", {}, token)
+            call_rpc("lf_logout", {}, token)
         send(self, 200, {"ok": True}, cookie=session_cookie("", max_age=0))

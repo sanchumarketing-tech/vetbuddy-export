@@ -1,15 +1,15 @@
-"""Shared helpers for the Call Desk Python functions on Vercel (not a URL itself: name starts with _)."""
+"""Shared helpers for the Lab Follow-up Python functions on Vercel (not a URL itself: name starts with _)."""
 import json
 import os
 import urllib.error
 import urllib.request
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ykmgbuooksizjqsyfhut.supabase.co").rstrip("/")
-# public "anon" key - safe to ship: every cd_* function checks the session token itself
+# public "anon" key - safe to ship: every lf_* function checks the session token itself
 SUPABASE_ANON = os.environ.get("SUPABASE_ANON_KEY") or (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlrbWdidW9va3Npempxc3lmaHV0Iiwicm9sZSI6ImFub24i"
     "LCJpYXQiOjE3OTM3Nzk0MzcsImV4cCI6MjEwOTM1NTQzN30.-mfbJPEfIUIjgTboxviFqqMCHX7ex2Lh95ql-bTcDuQ")
-COOKIE = "cd_session"
+COOKIE = "lf_session"   # Lab Follow-up's own login (not the Call Desk cookie)
 MAX_AGE = 12 * 3600          # same as the session in the database
 
 
@@ -18,7 +18,7 @@ def call_rpc(fn, args, token=None):
     req = urllib.request.Request(
         f"{SUPABASE_URL}/rest/v1/rpc/{fn}", data=json.dumps(args or {}).encode(), method="POST",
         headers={"apikey": SUPABASE_ANON, "Authorization": f"Bearer {SUPABASE_ANON}",
-                 "Content-Type": "application/json", **({"x-cd-token": token} if token else {})})
+                 "Content-Type": "application/json", **({"x-lf-token": token} if token else {})})
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             return r.status, r.read()

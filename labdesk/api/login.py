@@ -14,7 +14,7 @@ class handler(BaseHTTPRequestHandler):
         user, pin = str(body.get("user", "")).strip(), str(body.get("pin", "")).strip()
         if not user or not pin:
             return send(self, 400, {"ok": False, "msg": "Type your name / email and PIN."})
-        status, raw = call_rpc("cd_login", {"p_user": user, "p_pin": pin})
+        status, raw = call_rpc("lf_login", {"p_user": user, "p_pin": pin})
         try:
             res = json.loads(raw or b"{}")
         except ValueError:
